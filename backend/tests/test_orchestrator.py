@@ -892,6 +892,36 @@ class TestFileOrchestrator:
         assert "update_style_bible" in job_types
 
     @pytest.mark.asyncio
+    async def test_auto_accept_waits_for_other_project_files(
+        self, db_session, enqueue_mock, monkeypatch
+    ):
+        """Accepting one file must not render or mux while another file still
+        needs review."""
+        from app.orchestrator import file_orchestrator
+        from app.orchestrator.file_orchestrator import orchestrate_file
+
+        monkeypatch.setattr(file_orchestrator, "_populate_translation_memory_sync",
+                            lambda project_id, file_id: 0)
+
+        project = await _create_project(db_session, status="processing")
+        accepted = await _create_file(
+            db_session, project.id, status="processing", relative_path="e1.mkv")
+        await _create_chunk(db_session, accepted.id, 0, status="complete")
+        pending_review = await _create_file(
+            db_session, project.id, status="review_required",
+            blocking_reason="user_review_required", relative_path="e2.mkv")
+
+        await orchestrate_file(accepted.id, enqueue_mock)
+
+        await db_session.refresh(accepted)
+        await db_session.refresh(pending_review)
+        assert accepted.status == "accepted"
+        assert pending_review.status == "review_required"
+        job_types = [c.kwargs["job_type"] for c in enqueue_mock.call_args_list]
+        assert "render_output_ass" not in job_types
+        assert "mux_output_mkv" not in job_types
+
+    @pytest.mark.asyncio
     async def test_processing_all_chunks_complete_no_qa_manual_policy_sets_review(
         self, db_session, enqueue_mock, monkeypatch
     ):
@@ -1013,6 +1043,46 @@ class TestFileOrchestrator:
         assert mock_manager.enqueue.call_args.kwargs["job_type"] == "update_style_bible"
 
     @pytest.mark.asyncio
+    async def test_final_accept_releases_all_project_files_for_muxing(
+        self, db_session, enqueue_mock
+    ):
+        import unittest.mock as mock
+        from app.api.routes.projects import accept_file_review
+
+        project = await _create_project(db_session, status="review_required")
+        first = await _create_file(
+            db_session, project.id, status="review_required",
+            blocking_reason="user_review_required", relative_path="e1.mkv")
+        second = await _create_file(
+            db_session, project.id, status="review_required",
+            blocking_reason="user_review_required", relative_path="e2.mkv")
+
+        with mock.patch("app.api.routes.projects.orchestrate_file"), \
+             mock.patch("app.orchestrator.file_orchestrator._populate_translation_memory_sync",
+                        return_value=0), \
+             mock.patch("app.api.routes.projects.job_manager") as mock_manager:
+            mock_manager.enqueue = mock.AsyncMock()
+
+            first_result = await accept_file_review(project.id, first.id)
+            await db_session.refresh(first)
+            await db_session.refresh(second)
+            assert first_result.status == "accepted"
+            assert first.status == "accepted"
+            assert second.status == "review_required"
+            assert all(
+                call.kwargs["job_type"] not in ("render_output_ass", "mux_output_mkv")
+                for call in mock_manager.enqueue.call_args_list
+            )
+
+            second_result = await accept_file_review(project.id, second.id)
+
+        await db_session.refresh(first)
+        await db_session.refresh(second)
+        assert second_result.status == "muxing"
+        assert first.status == "muxing"
+        assert second.status == "muxing"
+
+    @pytest.mark.asyncio
     async def test_accept_file_review_rejects_unresolved_blockers(self, db_session, enqueue_mock):
         from app.api.routes.projects import accept_file_review
         from fastapi import HTTPException
@@ -1087,6 +1157,18 @@ class TestFileOrchestrator:
         assert event.original_ai_translated_text == "AI text"
         assert event.is_user_edited == 1
         assert updated.translated_text == "User text"
+
+    @pytest.mark.asyncio
+    async def test_accepted_file_edit_syncs_translation_memory(self, db_session):
+        import unittest.mock as mock
+        from app.api.routes.projects import _sync_tm_after_edit
+
+        with mock.patch(
+            "app.api.routes.projects._sync_tm_from_event_sync"
+        ) as mock_sync:
+            await _sync_tm_after_edit(12, 34, "accepted")
+
+        mock_sync.assert_called_once_with(12, 34)
 
     @pytest.mark.asyncio
     async def test_revert_subtitle_event_restores_original_ai_translation(self, db_session, enqueue_mock):
@@ -1269,6 +1351,29 @@ class TestProjectOrchestrator:
 
         await orchestrate_project(project.id, enqueue_mock)
 
+        await db_session.refresh(project)
+        assert project.status == "review_required"
+
+    @pytest.mark.asyncio
+    async def test_review_required_drives_reopened_file_while_sibling_needs_review(
+        self, db_session, enqueue_mock
+    ):
+        """An accepted file reopened for retranslation must keep moving even
+        though another file still holds the project-level review state."""
+        from app.orchestrator.project_orchestrator import orchestrate_project
+
+        project = await _create_project(db_session, status="review_required")
+        reopened = await _create_file(
+            db_session, project.id, status="processing", relative_path="e1.mkv")
+        await _create_chunk(db_session, reopened.id, 0, status="pending")
+        await _create_file(
+            db_session, project.id, status="review_required",
+            blocking_reason="user_review_required", relative_path="e2.mkv")
+
+        await orchestrate_project(project.id, enqueue_mock)
+
+        job_types = [call.kwargs["job_type"] for call in enqueue_mock.call_args_list]
+        assert "translate_chunk" in job_types
         await db_session.refresh(project)
         assert project.status == "review_required"
 

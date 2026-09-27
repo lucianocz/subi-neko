@@ -33,6 +33,7 @@ _TERMINAL_FILE_STATUSES = frozenset({
     FileStatus.FAILED.value,
     FileStatus.PAUSED.value,
     FileStatus.REVIEW_REQUIRED.value,
+    FileStatus.ACCEPTED.value,
 })
 
 
@@ -305,10 +306,13 @@ async def _handle_review_required(
 
     await _ensure_file_metrics(project_id, list(current_files), enqueue_fn)
 
-    # Waiting files with a partial block keep progressing their unblocked
-    # chunks even while the project sits in review.
+    # Waiting files with a partial block and files reopened by a retranslation
+    # keep progressing even while a sibling holds the project in review.
     for f in current_files:
-        if f.status == FileStatus.WAITING.value:
+        if (
+            f.status == FileStatus.WAITING.value
+            or (f.status not in _TERMINAL_FILE_STATUSES and not _is_inert(f))
+        ):
             await orchestrate_file(f.id, enqueue_fn)
 
     # Symmetric with _handle_processing: waiting files hold the project in

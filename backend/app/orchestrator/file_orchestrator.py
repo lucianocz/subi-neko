@@ -268,8 +268,9 @@ async def _handle_chunks_result(
 async def finalize_accepted_file(file_id: int, project_id: int, enqueue_fn: EnqueueFn) -> None:
     """Shared acceptance path (auto-accept and the accept endpoint): the
     translations are final — feed them into the translation memory, let the
-    style bible learn from the episode, and transition to muxing. TM/bible
-    steps are best-effort and never block the acceptance."""
+    style bible learn from the episode, and mark the file accepted. Output is
+    released for the whole project only after every file has been accepted.
+    TM/bible steps are best-effort and never block the acceptance."""
     try:
         written = await asyncio.to_thread(_populate_translation_memory_sync, project_id, file_id)
         logger.info("TM populated from file %d: %d entries", file_id, written)
@@ -286,7 +287,53 @@ async def finalize_accepted_file(file_id: int, project_id: int, enqueue_fn: Enqu
     except Exception:
         logger.exception("Failed to enqueue style bible update for file %d", file_id)
 
-    await _set_file_status(file_id, FileStatus.MUXING.value, None)
+    now = datetime.utcnow().isoformat()
+    async with AsyncSessionLocal() as session:
+        file = await session.get(File, file_id)
+        if file is None or file.project_id != project_id:
+            return
+
+        file.status = FileStatus.ACCEPTED.value
+        file.blocking_reason = None
+        file.updated_at = now
+        await session.commit()
+
+        # MUXING/COMPLETED count as already accepted for compatibility with a
+        # project that was partially output before this barrier was introduced.
+        awaiting_acceptance = await session.scalar(
+            select(func.count())
+            .select_from(File)
+            .where(
+                File.project_id == project_id,
+                File.status.notin_([
+                    FileStatus.ACCEPTED.value,
+                    FileStatus.MUXING.value,
+                    FileStatus.COMPLETED.value,
+                ]),
+            )
+        )
+        if awaiting_acceptance:
+            logger.info(
+                "File id=%d accepted; project id=%d still has %d file(s) awaiting acceptance",
+                file_id, project_id, awaiting_acceptance,
+            )
+            return
+
+        accepted_files = list((await session.scalars(
+            select(File).where(
+                File.project_id == project_id,
+                File.status == FileStatus.ACCEPTED.value,
+            )
+        )).all())
+        for accepted_file in accepted_files:
+            accepted_file.status = FileStatus.MUXING.value
+            accepted_file.updated_at = now
+        await session.commit()
+
+    logger.info(
+        "All files accepted for project id=%d; released %d file(s) for muxing",
+        project_id, len(accepted_files),
+    )
 
 
 def _populate_translation_memory_sync(project_id: int, file_id: int) -> int:

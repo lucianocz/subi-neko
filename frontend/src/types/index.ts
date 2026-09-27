@@ -95,6 +95,7 @@ export type FileStatus =
   | 'ready'
   | 'processing'
   | 'review_required'
+  | 'accepted'
   | 'muxing'
   | 'completed'
   | 'paused'

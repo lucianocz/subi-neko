@@ -79,6 +79,7 @@ const FILE_STATUS_COLORS: Record<FileStatus, string> = {
   ready: 'blue',
   processing: 'indigo',
   review_required: 'orange',
+  accepted: 'teal',
   muxing: 'violet',
   completed: 'green',
   paused: 'gray',
@@ -520,6 +521,7 @@ function FileRow({
   const showEditButton = file.status === 'processing'
       || (file.status === 'waiting' && (file.blocking_reason === 'validation_failed' || file.blocking_reason === 'translation_failed' ))
       || file.status === 'review_required'
+      || file.status === 'accepted'
       || file.status === 'completed';
   const acceptReview = useAcceptFileReview(projectId);
   const translateFile = useTranslateFile(projectId);
@@ -606,7 +608,7 @@ function FileRow({
                     ? 'Resolve blocker issues before accepting review'
                     : file.qa_warnings > 0
                       ? `Accept and resolve ${file.qa_warnings} remaining warning(s)`
-                      : 'Accept review and start muxing'
+                      : 'Accept review; output starts after every file is accepted'
                 }
                 onClick={(e) => {
                   e.stopPropagation();

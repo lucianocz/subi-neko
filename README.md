@@ -12,7 +12,7 @@ Extracts subtitles from MKV files, translates them using an OpenAI-compatible LL
 - **ASS and plain-text input** — imports ASS/SSA or UTF-8 SubRip tracks, always prefers ASS when both exist, and gives plain-text sources a readable default 1080p style; output remains ASS
 - **Episode metadata** — AniDB per-episode titles are fetched at import, episode numbers are parsed from filenames (conservatively — no guess beats a wrong guess), and "Episode 12: *Title*" context reaches every analysis/translation/polish prompt; a Refresh-metadata button re-syncs characters and episodes without touching user edits
 - **Automatic speaker→character mapping** — subtitle speaker labels are matched to the AniDB/AniList character roster automatically (exact/normalized name matching, extra-detection for "Boy A"/"Crowd"-style labels, then one LLM inference call with confidence scores). The pipeline never waits for a human; low-confidence matches surface in the Characters tab of the Style guide dialog for asynchronous correction, with one-click retranslation of affected chunks
-- **Risk-based review** — files that finish with zero unresolved QA items auto-mux (configurable policy); only blocker-severity issues gate manual acceptance, and a keyboard-driven project-wide review queue triages everything else (most severe, least confident first)
+- **Risk-based review** — files that finish with zero unresolved QA items auto-accept (configurable policy); only blocker-severity issues gate manual acceptance, and a keyboard-driven project-wide review queue triages everything else (most severe, least confident first). Accepted subtitles stay editable and are rendered/muxed only after every file in the project is accepted.
 - **Chunked translation** — subtitles are split into configurable chunks and translated sequentially per file, each chunk seeing its predecessors' finished translations as context
 - **ASS tag safety** — inline override tags and escapes are masked into opaque markers before the LLM call and deterministically reinserted afterwards; the model never sees raw markup
 - **Multi-stage pipeline** per chunk:
@@ -138,7 +138,7 @@ All prompt defaults live in `backend/app/db/default_prompts.py`; each is overrid
 
 | Option key | Default | Description |
 |------------|---------|-------------|
-| `AUTO_ACCEPT_POLICY` | `fully_clean` | `fully_clean` = auto-mux files with zero unresolved QA items; `no_blockers` = auto-mux unless blockers remain; `manual` = always require an explicit accept |
+| `AUTO_ACCEPT_POLICY` | `fully_clean` | `fully_clean` = auto-accept files with zero unresolved QA items; `no_blockers` = auto-accept unless blockers remain; `manual` = always require an explicit accept |
 | `AUTO_MAPPING_ACCEPT_THRESHOLD` | `0.8` | Speaker-mapping confidence below which a match is highlighted for verification in the Characters tab of the Style guide dialog |
 
 #### Worker
@@ -186,6 +186,7 @@ context; signs/karaoke/songs and all later stages run in parallel):
 All chunks complete
   └─ clean file (no unresolved QA) → auto-accepted; flagged file → review queue
   └─ (on accept: translation memory populated, style bible learns from the episode)
+  └─ all project files accepted – release output for the whole project
   └─ render_output_ass   – write translated ASS file
   └─ mux_output_mkv      – mux back into MKV
 ```

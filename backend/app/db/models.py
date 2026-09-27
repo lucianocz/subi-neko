@@ -30,6 +30,7 @@ class FileStatus(str, Enum):
     READY = "ready"
     PROCESSING = "processing"
     REVIEW_REQUIRED = "review_required"
+    ACCEPTED = "accepted"
     MUXING = "muxing"
     COMPLETED = "completed"
     PAUSED = "paused"

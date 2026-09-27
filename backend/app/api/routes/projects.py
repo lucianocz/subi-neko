@@ -863,9 +863,9 @@ class AcceptReviewIn(BaseModel):
 
 @router.post("/{project_id}/files/{file_id}/accept-review", response_model=FileOut)
 async def accept_file_review(project_id: int, file_id: int, body: AcceptReviewIn | None = None):
-    """Accept a reviewed file for muxing. Only unresolved BLOCKER items
-    stand in the way; warnings/info ride along and can optionally be
-    bulk-resolved with resolve_warnings=true."""
+    """Accept a reviewed file. Only unresolved BLOCKER items stand in the
+    way; warnings/info ride along and can optionally be bulk-resolved with
+    resolve_warnings=true. Output starts once every project file is accepted."""
     now = datetime.utcnow().isoformat()
     resolve_warnings = bool(body and body.resolve_warnings)
 
@@ -1388,7 +1388,11 @@ async def _sync_tm_after_edit(project_id: int, event_id: int, file_status: str) 
     """Post-acceptance editor corrections flow straight into the translation
     memory so the next translated file benefits (forward-only). Edits before
     acceptance are captured wholesale by populate_from_file at accept time."""
-    if file_status not in (FileStatus.MUXING.value, FileStatus.COMPLETED.value):
+    if file_status not in (
+        FileStatus.ACCEPTED.value,
+        FileStatus.MUXING.value,
+        FileStatus.COMPLETED.value,
+    ):
         return
     try:
         await asyncio.to_thread(_sync_tm_from_event_sync, project_id, event_id)
@@ -1701,7 +1705,7 @@ async def retranslate_affected_chunks(project_id: int, speaker_id: int):
             )).all()
             for file in files:
                 if file.status in (FileStatus.REVIEW_REQUIRED.value, FileStatus.WAITING.value,
-                                   FileStatus.MUXING.value):
+                                   FileStatus.ACCEPTED.value, FileStatus.MUXING.value):
                     file.status = FileStatus.PROCESSING.value
                     file.blocking_reason = None
                     file.updated_at = now
