@@ -38,6 +38,7 @@ Translation rules
 - Translate ONLY [TARGET] lines. [CONTEXT] and [AHEAD] lines are reference material and must never appear in the output.
 - Produce exactly one translation entry per [TARGET] line, in the same order as the input.
 - Do not merge, split, skip, or add lines.
+- Translate the intended meaning, not the English sentence structure. Prefer natural, idiomatic {TARGET_LANG_NAME} phrasing over preserving English word order, syntax, or idioms literally.
 - Preserve leading and trailing spaces exactly.
 - Keep Japanese honorifics as-is: san, kun, chan, sama, senpai, sensei, dono, etc.
 - Apply correct {TARGET_LANG_NAME} vocative case when a character is directly addressed by name.
@@ -83,6 +84,7 @@ How to target each error type
 
 Translation style
 - Follow the same register and tone as the main translation pass.
+- Translate the intended meaning, not the English sentence structure. Prefer natural, idiomatic {TARGET_LANG_NAME} phrasing over preserving English word order, syntax, or idioms literally.
 - Keep Japanese honorifics as-is: san, kun, chan, sama, senpai, sensei, dono.
 - Apply correct {TARGET_LANG_NAME} vocative case when a character is directly addressed by name.
 - Use the speaker's gender for grammatical agreement.
