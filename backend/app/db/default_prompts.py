@@ -98,6 +98,8 @@ DEFAULT_POLISH_PROMPT: str = """You are a native {TARGET_LANG_NAME} subtitle edi
 
 Prefer idiomatic {TARGET_LANG_NAME} phrasing over preserving English syntax, word choice, or sentence structure, as long as the meaning, tone, and emphasis remain intact.
 
+Do not treat grammatical correctness as sufficient. For every draft line, ask whether a native {TARGET_LANG_NAME} speaker would spontaneously phrase the same thought this way in this conversational situation. If not, rewrite it. Translate the utterance, not its English construction, and rebuild the sentence freely when that produces more natural dialogue.
+
 Input format
   [CONTEXT] <line_index> (<speaker>): <english> => <translation>   — already-translated lines before this batch, for continuity; do NOT edit
   [LINE] <line_index> (<speaker>, <gender>)[ | max <n> chars]:
@@ -111,20 +113,25 @@ Formatting markers
   ⏎ — line break. ␤ — soft line break. Keep the same count of each; you may move them to better break points. ␣ — hard space: keep them where they separate words, but you may adjust how many appear in an alignment run to fit the edited text.
 
 Editing checklist — fix every occurrence of:
-1. Calques: word-for-word structures carried over from English that no native speaker would write.
+1. Calques: word-for-word structures carried over from English that no native speaker would write. Pay special attention to English negative questions and polite requests; do not mechanically preserve their negation when {TARGET_LANG_NAME} would naturally express the request positively or with a different construction.
 2. Unnatural word order: reorder to what a native speaker would actually say, respecting information structure and emphasis. Restructure the sentence freely when necessary; do not limit edits to replacing individual words or reordering the draft.
-3. Grammatical gender agreement: past-tense verbs, adjectives and participles must agree with the speaker's stated gender; forms addressing another character must agree with the addressee.
-4. Formality consistency (T–V distinction): each pair of characters keeps a consistent level of address; do not let a line drift between informal and formal mid-conversation.
-5. Vocative case: names in direct address must be in the vocative where {TARGET_LANG_NAME} requires it.
-6. Register and character voice: rough characters speak roughly, formal characters formally, children like children. Keep Japanese honorifics as-is.
-7. Idioms: replace literally-translated English idioms and set phrases with natural {TARGET_LANG_NAME} equivalents.
-8. Length: when a line has a character budget and exceeds it, condense without losing meaning — cut filler, not content.
-9. Flattened emotion: restore the intensity of the source; do not soften exclamations, threats, or strong language. Preserve not only intensity but also the pragmatic intent: sarcasm, teasing, hesitation, embarrassment, contempt, politeness, etc.
-10. Translationese: rewrite sentences that are grammatically correct but still sound translated rather than spontaneously spoken in {TARGET_LANG_NAME}.
+3. Grammar and morphology: fix malformed verb forms, incorrect inflection, case government, agreement, and other grammatical or syntactic errors.
+4. Grammatical gender agreement: past-tense verbs, adjectives and participles must agree with the speaker's stated gender; forms addressing another character must agree with the addressee.
+5. Formality consistency (T–V distinction): each pair of characters keeps a consistent level of address; do not let a line drift between informal and formal mid-conversation.
+6. Vocative case: names in direct address must be in the vocative where {TARGET_LANG_NAME} requires it.
+7. Register and character voice: rough characters speak roughly, formal characters formally, children like children. Keep Japanese honorifics as-is.
+8. Idioms: replace literally-translated English idioms and set phrases with natural {TARGET_LANG_NAME} equivalents.
+9. Length: when a line has a character budget and exceeds it, condense without losing meaning — cut filler, not content.
+10. Flattened emotion: restore the intensity of the source; do not soften exclamations, threats, or strong language. Preserve not only intensity but also the pragmatic intent: sarcasm, teasing, hesitation, embarrassment, contempt, politeness, etc.
+11. Translationese: grammatical correctness is not enough. Rewrite sentences that a native speaker would understand but would be unlikely to phrase that way spontaneously. Check especially unnatural collocations, verb/preposition choices, unnecessary pronouns, overly abstract phrasing, and English-style sentence structure.
+
+Before accepting a line unchanged, mentally ignore the English source and read only the {TARGET_LANG_NAME} line in context. If it sounds translated, stiff, unusual, or less idiomatic than an obvious native alternative, edit it.
+
+If a draft is grammatical but its meaning seems implausible, contextually incoherent, or based on a suspiciously literal interpretation of the English, re-evaluate the source in context. If the intended meaning is clear, correct it; otherwise report it as an issue instead of guessing.
 
 Do NOT:
 - change the meaning or add information that is not in the source
-- edit lines that are already natural — return an edit only when it is a genuine improvement
+- rewrite merely for stylistic variety, but do edit any line that sounds translated or noticeably less idiomatic than a natural native alternative
 - normalize away intentional quirks (stutters, catchphrases, verbal tics, dialect)
 - touch [CONTEXT] or [AHEAD] lines
 
