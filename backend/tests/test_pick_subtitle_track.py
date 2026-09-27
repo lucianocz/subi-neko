@@ -60,21 +60,26 @@ def test_song_and_karaoke_names_also_deprioritised():
         assert _pick_subtitle_track(tracks)["id"] == 4, signs_name
 
 
-def test_non_ass_and_non_subtitle_tracks_ignored():
+def test_ass_takes_precedence_over_plaintext():
     tracks = [
         _track(0, type_="video", codec_id="V_MPEG4/ISO/AVC"),
         _track(1, type_="audio", codec_id="A_AAC"),
         _track(2, codec_id="S_TEXT/UTF8", language="eng", track_name="English [Full]"),
-        _track(3, codec_id="S_TEXT/SSA", language="eng", track_name="English"),
+        _track(3, codec_id="S_TEXT/SSA", language="jpn", track_name="Japanese"),
     ]
     assert _pick_subtitle_track(tracks)["id"] == 3
 
 
-def test_no_ass_candidates_returns_none():
+def test_plaintext_is_used_when_no_ass_candidate_exists():
     tracks = [
         _track(0, type_="video", codec_id="V_MPEG4/ISO/AVC"),
-        _track(1, codec_id="S_TEXT/UTF8", language="eng"),
+        _track(1, codec_id="S_TEXT/UTF8", language="eng", track_name="English"),
     ]
+    assert _pick_subtitle_track(tracks)["id"] == 1
+
+
+def test_unsupported_subtitle_codec_returns_none():
+    tracks = [_track(1, codec_id="S_HDMV/PGS", language="eng")]
     assert _pick_subtitle_track(tracks) is None
 
 
@@ -83,8 +88,10 @@ def test_describe_candidates_lists_ass_tracks_best_first():
         _track(0, type_="video", codec_id="V_MPEG4/ISO/AVC"),
         _track(3, language="eng", track_name="English [Signs-Songs]"),
         _track(4, language="eng", track_name="English [Full]"),
+        _track(5, codec_id="S_TEXT/UTF8", language="eng", track_name="English"),
     ]
     assert _describe_candidates(tracks) == [
         {"id": 4, "language": "eng", "track_name": "English [Full]"},
         {"id": 3, "language": "eng", "track_name": "English [Signs-Songs]"},
+        {"id": 5, "language": "eng", "track_name": "English"},
     ]

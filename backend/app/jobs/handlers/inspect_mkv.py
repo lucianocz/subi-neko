@@ -16,7 +16,13 @@ from app.jobs.registry import register_job_handler
 
 logger = logging.getLogger(__name__)
 
-_ASS_CODEC_IDS = {"S_TEXT/ASS", "S_TEXT/SSA"}
+_SUBTITLE_FORMAT_BY_CODEC_ID = {
+    "S_TEXT/ASS": "ass",
+    "S_TEXT/SSA": "ass",
+    # Matroska stores SubRip subtitles under this codec id.  MediaInfo calls
+    # it "UTF-8 Plain Text", even though the extracted payload is SRT.
+    "S_TEXT/UTF8": "srt",
+}
 
 # Releases commonly ship two English ASS tracks — a signs/songs typesetting
 # track and the full dialogue track — in that order (e.g. Judas:
@@ -38,13 +44,18 @@ def _track_rank(track: dict) -> tuple:
     """Sort key for subtitle track preference — lower is better.
 
     Lexicographic so each signal only breaks ties left by the ones above it:
-    language first (this pipeline expects an English source), then avoid
-    signs/songs tracks, then hearing-impaired and forced flags, then prefer an
-    explicit "Full"/"Dialogue" name, and finally keep the file's own order.
+    ASS/SSA first, language next (this pipeline expects an English source),
+    then avoid signs/songs tracks, then hearing-impaired and forced flags,
+    then prefer an explicit "Full"/"Dialogue" name, and finally keep the
+    file's own order.
     """
     props = track.get("properties", {})
     name = props.get("track_name") or ""
     return (
+        # Preserve rich typesetting whenever it is available.  Plain-text
+        # subtitles are a fallback, even if their language/name metadata is
+        # otherwise a better match.
+        _SUBTITLE_FORMAT_BY_CODEC_ID.get(props.get("codec_id")) != "ass",
         props.get("language") != "eng",
         bool(_SIGNS_TRACK_NAME_RE.search(name)),
         bool(props.get("flag_hearing_impaired", False)),
@@ -54,23 +65,23 @@ def _track_rank(track: dict) -> tuple:
     )
 
 
-def _ass_subtitle_tracks(tracks: list[dict]) -> list[dict]:
+def _supported_subtitle_tracks(tracks: list[dict]) -> list[dict]:
     return [
         t for t in tracks
         if t.get("type") == "subtitles"
-        and t.get("properties", {}).get("codec_id") in _ASS_CODEC_IDS
+        and t.get("properties", {}).get("codec_id") in _SUBTITLE_FORMAT_BY_CODEC_ID
     ]
 
 
 def _pick_subtitle_track(tracks: list[dict]) -> dict | None:
-    candidates = _ass_subtitle_tracks(tracks)
+    candidates = _supported_subtitle_tracks(tracks)
     if not candidates:
         return None
     return min(candidates, key=_track_rank)
 
 
 def _describe_candidates(tracks: list[dict]) -> list[dict]:
-    """Every ASS candidate, recorded in the job result so a mis-picked track
+    """Every supported candidate, recorded so a mis-picked track
     stays diagnosable after the fact."""
     return [
         {
@@ -78,8 +89,12 @@ def _describe_candidates(tracks: list[dict]) -> list[dict]:
             "language": t.get("properties", {}).get("language"),
             "track_name": t.get("properties", {}).get("track_name"),
         }
-        for t in sorted(_ass_subtitle_tracks(tracks), key=_track_rank)
+        for t in sorted(_supported_subtitle_tracks(tracks), key=_track_rank)
     ]
+
+
+def _subtitle_format(track: dict) -> str:
+    return _SUBTITLE_FORMAT_BY_CODEC_ID[track.get("properties", {}).get("codec_id")]
 
 
 @register_job_handler("inspect_mkv")
@@ -139,16 +154,17 @@ def inspect_mkv(
             session.commit()
         return JobResult(status="failed", result=None,
                          error_code="subtitle_missing",
-                         error_message="No ASS/SSA subtitle track found in file")
+                         error_message="No ASS/SSA or UTF-8 plain-text subtitle track found in file")
 
     track_id: int = best["id"]
+    subtitle_format = _subtitle_format(best)
 
     progress(0.9, "Saving result")
 
     with SyncSessionLocal() as session:
         file = session.get(File, file_id)
         file.subtitle_track_index = track_id
-        file.detected_subtitle_format = "ass"
+        file.detected_subtitle_format = subtitle_format
         file.status = "discovering"
         file.updated_at = now
         session.commit()
@@ -158,7 +174,7 @@ def inspect_mkv(
         status="succeeded",
         result={
             "subtitle_track_index": track_id,
-            "format": "ass",
+            "format": subtitle_format,
             "track_name": best.get("properties", {}).get("track_name"),
             "candidates": _describe_candidates(all_tracks),
         },

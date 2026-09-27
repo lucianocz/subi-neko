@@ -27,6 +27,40 @@ _KNOWN_SCRIPT_INFO_KEYS = {
     "YCbCr Matrix", "Kerning",
 }
 
+# SRT carries no canvas or styling information.  Use a conventional 1080p
+# ASS canvas and a dialogue size of 5% of its height so the ASS-only output is
+# immediately readable and scales predictably in players.
+_PLAINTEXT_PLAY_RES_X = 1920
+_PLAINTEXT_PLAY_RES_Y = 1080
+_PLAINTEXT_FONT_NAME = "Arial"
+_PLAINTEXT_FONT_SIZE = 54.0
+
+
+def _apply_plaintext_defaults(subs: pysubs2.SSAFile) -> None:
+    """Give a parsed SRT the metadata it needs for a useful ASS export."""
+    subs.info.clear()
+    subs.info.update({
+        "ScriptType": "v4.00+",
+        "WrapStyle": "0",
+        "PlayResX": str(_PLAINTEXT_PLAY_RES_X),
+        "PlayResY": str(_PLAINTEXT_PLAY_RES_Y),
+        "ScaledBorderAndShadow": "yes",
+    })
+    subs.styles.clear()
+    subs.styles["Default"] = pysubs2.SSAStyle(
+        fontname=_PLAINTEXT_FONT_NAME,
+        fontsize=_PLAINTEXT_FONT_SIZE,
+        outline=3.0,
+        shadow=0.0,
+        alignment=2,
+        marginl=60,
+        marginr=60,
+        marginv=45,
+    )
+    for event in subs:
+        event.style = "Default"
+
+
 def _color_to_str(c) -> str | None:
     if c is None:
         return None
@@ -70,8 +104,14 @@ def extract_subtitles(
                              error_code="NO_TRACK_INDEX",
                              error_message="subtitle_track_index not set - run inspect_mkv first")
         track_id = file.subtitle_track_index
+        subtitle_format = file.detected_subtitle_format or "ass"
         source_directory = file.project.source_directory
         relative_path = file.relative_path
+
+    if subtitle_format not in {"ass", "srt"}:
+        return JobResult(status="failed", result=None,
+                         error_code="UNSUPPORTED_SUBTITLE_FORMAT",
+                         error_message=f"Unsupported subtitle format: {subtitle_format}")
 
     try:
         source_path = _safe_source_path(ctx, source_directory, relative_path)
@@ -81,7 +121,7 @@ def extract_subtitles(
 
     progress(0.1, "Extracting subtitle track")
 
-    fd, tmp_path = tempfile.mkstemp(suffix=".ass")
+    fd, tmp_path = tempfile.mkstemp(suffix=f".{subtitle_format}")
     os.close(fd)
     _progress_re = re.compile(r'Progress:\s*(\d+)%')
     try:
@@ -106,10 +146,12 @@ def extract_subtitles(
                              error_code="MKVEXTRACT_FAILED",
                              error_message=stderr_out.strip())
 
-        progress(0.35, "Parsing ASS file")
+        progress(0.35, f"Parsing {subtitle_format.upper()} file")
 
         try:
             subs = pysubs2.load(tmp_path, encoding="utf-8")
+            if subtitle_format == "srt":
+                _apply_plaintext_defaults(subs)
         except Exception as exc:
             with SyncSessionLocal() as session:
                 file = session.get(File, file_id)

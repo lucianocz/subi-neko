@@ -9,6 +9,7 @@ Extracts subtitles from MKV files, translates them using an OpenAI-compatible LL
 ## Features
 
 - **Automatic MKV processing** — drop files into an import folder; the app discovers, inspects, and processes them automatically (project import and series matching stay a deliberate manual step)
+- **ASS and plain-text input** — imports ASS/SSA or UTF-8 SubRip tracks, always prefers ASS when both exist, and gives plain-text sources a readable default 1080p style; output remains ASS
 - **Episode metadata** — AniDB per-episode titles are fetched at import, episode numbers are parsed from filenames (conservatively — no guess beats a wrong guess), and "Episode 12: *Title*" context reaches every analysis/translation/polish prompt; a Refresh-metadata button re-syncs characters and episodes without touching user edits
 - **Automatic speaker→character mapping** — subtitle speaker labels are matched to the AniDB/AniList character roster automatically (exact/normalized name matching, extra-detection for "Boy A"/"Crowd"-style labels, then one LLM inference call with confidence scores). The pipeline never waits for a human; low-confidence matches surface in the Characters tab of the Style guide dialog for asynchronous correction, with one-click retranslation of affected chunks
 - **Risk-based review** — files that finish with zero unresolved QA items auto-mux (configurable policy); only blocker-severity issues gate manual acceptance, and a keyboard-driven project-wide review queue triages everything else (most severe, least confident first)
@@ -156,7 +157,7 @@ Each file goes through this sequence automatically:
 ```
 MKV file discovered
   └─ inspect_mkv         – probe tracks, detect subtitle format
-  └─ extract_subtitles   – extract ASS subtitle track, classify content type
+  └─ extract_subtitles   – extract ASS/SSA or UTF-8 SubRip track, classify content type
   └─ scan_project        – parse subtitle events into DB, parse episode numbers
   └─ aggregate_speakers  – collect speaker names + line counts + samples
   └─ infer_character_mapping – automatic speaker→character mapping
