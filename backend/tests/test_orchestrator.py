@@ -22,9 +22,11 @@ from app.core.database import Base
 from app.db.models import (
     File,
     FileBlockingReason,
+    FileQualityMetric,
     FileStatus,
     JobRecord,
     JobStatus,
+    LlmCall,
     Project,
     ProjectStatus,
     QaItem,
@@ -32,6 +34,7 @@ from app.db.models import (
     SubtitleChunk,
     SubtitleEvent,
     SubtitleStyle,
+    TranslationMemoryEntry,
 )
 
 
@@ -2275,6 +2278,139 @@ class TestContextGateEndpoints:
             await retry_context_component(
                 project.id, ContextRetryIn(component="character_mapping"))
         assert exc_info.value.status_code == 409
+
+
+# ===========================================================================
+# File subtitle downloads / full-file retranslation
+# ===========================================================================
+
+class TestFileActions:
+    @pytest.mark.asyncio
+    async def test_download_original_and_translation_ass(self, db_session):
+        from fastapi import HTTPException
+        from app.api.routes.projects import download_file_subtitles
+
+        project = await _create_project(db_session, status="processing")
+        file = await _create_file(
+            db_session, project.id, status="ready", translation_requested=False,
+        )
+        await _create_subtitle(db_session, file.id)
+        await _create_style(db_session, file.id, font_check_status="resolved")
+        await _create_event(
+            db_session, file.id, source_text="Hello source", translated_text="Ahoj preklad",
+        )
+
+        original = await download_file_subtitles(project.id, file.id, "original")
+        original_text = original.body.decode("utf-8")
+        assert "Hello source" in original_text
+        assert "Ahoj preklad" not in original_text
+        assert "attachment" in original.headers["content-disposition"]
+
+        with pytest.raises(HTTPException) as exc_info:
+            await download_file_subtitles(project.id, file.id, "translated")
+        assert exc_info.value.status_code == 409
+
+        file.status = FileStatus.REVIEW_REQUIRED.value
+        await db_session.commit()
+        translated = await download_file_subtitles(project.id, file.id, "translated")
+        translated_text = translated.body.decode("utf-8")
+        assert "Ahoj preklad" in translated_text
+
+    @pytest.mark.asyncio
+    async def test_retranslate_clears_text_and_keeps_cumulative_llm_calls(self, db_session):
+        import unittest.mock as mock
+        from sqlalchemy import func, select
+        from app.api.routes.projects import retranslate_file
+
+        project = await _create_project(db_session, status="completed")
+        file = await _create_file(db_session, project.id, status="completed")
+        event = await _create_event(
+            db_session,
+            file.id,
+            source_text="Hello",
+            translated_text="Rucni preklad",
+            original_ai_translated_text="AI preklad",
+            is_user_edited=1,
+        )
+        event.is_locked = 1
+        event.is_approved = 1
+        event.translation_confidence = 0.7
+        chunk = await _create_chunk(db_session, file.id, 0, status="complete")
+        chunk.model = "old-model"
+        chunk.prompt_version = "old-prompt"
+        await _create_qa_item(db_session, file.id, subtitle_event_id=event.id)
+        db_session.add(FileQualityMetric(file_id=file.id, project_id=project.id))
+        db_session.add(LlmCall(
+            project_id=project.id,
+            file_id=file.id,
+            task="translate",
+            model="test-model",
+            status="succeeded",
+            cost_usd=0.25,
+            prompt_tokens=10,
+            completion_tokens=5,
+        ))
+        db_session.add(TranslationMemoryEntry(
+            project_id=project.id,
+            source_hash="hash",
+            source_text="Hello",
+            target_text="Rucni preklad",
+            origin="human",
+            src_file_id=file.id,
+            src_line_index=0,
+        ))
+        await db_session.commit()
+        for job_type in ("render_output_ass", "mux_output_mkv", "compute_file_metrics"):
+            await _create_job(
+                db_session,
+                project.id,
+                job_type,
+                f"{job_type}:{file.id}",
+                file_id=file.id,
+            )
+
+        with mock.patch("app.api.routes.projects.orchestrate_file") as orchestrate:
+            result = await retranslate_file(project.id, file.id)
+
+        assert result.status == FileStatus.READY.value
+        assert result.translation_requested_at is not None
+        orchestrate.assert_awaited_once()
+
+        await db_session.refresh(project)
+        await db_session.refresh(file)
+        await db_session.refresh(event)
+        await db_session.refresh(chunk)
+        assert project.status == ProjectStatus.PROCESSING.value
+        assert file.completed_at is None
+        assert event.translated_text is None
+        assert event.original_ai_translated_text is None
+        assert event.translation_status == "pending"
+        assert event.translation_confidence is None
+        assert not event.is_user_edited
+        assert not event.is_locked
+        assert not event.is_approved
+        assert chunk.status == "pending"
+        assert chunk.model is None
+        assert chunk.prompt_version is None
+
+        assert await db_session.scalar(
+            select(func.count()).select_from(QaItem).where(QaItem.file_id == file.id)
+        ) == 0
+        assert await db_session.scalar(
+            select(func.count()).select_from(FileQualityMetric).where(FileQualityMetric.file_id == file.id)
+        ) == 0
+        assert await db_session.scalar(
+            select(func.count()).select_from(TranslationMemoryEntry)
+            .where(TranslationMemoryEntry.src_file_id == file.id)
+        ) == 0
+        assert await db_session.scalar(
+            select(func.count()).select_from(LlmCall).where(LlmCall.file_id == file.id)
+        ) == 1
+
+        jobs = list((await db_session.scalars(
+            select(JobRecord).where(JobRecord.file_id == file.id)
+        )).all())
+        assert {job.status for job in jobs} == {JobStatus.CANCELLED.value}
 
 
 # ===========================================================================

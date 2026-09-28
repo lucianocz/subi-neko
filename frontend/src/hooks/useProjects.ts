@@ -122,6 +122,7 @@ export function useAcceptFileReview(projectId: number) {
         (files) => files?.map((file) => (file.id === data.id ? { ...file, ...data } : file)),
       );
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'files'] });
       queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'files', data.id, 'chunks'] });
     },
   });
@@ -178,6 +179,26 @@ export function useTranslateFile(projectId: number) {
         (files) => files?.map((file) => (file.id === data.id ? { ...file, ...data } : file)),
       );
       queryClient.invalidateQueries({ queryKey: ['projects'] });
+    },
+  });
+}
+
+export function useRetranslateFile(projectId: number) {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (fileId: number) => {
+      const { data } = await client.post<VideoFile>(`/projects/${projectId}/files/${fileId}/retranslate`);
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.setQueryData<VideoFile[]>(
+        ['projects', projectId, 'files'],
+        (files) => files?.map((file) => (file.id === data.id ? { ...file, ...data } : file)),
+      );
+      queryClient.invalidateQueries({ queryKey: ['projects'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'files'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'files', data.id, 'chunks'] });
+      queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'metrics'] });
     },
   });
 }

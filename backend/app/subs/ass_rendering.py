@@ -1,0 +1,124 @@
+from __future__ import annotations
+
+import json
+from pathlib import Path
+from typing import Iterable, Literal
+
+import pysubs2
+
+from app.db.models import Subtitle, SubtitleEvent, SubtitleStyle
+
+
+TextVariant = Literal["original", "translated"]
+
+
+def _str_to_color(value: str | None) -> pysubs2.Color:
+    """Parse a stored ``&HAABBGGRR&`` value back to a pysubs2 color."""
+    if not value:
+        return pysubs2.Color(255, 255, 255, 0)
+    hex_str = value.strip().lstrip("&H").rstrip("&").zfill(8)
+    a = int(hex_str[0:2], 16)
+    b = int(hex_str[2:4], 16)
+    g = int(hex_str[4:6], 16)
+    r = int(hex_str[6:8], 16)
+    return pysubs2.Color(r, g, b, a)
+
+
+def build_ass(
+    subtitle: Subtitle,
+    styles: Iterable[SubtitleStyle],
+    events: Iterable[SubtitleEvent],
+    *,
+    text_variant: TextVariant,
+    title: str | None = None,
+) -> pysubs2.SSAFile:
+    """Rebuild an ASS document from the normalized subtitle records.
+
+    This is shared by the output job and the download endpoints so exported
+    files cannot drift from the subtitle that is ultimately muxed.
+    """
+    subs = pysubs2.SSAFile()
+    subs.info.clear()
+
+    info_values = {
+        "ScriptType": subtitle.script_type,
+        "WrapStyle": subtitle.wrap_style,
+        "PlayResX": subtitle.play_res_x,
+        "PlayResY": subtitle.play_res_y,
+        "ScaledBorderAndShadow": subtitle.scaled_border_and_shadow,
+        "LayoutResX": subtitle.layout_res_x,
+        "LayoutResY": subtitle.layout_res_y,
+        "YCbCr Matrix": subtitle.ycbcr_matrix,
+        "Kerning": subtitle.kerning,
+    }
+    for key, value in info_values.items():
+        if value is not None:
+            subs.info[key] = str(value)
+    if subtitle.extra_script_info_json:
+        subs.info.update(json.loads(subtitle.extra_script_info_json))
+    if title is not None:
+        subs.info["Title"] = title
+
+    subs.styles.clear()
+    for style in styles:
+        use_replacement = text_variant == "translated"
+        font_name = (
+            style.replacement_font_name
+            if use_replacement and style.replacement_font_name
+            else style.font_name
+        )
+        font_size = (
+            style.replacement_font_size
+            if use_replacement and style.replacement_font_size is not None
+            else style.font_size
+        )
+        subs.styles[style.style_name] = pysubs2.SSAStyle(
+            fontname=font_name,
+            fontsize=float(font_size),
+            primarycolor=_str_to_color(style.primary_colour),
+            secondarycolor=_str_to_color(style.secondary_colour),
+            outlinecolor=_str_to_color(style.outline_colour),
+            backcolor=_str_to_color(style.back_colour),
+            bold=bool(style.bold) if style.bold is not None else False,
+            italic=bool(style.italic) if style.italic is not None else False,
+            underline=bool(style.underline) if style.underline is not None else False,
+            strikeout=bool(style.strikeout) if style.strikeout is not None else False,
+            scalex=float(style.scale_x) if style.scale_x is not None else 100.0,
+            scaley=float(style.scale_y) if style.scale_y is not None else 100.0,
+            spacing=float(style.spacing) if style.spacing is not None else 0.0,
+            angle=float(style.angle) if style.angle is not None else 0.0,
+            borderstyle=int(style.border_style) if style.border_style is not None else 1,
+            outline=float(style.outline) if style.outline is not None else 2.0,
+            shadow=float(style.shadow) if style.shadow is not None else 0.0,
+            alignment=int(style.alignment) if style.alignment is not None else 2,
+            marginl=int(style.margin_l) if style.margin_l is not None else 10,
+            marginr=int(style.margin_r) if style.margin_r is not None else 10,
+            marginv=int(style.margin_v) if style.margin_v is not None else 10,
+            encoding=int(style.encoding) if style.encoding is not None else 1,
+        )
+
+    for row in events:
+        text = row.source_text
+        if text_variant == "translated":
+            text = row.translated_text if row.translated_text is not None else row.source_text
+        event = pysubs2.SSAEvent(
+            start=row.start_ms,
+            end=row.end_ms,
+            layer=row.layer,
+            style=row.style,
+            name=row.name or "",
+            marginl=row.margin_l or 0,
+            marginr=row.margin_r or 0,
+            marginv=row.margin_v or 0,
+            effect=row.effect or "",
+            text=text,
+        )
+        event.type = row.event_type.capitalize()
+        subs.append(event)
+
+    return subs
+
+
+def save_ass(subs: pysubs2.SSAFile, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    subs.save(str(output_path), encoding="utf-8")

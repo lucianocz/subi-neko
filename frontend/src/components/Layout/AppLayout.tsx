@@ -11,6 +11,7 @@ import {
   HoverCard,
   Image,
   Loader,
+  Menu,
   Modal,
   ScrollArea,
   Stack,
@@ -24,6 +25,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import {
   ArrowClockwiseIcon,
+  ArrowCounterClockwise,
   BookOpen,
   CaretDown,
   CaretRight,
@@ -39,6 +41,8 @@ import {
   Play,
   Plus,
   Eye,
+  DownloadSimple,
+  DotsThreeVertical,
   SpinnerGap,
   Stop,
   Trash,
@@ -46,7 +50,7 @@ import {
   XCircle,
 } from '@phosphor-icons/react';
 import type { ChunkJob, FileStatus, Project, SubtitleChunk, VideoFile } from '../../types';
-import { useProjects, useProjectFiles, useFileChunks, useDeleteProject, usePauseProject, useResumeProject, useRetryChunk, useAcceptFileReview, useTranslateFile } from '../../hooks/useProjects';
+import { useProjects, useProjectFiles, useFileChunks, useDeleteProject, usePauseProject, useResumeProject, useRetryChunk, useAcceptFileReview, useTranslateFile, useRetranslateFile } from '../../hooks/useProjects';
 import { useRefreshMetadata } from '../../hooks/useCharacterMapping';
 import { OptionsDrawer } from '../../pages/OptionsDrawer';
 import { ImportDialog } from '../../pages/ImportDialog';
@@ -509,6 +513,8 @@ function FileRow({
   onEditSubtitles,
   onToggleExpanded,
   onExpand,
+  onCollapse,
+  onRetranslate,
 }: {
   file: VideoFile;
   projectId: number;
@@ -517,6 +523,8 @@ function FileRow({
   onEditSubtitles: (file: VideoFile) => void;
   onToggleExpanded: (fileId: number) => void;
   onExpand: (fileId: number) => void;
+  onCollapse: (fileId: number) => void;
+  onRetranslate: (file: VideoFile) => void;
 }) {
   const showEditButton = file.status === 'processing'
       || (file.status === 'waiting' && (file.blocking_reason === 'validation_failed' || file.blocking_reason === 'translation_failed' ))
@@ -529,6 +537,11 @@ function FileRow({
   const analysisFailed = file.status === 'waiting' && file.blocking_reason === 'analysis_failed';
   const showTranslateButton =
     (file.status === 'ready' && !file.translation_requested_at) || analysisFailed;
+  const canDownloadOriginal = [
+    'ready', 'processing', 'waiting', 'review_required', 'accepted', 'muxing', 'completed',
+  ].includes(file.status);
+  const canDownloadTranslation = ['review_required', 'accepted', 'muxing', 'completed'].includes(file.status);
+  const canRetranslate = ['review_required', 'accepted', 'completed'].includes(file.status);
 
   // `ready` covers both "never started" and "started, running pre-translation
   // gates" — render the distinction instead of the raw status.
@@ -567,7 +580,7 @@ function FileRow({
         <Table.Td>
           <FileIssuesCell file={file} />
         </Table.Td>
-        <Table.Td style={{ width: 184, textAlign: 'right', minHeight: '45px', height: '45px' }}>
+        <Table.Td style={{ width: 224, textAlign: 'right', minHeight: '45px', height: '45px' }}>
           <Group gap={6} justify="flex-end" wrap="nowrap">
             {showTranslateButton && (
               <Tooltip
@@ -618,7 +631,10 @@ function FileRow({
                   ) {
                     return;
                   }
-                  acceptReview.mutate({ fileId: file.id, resolveWarnings: file.qa_warnings > 0 });
+                  acceptReview.mutate(
+                    { fileId: file.id, resolveWarnings: file.qa_warnings > 0 },
+                    { onSuccess: () => onCollapse(file.id) },
+                  );
                 }}
               >
                 Accept
@@ -638,6 +654,44 @@ function FileRow({
                 Edit
               </Button>
             )}
+            <Menu position="bottom-end" withinPortal shadow="md">
+              <Menu.Target>
+                <ActionIcon
+                  variant="subtle"
+                  color="gray"
+                  aria-label={`More actions for ${file.filename}`}
+                  title="More actions"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <DotsThreeVertical size={17} weight="bold" />
+                </ActionIcon>
+              </Menu.Target>
+              <Menu.Dropdown onClick={(event) => event.stopPropagation()}>
+                <Menu.Item
+                  leftSection={<DownloadSimple size={15} />}
+                  disabled={!canDownloadOriginal}
+                  onClick={() => window.location.assign(`/api/projects/${projectId}/files/${file.id}/subtitles/original`)}
+                >
+                  Download original
+                </Menu.Item>
+                <Menu.Item
+                  leftSection={<DownloadSimple size={15} />}
+                  disabled={!canDownloadTranslation}
+                  onClick={() => window.location.assign(`/api/projects/${projectId}/files/${file.id}/subtitles/translated`)}
+                >
+                  Download translation
+                </Menu.Item>
+                <Menu.Divider />
+                <Menu.Item
+                  color="orange"
+                  leftSection={<ArrowCounterClockwise size={15} />}
+                  disabled={!canRetranslate}
+                  onClick={() => onRetranslate(file)}
+                >
+                  Retranslate
+                </Menu.Item>
+              </Menu.Dropdown>
+            </Menu>
           </Group>
         </Table.Td>
         <Table.Td style={{ width: 28, textAlign: 'center' }}>
@@ -793,6 +847,7 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   const pauseMutation = usePauseProject();
   const resumeMutation = useResumeProject();
   const refreshMetadata = useRefreshMetadata();
+  const retranslateMutation = useRetranslateFile(project.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [watchedWordsOpen, setWatchedWordsOpen] = useState(false);
   const [styleGuideOpen, setStyleGuideOpen] = useState(false);
@@ -800,6 +855,7 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   const [reviewQueueOpen, setReviewQueueOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [subtitleEditorFile, setSubtitleEditorFile] = useState<VideoFile | null>(null);
+  const [retranslateFile, setRetranslateFile] = useState<VideoFile | null>(null);
   const [expandedFileIds, setExpandedFileIds] = useState<Set<number>>(() => new Set());
 
   const isTerminal = project.status === 'completed' || project.status === 'failed';
@@ -820,6 +876,15 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
 
   function handleExpandFile(fileId: number) {
     setExpandedFileIds((prev) => (prev.has(fileId) ? prev : new Set(prev).add(fileId)));
+  }
+
+  function handleCollapseFile(fileId: number) {
+    setExpandedFileIds((prev) => {
+      if (!prev.has(fileId)) return prev;
+      const next = new Set(prev);
+      next.delete(fileId);
+      return next;
+    });
   }
 
   function handleToggleAllFilesExpanded() {
@@ -860,6 +925,46 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
           </Button>
           <Button color="red" loading={deleteMutation.isPending} onClick={handleDelete}>
             Remove
+          </Button>
+        </Group>
+      </Modal>
+
+      <Modal
+        opened={retranslateFile !== null}
+        onClose={() => setRetranslateFile(null)}
+        title="Retranslate file"
+        size="sm"
+      >
+        <Text size="sm" mb="sm">
+          Retranslate <strong>{retranslateFile?.filename}</strong> from the beginning?
+        </Text>
+        <Text size="sm" c="dimmed" mb="lg">
+          All translated text and review issues for this file will be cleared. Existing usage and cost
+          metrics are retained, so the new translation adds to the total price.
+        </Text>
+        <Group justify="flex-end" gap="sm">
+          <Button variant="default" onClick={() => setRetranslateFile(null)}>
+            Cancel
+          </Button>
+          <Button
+            color="orange"
+            loading={retranslateMutation.isPending}
+            onClick={async () => {
+              if (!retranslateFile) return;
+              const fileId = retranslateFile.id;
+              try {
+                await retranslateMutation.mutateAsync(fileId);
+                handleCollapseFile(fileId);
+                setRetranslateFile(null);
+              } catch {
+                notifications.show({
+                  color: 'red',
+                  message: 'Could not restart translation for this file.',
+                });
+              }
+            }}
+          >
+            Retranslate
           </Button>
         </Group>
       </Modal>
@@ -1036,16 +1141,16 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
         ) : files.length === 0 ? (
           <Text size="sm" c="dimmed">No files discovered yet.</Text>
         ) : (
-          <Table striped highlightOnHover>
+          <Table striped highlightOnHover style={{ minWidth: 1150, tableLayout: 'fixed' }}>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Filename</Table.Th>
-                <Table.Th style={{ width: 140 }}>Chunks</Table.Th>
+                <Table.Th style={{ width: 100 }}>Chunks</Table.Th>
                 <Table.Th style={{ width: 150 }}>Status</Table.Th>
                 <Table.Th style={{ width: 100 }}>Format</Table.Th>
                 <Table.Th style={{ width: 160 }}>Updated</Table.Th>
                 <Table.Th style={{ width: 80 }}>Issues</Table.Th>
-                <Table.Th style={{ width: 184 }} />
+                <Table.Th style={{ width: 224 }} />
                 <Table.Th style={{ width: 28, textAlign: 'center' }}>
                   <ActionIcon
                     size="xs"
@@ -1071,6 +1176,8 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
                   onEditSubtitles={setSubtitleEditorFile}
                   onToggleExpanded={handleToggleFileExpanded}
                   onExpand={handleExpandFile}
+                  onCollapse={handleCollapseFile}
+                  onRetranslate={setRetranslateFile}
                 />
               ))}
             </Table.Tbody>

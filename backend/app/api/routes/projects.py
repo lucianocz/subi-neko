@@ -2,14 +2,17 @@ import asyncio
 import json
 import logging
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
+from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import case, func, select
+from sqlalchemy import case, delete, func, select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import AsyncSessionLocal
+from app.db import options as options_store
 from app.db.models import (
     File,
     FileBlockingReason,
@@ -28,7 +31,9 @@ from app.db.models import (
     ProjectStatus,
     QaItem,
     SubtitleChunk,
+    Subtitle,
     SubtitleEvent,
+    SubtitleStyle,
     TranslationMemoryEntry,
     WatchedWordType,
 )
@@ -40,6 +45,7 @@ from app.orchestrator.project_orchestrator import (
     orchestrate_project,
     pick_style_bible_sample_file_id,
 )
+from app.subs.ass_rendering import build_ass
 from app.ws.connection_manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -417,6 +423,188 @@ async def translate_file(project_id: int, file_id: int):
             file_id=file_id,
             dedupe_key=f"analyze_script:{file_id}",
         )
+
+    await _broadcast_project_updated(project_id)
+    await orchestrate_file(file_id, job_manager.enqueue)
+    return out
+
+
+_ORIGINAL_DOWNLOAD_STATUSES = {
+    FileStatus.READY.value,
+    FileStatus.PROCESSING.value,
+    FileStatus.WAITING.value,
+    FileStatus.REVIEW_REQUIRED.value,
+    FileStatus.ACCEPTED.value,
+    FileStatus.MUXING.value,
+    FileStatus.COMPLETED.value,
+}
+_TRANSLATION_DOWNLOAD_STATUSES = {
+    FileStatus.REVIEW_REQUIRED.value,
+    FileStatus.ACCEPTED.value,
+    FileStatus.MUXING.value,
+    FileStatus.COMPLETED.value,
+}
+_RETRANSLATABLE_STATUSES = {
+    FileStatus.REVIEW_REQUIRED.value,
+    FileStatus.ACCEPTED.value,
+    FileStatus.COMPLETED.value,
+}
+
+
+@router.get("/{project_id}/files/{file_id}/subtitles/{variant}")
+async def download_file_subtitles(
+    project_id: int,
+    file_id: int,
+    variant: Literal["original", "translated"],
+):
+    """Download the extracted source or the reviewed translation as ASS."""
+    async with AsyncSessionLocal() as session:
+        file = await session.get(File, file_id)
+        if file is None or file.project_id != project_id:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        allowed_statuses = (
+            _ORIGINAL_DOWNLOAD_STATUSES
+            if variant == "original"
+            else _TRANSLATION_DOWNLOAD_STATUSES
+        )
+        if file.status not in allowed_statuses:
+            availability = "awaiting translation" if variant == "original" else "review required"
+            raise HTTPException(
+                status_code=409,
+                detail=f"{variant.capitalize()} subtitles are available from '{availability}' onwards",
+            )
+
+        subtitle = await session.scalar(select(Subtitle).where(Subtitle.file_id == file_id))
+        if subtitle is None:
+            raise HTTPException(status_code=409, detail="Subtitles have not been extracted yet")
+        styles = list((await session.scalars(
+            select(SubtitleStyle).where(SubtitleStyle.file_id == file_id)
+        )).all())
+        events = list((await session.scalars(
+            select(SubtitleEvent)
+            .where(SubtitleEvent.file_id == file_id)
+            .order_by(SubtitleEvent.line_index)
+        )).all())
+
+        title = None
+        if variant == "translated":
+            title = (await options_store.asnapshot()).target_lang_name or ""
+        subs = build_ass(
+            subtitle,
+            styles,
+            events,
+            text_variant=variant,
+            title=title,
+        )
+
+    suffix = "original" if variant == "original" else "translated"
+    download_name = f"{Path(file.filename).stem}.{suffix}.ass"
+    encoded_name = quote(download_name)
+    return Response(
+        content=subs.to_string("ass").encode("utf-8"),
+        media_type="text/x-ssa",
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"subtitles.{suffix}.ass\"; "
+                f"filename*=UTF-8''{encoded_name}"
+            ),
+        },
+    )
+
+
+@router.post("/{project_id}/files/{file_id}/retranslate", response_model=FileOut)
+async def retranslate_file(project_id: int, file_id: int):
+    """Clear a finished translation and restart its complete chunk pipeline.
+
+    LLM call rows are intentionally retained, so cost/token metrics remain
+    cumulative across translation attempts. The quality snapshot is removed
+    and recomputed after the new output completes from all retained calls.
+    """
+    now = datetime.utcnow().isoformat()
+    async with AsyncSessionLocal() as session:
+        file = await session.get(File, file_id)
+        if file is None or file.project_id != project_id:
+            raise HTTPException(status_code=404, detail="File not found")
+        if file.status not in _RETRANSLATABLE_STATUSES:
+            raise HTTPException(
+                status_code=409,
+                detail=f"File cannot be retranslated from status '{file.status}'",
+            )
+
+        events = list((await session.scalars(
+            select(SubtitleEvent).where(SubtitleEvent.file_id == file_id)
+        )).all())
+        chunks = list((await session.scalars(
+            select(SubtitleChunk).where(SubtitleChunk.file_id == file_id)
+        )).all())
+        if not chunks:
+            raise HTTPException(status_code=409, detail="File has no translation chunks")
+
+        for event in events:
+            event.translated_text = None
+            event.original_ai_translated_text = None
+            event.translation_status = "skipped" if event.content_type == "other" else "pending"
+            event.translation_confidence = None
+            event.is_user_edited = 0
+            event.is_locked = 0
+            event.is_approved = 0
+            event.updated_at = now
+
+        for chunk in chunks:
+            chunk.status = "pending"
+            chunk.model = None
+            chunk.llm_review_needed = 0
+            chunk.retry_count = 0
+            chunk.repair_attempt_count = 0
+            chunk.polish_attempt_count = 0
+            chunk.prompt_version = None
+            chunk.last_error_code = None
+            chunk.last_error_message = None
+            chunk.failed_job_type = None
+            chunk.updated_at = now
+
+        await session.execute(delete(QaItem).where(QaItem.file_id == file_id))
+        await session.execute(delete(FileQualityMetric).where(FileQualityMetric.file_id == file_id))
+        await session.execute(
+            delete(TranslationMemoryEntry).where(
+                TranslationMemoryEntry.project_id == project_id,
+                TranslationMemoryEntry.src_file_id == file_id,
+            )
+        )
+
+        # These jobs describe artifacts/snapshots invalidated by the reset.
+        # Marking them cancelled lets the manager reuse their canonical keys.
+        invalidated_keys = {
+            f"render_output_ass:{file_id}",
+            f"mux_output_mkv:{file_id}",
+            f"compute_file_metrics:{file_id}",
+        }
+        records = list((await session.scalars(
+            select(JobRecord).where(JobRecord.dedupe_key.in_(invalidated_keys))
+        )).all())
+        for record in records:
+            record.status = JobStatus.CANCELLED.value
+            record.finished_at = now
+            record.updated_at = now
+
+        file.status = FileStatus.READY.value
+        file.translation_requested_at = now
+        file.blocking_reason = None
+        file.retry_count = 0
+        file.last_error_code = None
+        file.last_error_message = None
+        file.completed_at = None
+        file.updated_at = now
+
+        project = await session.get(Project, project_id)
+        if project is not None:
+            project.status = ProjectStatus.PROCESSING.value
+            project.updated_at = now
+
+        await session.commit()
+        await session.refresh(file)
+        out = FileOut.model_validate(file)
 
     await _broadcast_project_updated(project_id)
     await orchestrate_file(file_id, job_manager.enqueue)

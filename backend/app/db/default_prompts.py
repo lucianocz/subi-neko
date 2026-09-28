@@ -38,7 +38,10 @@ Translation rules
 - Translate ONLY [TARGET] lines. [CONTEXT] and [AHEAD] lines are reference material and must never appear in the output.
 - Produce exactly one translation entry per [TARGET] line, in the same order as the input.
 - Do not merge, split, skip, or add lines.
+- Subtitle events are timing units, not necessarily complete sentences. A single sentence or thought may span multiple consecutive [TARGET] entries. Read adjacent [CONTEXT], [TARGET], and [AHEAD] lines together to understand the complete utterance before translating its individual parts. Preserve the existing event boundaries and return exactly one translation per [TARGET] entry, but ensure that consecutive translations form a grammatically complete, natural, and semantically faithful {TARGET_LANG_NAME} sentence when read together. Never translate a sentence fragment in isolation when it clearly continues into another event.
+- When distributing a sentence across multiple subtitle events, preserve all essential grammatical and semantic elements, especially negation, governing verbs, reflexive particles, subjects, complements, and temporal or conditional relationships. Do not assume that information omitted from one event will be supplied by another unless it is explicitly present in the resulting translations.
 - Translate the intended meaning, not the English sentence structure. Prefer natural, idiomatic {TARGET_LANG_NAME} phrasing over preserving English word order, syntax, or idioms literally.
+- Preserve the complete meaning of the source, including subtle distinctions between related concepts (e.g. concern vs. interest, instinct vs. passion), grammatical aspect, temporal relationships, possession, negation, and modality. Natural paraphrasing is encouraged, but it must not silently replace one concept with another or omit information necessary to understand the intended message.
 - Preserve leading and trailing spaces exactly.
 - Keep Japanese honorifics as-is: san, kun, chan, sama, senpai, sensei, dono, etc.
 - Apply correct {TARGET_LANG_NAME} vocative case when a character is directly addressed by name.
@@ -48,9 +51,12 @@ Translation rules
 - Adapt register to social context. Use colloquial {TARGET_LANG_NAME} only in casual peer-to-peer speech. When the speaker or listener holds clear authority, use appropriately respectful, composed {TARGET_LANG_NAME}.
 - Match the emotional tone and intensity of each line.
 - For exclamations and onomatopoeia, find natural {TARGET_LANG_NAME} equivalents rather than translating word-for-word.
-- Keep subtitle text compact; do not expand significantly beyond the original length.
-- When a line carries a character budget ("max <n> chars"), keep the translation within it — that is how much text fits on screen for the time the line is shown. Condense by cutting filler, redundant pronouns and padding, never by dropping content. The budget counts visible characters; formatting markers do not count.
+- Keep subtitles reasonably concise, but prioritize natural, idiomatic {TARGET_LANG_NAME} sentence construction over matching the English length. Do not shorten a sentence by removing words or structures necessary for fluent, natural expression.
+- When a line carries a character budget ("max <n> chars"), treat it as a soft target rather than an absolute limit. Try to stay within the budget by choosing concise, natural phrasing, but allow a moderate overrun when necessary to preserve grammatical completeness, idiomatic expression, meaning, or conversational flow. Never produce awkward or unnatural {TARGET_LANG_NAME} solely to satisfy the character budget. Formatting markers do not count toward the visible character length.
 - For every line also report "c": your confidence (0.0–1.0) that the translation is correct in context. Use a low value when the line is ambiguous, references something you cannot see, or depends on unknown speaker identity. Use null only if you cannot judge at all.
+
+Final self-check:
+Before returning the translations, read the complete translated dialogue in order, joining consecutive subtitle events mentally wherever they form a single utterance. Verify that no essential words, grammatical relationships, negations, or meaning have been lost across event boundaries. Check that the resulting {TARGET_LANG_NAME} dialogue sounds natural when read aloud, without relying on the English source to make sense of its phrasing. Keep all original event boundaries unchanged.
 
 Output
 Return only a JSON object matching this schema, with no other text:
@@ -110,6 +116,8 @@ Input format
   [AHEAD] <line_index>: <english>   — English lines that come AFTER this batch, not yet translated; read them so an edit to the last lines fits what follows, but do NOT edit or return them
 Some lines carry an extra "fix:" note naming a specific problem found by automated checks — those problems MUST be addressed.
 
+Important: subtitle events are timing units, not sentence boundaries. Consecutive [LINE] entries may contain fragments of a single sentence. Always evaluate such entries together as one complete utterance before editing them individually. Preserve their original indices, order, and event boundaries. Never merge events, move text into unrelated events, or alter subtitle timing. A correction may affect multiple consecutive entries when necessary to preserve the grammatical structure and meaning of the complete sentence. When editing a sentence spanning multiple subtitle events, return a separate edit for every affected [LINE] entry. Each edit must contain only the text belonging to that specific event. Do not concatenate multiple events into a single edit or shift dialogue between unrelated events.
+
 Formatting markers
   ⟦1⟧, ⟦2⟧, …  — inline formatting markers; keep every marker exactly once, around the same word or phrase.
   ⏎ — line break. ␤ — soft line break. Keep the same count of each; you may move them to better break points. ␣ — hard space: keep them where they separate words, but you may adjust how many appear in an alignment run to fit the edited text.
@@ -118,16 +126,25 @@ Editing checklist — fix every occurrence of:
 1. Calques: word-for-word structures carried over from English that no native speaker would write. Pay special attention to English negative questions and polite requests; do not mechanically preserve their negation when {TARGET_LANG_NAME} would naturally express the request positively or with a different construction.
 2. Unnatural word order: reorder to what a native speaker would actually say, respecting information structure and emphasis. Restructure the sentence freely when necessary; do not limit edits to replacing individual words or reordering the draft.
 3. Grammar and morphology: fix malformed verb forms, incorrect inflection, case government, agreement, and other grammatical or syntactic errors.
-4. Grammatical gender agreement: past-tense verbs, adjectives and participles must agree with the speaker's stated gender; forms addressing another character must agree with the addressee.
+4. Grammatical gender and addressee agreement: distinguish carefully between the speaker and the addressee. First-person past-tense forms, adjectives, and participles must agree with the speaker's gender; second-person forms must agree with the person being addressed, NOT the speaker. Infer the addressee from the dialogue context, especially in conversations between male and female characters. Also check gendered insults, nouns of address, and vocative forms. Avoid masculine-coded insults for female addressees when a natural, contextually equivalent feminine or gender-neutral expression exists. If the addressee cannot be determined confidently, report an issue rather than guessing.
 5. Formality consistency (T–V distinction): each pair of characters keeps a consistent level of address; do not let a line drift between informal and formal mid-conversation.
 6. Vocative case: names in direct address must be in the vocative where {TARGET_LANG_NAME} requires it.
 7. Register and character voice: rough characters speak roughly, formal characters formally, children like children. Keep Japanese honorifics as-is.
 8. Idioms: replace literally-translated English idioms and set phrases with natural {TARGET_LANG_NAME} equivalents.
-9. Length: when a line has a character budget and exceeds it, condense without losing meaning — cut filler, not content.
+9. Length: treat the character budget as a soft target, not an absolute constraint. Aim for concise, natural subtitle phrasing, but prioritize grammatical completeness, idiomatic expression, meaning, and conversational flow over strict length compliance. Allow a moderate overrun when necessary. Never omit words required for natural {TARGET_LANG_NAME} sentence construction, force unnatural syntax, or sacrifice fluency solely to meet the character budget. Prefer a slightly longer natural sentence over a shorter awkward one.
 10. Flattened emotion: restore the intensity of the source; do not soften exclamations, threats, or strong language. Preserve not only intensity but also the pragmatic intent: sarcasm, teasing, hesitation, embarrassment, contempt, politeness, etc.
 11. Translationese: grammatical correctness is not enough. Rewrite sentences that a native speaker would understand but would be unlikely to phrase that way spontaneously. Check especially unnatural collocations, verb/preposition choices, unnecessary pronouns, overly abstract phrasing, and English-style sentence structure.
+12. Subtle native-language issues: actively detect small but noticeable imperfections in otherwise fluent translations. Check unnatural preposition and case combinations, missing words in comparative or other multi-part constructions, incomplete reflexive constructions, awkward collocations, and grammatically valid but pragmatically unnatural word order. Pay attention to unintended emphasis caused by fronting a word or phrase. Do not consider a sentence fully polished merely because it is understandable and grammatically acceptable.
+13. Semantic precision: compare the complete {TARGET_LANG_NAME} utterance against the English source, paying particular attention to negation, modality, possession, grammatical aspect, temporal relationships, and subtle distinctions between related but non-equivalent concepts. Do not replace the original meaning with a plausible approximation merely because it produces fluent {TARGET_LANG_NAME}.
+14. Cross-event coherence: when a sentence spans multiple subtitle events, verify that the combined {TARGET_LANG_NAME} text forms a complete, natural, and semantically faithful utterance. Detect missing governing verbs, negation, reflexive particles, complements, and other grammatical elements that may have been lost when distributing the translation across events. Correct the affected entries while preserving their original boundaries.
 
-Before accepting a line unchanged, mentally ignore the English source and read only the {TARGET_LANG_NAME} line in context. If it sounds translated, stiff, unusual, or less idiomatic than an obvious native alternative, edit it.
+Do not dismiss these issues merely because the sentence is understandable or grammatically acceptable. Evaluate whether the phrasing is natural for the intended emphasis and conversational context.
+
+Before accepting a line unchanged, perform two checks:
+1. Native-language check: read the {TARGET_LANG_NAME} translation in context, temporarily disregarding the English wording. Evaluate complete utterances rather than isolated subtitle events. Check whether a native speaker would naturally use the same construction, word order, collocations, and grammatical relationships in this situation.
+2. Meaning check: compare the complete {TARGET_LANG_NAME} utterance against the corresponding English source. Verify that no essential information, negation, temporal relationship, grammatical element, or intended nuance has been lost or unintentionally changed.
+
+A line should remain unchanged only when both checks pass. Do not rewrite acceptable sentences merely because alternative wording exists.
 
 If a draft is grammatical but its meaning seems implausible, contextually incoherent, or based on a suspiciously literal interpretation of the English, re-evaluate the source in context. If the intended meaning is clear, correct it; otherwise report it as an issue instead of guessing.
 
@@ -137,12 +154,20 @@ Do NOT:
 - normalize away intentional quirks (stutters, catchphrases, verbal tics, dialect)
 - touch [CONTEXT] or [AHEAD] lines
 
-If a line has a problem you cannot fix confidently (ambiguous speaker, unclear referent, missing context), report it as an issue instead of guessing.
+If a line contains a suspected linguistic or semantic problem that cannot be corrected confidently, preserve the existing translation and report it as an issue instead of guessing.
+
+Report actionable linguistic imperfections that remain in the final translation, even when the sentence is grammatically acceptable and its intended meaning is understandable. Pay particular attention to contextually unnatural phrasing, ambiguous word order or emphasis, uncertain semantic distinctions, and incomplete constructions spanning multiple subtitle events.
+
+When you can confidently correct a problem, return it as an edit rather than an issue. When the correction is uncertain, context-dependent, or has multiple plausible interpretations, leave the original translation unchanged and report an issue with a concise explanation and, where possible, a suggested alternative.
+
+When an issue affects a sentence spanning multiple subtitle events, identify the affected line and explain the problem in the context of the complete utterance.
+
+Do not flag harmless stylistic variation or report issues merely because an alternative translation exists. Focus on formulations that a professional native-language subtitle editor would reasonably question.
 
 Output
 Return only a JSON object matching this schema, with no other text:
 {"edits": [{"i": <line_index>, "t": "<improved translation>", "reason": "<calque|word_order|gender_agreement|formality|vocative|register|idiom|length|emotion|other>"}],
- "issues": [{"i": <line_index>, "severity": "<warning|info>", "category": "<ambiguity|meaning|context|other>", "comment": "<at most two sentences>"}]}
+ "issues": [{"i": <line_index>, "severity": "<warning|info>", "category": "<ambiguity|meaning|context|grammar|naturalness|word_order|cross_event|other>", "comment": "<at most two sentences>"}]}
 Return {"edits": [], "issues": []} when nothing needs changing."""
 
 # System prompt for on-screen text (signs, typesetting) (option SIGN_TRANSLATION_PROMPT).
