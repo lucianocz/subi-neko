@@ -22,6 +22,7 @@ from app.jobs.handlers.prompt_context import (
     load_style_context,
     load_unmapped_gendered_speakers,
 )
+from app.jobs.handlers.utils import allows_ai_edit
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import RepairResponse
@@ -99,11 +100,6 @@ def repair_chunk(
     model: str = payload.get("model") or ctx.options.openai_model_better or ctx.options.openai_model_cheap
     now = datetime.utcnow().isoformat()
 
-    if not ctx.options.openai_api_key and not ctx.options.openai_api_base:
-        return JobResult(status="failed", result=None,
-                         error_code="OPENAI_API_KEY_MISSING",
-                         error_message="OPENAI_API_KEY option is not configured")
-
     progress(0.05, "Loading chunk definition")
 
     with SyncSessionLocal() as session:
@@ -155,13 +151,32 @@ def repair_chunk(
                 "source_text": e.source_text,
                 "translated_text": e.translated_text,
                 "translation_status": e.translation_status,
+                "is_user_edited": e.is_user_edited,
+                "is_locked": e.is_locked,
             }
             for e in all_events
         ]
 
-        rejected_data = [e for e in all_events_data if e["translation_status"] == "rejected"]
+        rejected_data = [
+            e for e in all_events_data
+            if e["translation_status"] == "rejected"
+            and allows_ai_edit(e["is_user_edited"], e["is_locked"])
+        ]
 
         if not rejected_data:
+            for event in all_events:
+                if event.translation_status == "rejected" and not allows_ai_edit(
+                    event.is_user_edited, event.is_locked
+                ):
+                    event.translation_status = "validated"
+                    event.updated_at = now
+            chunk.status = "translated"
+            chunk.repair_attempt_count = (chunk.repair_attempt_count or 0) + 1
+            chunk.last_error_code = None
+            chunk.last_error_message = None
+            chunk.failed_job_type = None
+            chunk.updated_at = now
+            session.commit()
             return JobResult(status="succeeded", result={"repaired_events": 0},
                              error_code=None, error_message=None)
 
@@ -179,6 +194,11 @@ def repair_chunk(
 
         char_snapshot = list(characters)
         speaker_snapshot = list(unmapped_speakers)
+
+    if not ctx.options.openai_api_key and not ctx.options.openai_api_base:
+        return JobResult(status="failed", result=None,
+                         error_code="OPENAI_API_KEY_MISSING",
+                         error_message="OPENAI_API_KEY option is not configured")
 
     progress(0.2, f"Building repair prompt for {len(rejected_data)} rejected event(s)")
 
@@ -258,7 +278,7 @@ def repair_chunk(
                                line_index, chunk_index, file_id)
                 continue
             event = session.get(SubtitleEvent, event_id)
-            if event is None:
+            if event is None or not allows_ai_edit(event.is_user_edited, event.is_locked):
                 continue
             event.translated_text = text
             if event.original_ai_translated_text is None:

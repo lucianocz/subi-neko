@@ -13,6 +13,7 @@ from app.core.database import SyncSessionLocal
 from app.db.models import File, QaItem, SubtitleChunk, SubtitleEvent
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.translate_chunk import FRAGMENT_QA_TYPE
+from app.jobs.handlers.utils import allows_ai_edit
 from app.jobs.registry import register_job_handler
 from app.subs.tag_masking import plain_text
 
@@ -344,6 +345,7 @@ def validate_chunk(
                 "line_index": e.line_index,
                 "source_text": e.source_text,
                 "translated_text": e.translated_text,
+                "is_user_edited": e.is_user_edited,
                 "is_locked": e.is_locked,
             }
             for e in target_events
@@ -376,7 +378,8 @@ def validate_chunk(
             event_errors.extend(check_fn(proxy))  # type: ignore[arg-type]
 
         if event_errors:
-            if any(_is_blocking(qa_type) for qa_type, _, _ in event_errors):
+            if (allows_ai_edit(snap["is_user_edited"], snap["is_locked"])
+                    and any(_is_blocking(qa_type) for qa_type, _, _ in event_errors)):
                 failed_event_ids.add(snap["id"])
             for qa_type, message, details in event_errors:
                 collected_errors.append(dict(
@@ -412,12 +415,21 @@ def validate_chunk(
                 )
             )
 
-        # Update translation_status on each target event
+        # Recheck protection flags in the current transaction. A user can
+        # protect a row while validation is running; such a row may retain a
+        # QA finding, but must never be routed into automatic Repair.
+        active_failed_event_ids: set[int] = set()
         for snap in events_snapshot:
             event = session.get(SubtitleEvent, snap["id"])
             if event is None:
                 continue
-            event.translation_status = "rejected" if snap["id"] in failed_event_ids else "validated"
+            failed = (
+                snap["id"] in failed_event_ids
+                and allows_ai_edit(event.is_user_edited, event.is_locked)
+            )
+            if failed:
+                active_failed_event_ids.add(snap["id"])
+            event.translation_status = "rejected" if failed else "validated"
             event.updated_at = now
 
         # Insert new qa_items
@@ -431,7 +443,7 @@ def validate_chunk(
             .where(SubtitleChunk.chunk_index == chunk_index)
         )
         if chunk is not None:
-            if has_errors:
+            if active_failed_event_ids:
                 # First repair attempt: allow repair; further failures stop here.
                 if chunk.repair_attempt_count == 0:
                     chunk.status = "validate_trans_failed"
@@ -442,6 +454,8 @@ def validate_chunk(
             chunk.updated_at = now
 
         session.commit()
+
+    has_errors = bool(active_failed_event_ids)
 
     progress(1.0, "Done")
     return JobResult(

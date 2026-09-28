@@ -1,5 +1,10 @@
 import re
 
+
+def allows_ai_edit(is_user_edited: object, is_locked: object) -> bool:
+    """Return whether an event may be modified by an AI pipeline stage."""
+    return not bool(is_user_edited or is_locked)
+
 _VALID_AFTER_BACKSLASH = frozenset('"\\\\/bfnrtu')
 
 # Matches a trailing comma before a closing bracket or brace (with optional whitespace)

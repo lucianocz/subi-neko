@@ -42,6 +42,7 @@ from app.jobs.handlers.prompt_context import (
     load_unmapped_gendered_speakers,
 )
 from app.jobs.handlers.review_chunk_final import FINAL_REVIEW_QA_TYPES
+from app.jobs.handlers.utils import allows_ai_edit
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import PolishResponse
@@ -184,7 +185,7 @@ def polish_chunk(
 
     editable = [
         e for e in tgt_snapshot
-        if e["translated_text"] and not e["is_user_edited"] and not e["is_locked"]
+        if e["translated_text"] and allows_ai_edit(e["is_user_edited"], e["is_locked"])
     ]
     if targeted:
         editable = [e for e in editable if e["line_index"] in fix_notes]
@@ -373,11 +374,11 @@ def polish_chunk(
     with SyncSessionLocal() as session:
         # A fresh polish pass supersedes the previous pass's issue notes —
         # without this they accumulate once per attempt.
-        target_ids = [e["id"] for e in tgt_snapshot]
-        if target_ids:
+        processed_ids = [e["id"] for e in all_editable_by_line.values()]
+        if processed_ids:
             session.execute(
                 delete(QaItem).where(
-                    QaItem.subtitle_event_id.in_(target_ids),
+                    QaItem.subtitle_event_id.in_(processed_ids),
                     QaItem.qa_type.like("polish_%"),
                     QaItem.qa_type != "polish_edit",
                     QaItem.is_resolved == 0,
@@ -387,7 +388,7 @@ def polish_chunk(
         for line_index, (final_text, reason) in edit_map.items():
             e = all_editable_by_line[line_index]
             event = session.get(SubtitleEvent, e["id"])
-            if event is None or event.is_user_edited or event.is_locked:
+            if event is None or not allows_ai_edit(event.is_user_edited, event.is_locked):
                 continue
             previous = event.translated_text
             event.translated_text = final_text

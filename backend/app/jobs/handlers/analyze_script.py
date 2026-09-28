@@ -149,7 +149,10 @@ def analyze_script(
             model=model,
             created_at=now,
         ))
-        new_pairs = upsert_address_pairs(session, project_id, response.address_pairs, "llm", now)
+        new_pairs = upsert_address_pairs(
+            session, project_id, response.address_pairs, "llm", now,
+            update_existing_mode=False,
+        )
         new_terms = insert_new_glossary_terms(session, project_id, response.suggested_terms, "llm", now)
         session.commit()
 

@@ -33,6 +33,7 @@ from app.jobs.handlers.prompt_context import (
     load_style_context,
     load_unmapped_gendered_speakers,
 )
+from app.jobs.handlers.utils import allows_ai_edit
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import TranslateResponse
@@ -252,7 +253,9 @@ def translate_chunk(
                 "line_index": e.line_index,
                 "name": e.name,
                 "source_text": e.source_text,
+                "translated_text": e.translated_text,
                 "is_user_edited": e.is_user_edited,
+                "is_locked": e.is_locked,
                 "start_ms": e.start_ms,
                 "end_ms": e.end_ms,
             }
@@ -263,7 +266,10 @@ def translate_chunk(
         # near-match suggestions for the lines the exact lookup missed.
         tm_matches: dict[int, tm.TmMatch] = {}
         if project_id:
-            source_by_line = {e["line_index"]: e["source_text"] for e in tgt_snapshot}
+            source_by_line = {
+                e["line_index"]: e["source_text"] for e in tgt_snapshot
+                if allows_ai_edit(e["is_user_edited"], e["is_locked"])
+            }
             tm_matches = tm.lookup(session, project_id, source_by_line)
             fuzzy_candidates = {
                 li: text for li, text in source_by_line.items() if li not in tm_matches
@@ -289,7 +295,11 @@ def translate_chunk(
         else:
             tm_suggest[line_index] = match
 
-    llm_targets = [e for e in tgt_snapshot if e["line_index"] not in tm_applied]
+    llm_targets = [
+        e for e in tgt_snapshot
+        if allows_ai_edit(e["is_user_edited"], e["is_locked"])
+        and e["line_index"] not in tm_applied
+    ]
 
     # Lines with no translatable text (empty or markup-only) are copied
     # through verbatim — there is nothing to translate and the model can
@@ -305,7 +315,11 @@ def translate_chunk(
     # once per word to the reviewer.
     fragment_qa: list[dict] = []
     if content_type == "sign":
-        fragment_lines, fragment_anchors = _detect_sign_fragments(tgt_snapshot)
+        editable_snapshot = [
+            e for e in tgt_snapshot
+            if allows_ai_edit(e["is_user_edited"], e["is_locked"])
+        ]
+        fragment_lines, fragment_anchors = _detect_sign_fragments(editable_snapshot)
         if fragment_lines:
             for e in tgt_snapshot:
                 if e["line_index"] in fragment_lines:
@@ -394,13 +408,26 @@ def translate_chunk(
             }
             for e in tgt_snapshot if e["line_index"] in tm_applied
         ]
+        protected_context = [
+            {
+                "line_index": e["line_index"],
+                "name": e["name"],
+                "source_text": e["source_text"],
+                "translated_text": e["translated_text"],
+            }
+            for e in tgt_snapshot
+            if not allows_ai_edit(e["is_user_edited"], e["is_locked"])
+        ]
         in_chunk_lines: list[str] = []
         applied_by_line = {c["line_index"]: c for c in applied_context}
+        protected_by_line = {c["line_index"]: c for c in protected_context}
         target_by_line_order = {e["line_index"]: e for e in llm_targets}
         for e in tgt_snapshot:
             li = e["line_index"]
             if li in applied_by_line:
                 in_chunk_lines += _build_context_lines([applied_by_line[li]], identities)
+            elif li in protected_by_line:
+                in_chunk_lines += _build_context_lines([protected_by_line[li]], identities)
             elif li in target_by_line_order:
                 in_chunk_lines += _build_target_lines(
                     [target_by_line_order[li]], masked, identities, with_identity,
@@ -564,9 +591,9 @@ def translate_chunk(
     with SyncSessionLocal() as session:
         for e in tgt_snapshot:
             line_index = e["line_index"]
-            if e["is_user_edited"]:
-                # Never clobber a human edit — retranslation (stale chunks,
-                # mapping corrections) flows around user-touched lines.
+            if not allows_ai_edit(e["is_user_edited"], e["is_locked"]):
+                # Retranslation (stale chunks, mapping corrections) flows
+                # around user-touched and explicitly locked lines.
                 continue
             tm_match = tm_applied.get(line_index)
             text = tm_match.target_text if tm_match is not None else translation_map.get(line_index)
@@ -575,7 +602,7 @@ def translate_chunk(
                                line_index, chunk_index, file_id)
                 continue
             event = session.get(SubtitleEvent, e["id"])
-            if event is None or event.is_user_edited:
+            if event is None or not allows_ai_edit(event.is_user_edited, event.is_locked):
                 continue
             event.translated_text = text
             if event.original_ai_translated_text is None:
