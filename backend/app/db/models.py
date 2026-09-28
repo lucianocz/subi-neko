@@ -493,8 +493,11 @@ class ProjectCharacterStyle(Base):
 
 
 class ProjectAddressPair(Base):
-    """How one character addresses another (tykání/vykání) — keyed by raw
-    speaker names as they appear in subtitle events."""
+    """How one character addresses another (tykání/vykání).
+
+    New generated rows use canonical character names when speaker mappings
+    exist; legacy/raw labels remain supported and are resolved on access.
+    """
     __tablename__ = "project_address_pairs"
     __table_args__ = (
         UniqueConstraint("project_id", "speaker_name", "addressee_name",

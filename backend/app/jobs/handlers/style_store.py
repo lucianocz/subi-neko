@@ -18,6 +18,7 @@ from app.db.models import (
     ProjectCharacter,
     ProjectCharacterStyle,
     ProjectGlossaryTerm,
+    ProjectSpeaker,
 )
 from app.llm.schemas import AddressPairOut, CharacterVoiceOut, GlossaryTermOut
 
@@ -25,6 +26,84 @@ logger = logging.getLogger(__name__)
 
 _VALID_CATEGORIES = {"name", "place", "technique", "item", "honorific", "catchphrase", "other"}
 _VALID_MODES = {"tykani", "vykani", "mixed"}
+
+
+class AddressIdentityResolver:
+    """Resolve address-pair names through the project's established speaker
+    mappings. Unknown labels deliberately remain distinct fallback identities;
+    no fuzzy or alias matching is performed here."""
+
+    def __init__(self, session: Session, project_id: int):
+        characters = list(session.scalars(
+            select(ProjectCharacter).where(ProjectCharacter.project_id == project_id)
+        ).all())
+        self._characters = {
+            character.name.casefold(): character.name
+            for character in characters
+            if character.name and character.name.strip()
+        }
+        characters_by_id = {
+            character.id: character.name
+            for character in characters
+        }
+        self._speakers = {
+            speaker.name.casefold(): characters_by_id.get(speaker.character_id)
+            for speaker in session.scalars(
+                select(ProjectSpeaker).where(ProjectSpeaker.project_id == project_id)
+            ).all()
+            if speaker.name and speaker.name.strip()
+        }
+
+    def resolve(self, name: str) -> tuple[str, str]:
+        cleaned = name.strip()
+        folded = cleaned.casefold()
+        mapped = self._speakers.get(folded)
+        if mapped:
+            return mapped.casefold(), mapped
+        canonical = self._characters.get(folded)
+        if canonical:
+            return canonical.casefold(), canonical
+        return folded, cleaned
+
+
+def canonical_address_pairs(
+    session: Session,
+    project_id: int,
+) -> list[tuple[str, str, str]]:
+    """Return one safe, canonical instruction per directed relationship.
+
+    Locked/manual rows outrank generated rows, then the oldest established row
+    wins. Equally authoritative user-managed rows that conflict are ambiguous,
+    so the relationship is omitted rather than injecting both instructions.
+    """
+    resolver = AddressIdentityResolver(session, project_id)
+    grouped: dict[tuple[str, str], list[ProjectAddressPair]] = {}
+    for row in session.scalars(
+        select(ProjectAddressPair)
+        .where(ProjectAddressPair.project_id == project_id)
+        .order_by(ProjectAddressPair.id)
+    ).all():
+        speaker_key, _ = resolver.resolve(row.speaker_name)
+        addressee_key, _ = resolver.resolve(row.addressee_name)
+        grouped.setdefault((speaker_key, addressee_key), []).append(row)
+
+    result: list[tuple[str, str, str]] = []
+    for rows in grouped.values():
+        best_rank = max((1 if row.locked else 0, 1 if row.origin == "manual" else 0)
+                        for row in rows)
+        authoritative = [
+            row for row in rows
+            if (1 if row.locked else 0, 1 if row.origin == "manual" else 0) == best_rank
+        ]
+        if best_rank != (0, 0) and len({row.mode for row in authoritative}) > 1:
+            logger.warning("Omitting ambiguous user-managed address relationship for project %s",
+                           project_id)
+            continue
+        chosen = authoritative[0]
+        _, speaker = resolver.resolve(chosen.speaker_name)
+        _, addressee = resolver.resolve(chosen.addressee_name)
+        result.append((speaker, addressee, chosen.mode))
+    return result
 
 
 def insert_new_glossary_terms(
@@ -101,15 +180,32 @@ def upsert_address_pairs(
     pairs: list[AddressPairOut],
     origin: str,
     now: str,
+    *,
+    update_existing_mode: bool = True,
 ) -> int:
-    """Insert new pairs; update the mode of existing unlocked pairs (mode
-    changes are story-relevant, e.g. characters switching to tykání)."""
-    rows = {
-        (row.speaker_name.casefold(), row.addressee_name.casefold()): row
-        for row in session.scalars(
-            select(ProjectAddressPair).where(ProjectAddressPair.project_id == project_id)
-        ).all()
-    }
+    """Persist pairs by canonical directed identity.
+
+    ``update_existing_mode=False`` is used by incremental episode updates:
+    generated translations may add a relationship, but can never revise an
+    established convention. Initial-generation callers retain the historical
+    ability to refine an unlocked row.
+    """
+    resolver = AddressIdentityResolver(session, project_id)
+    rows: dict[tuple[str, str], ProjectAddressPair] = {}
+    for row in session.scalars(
+        select(ProjectAddressPair)
+        .where(ProjectAddressPair.project_id == project_id)
+        .order_by(ProjectAddressPair.id)
+    ).all():
+        speaker_key, _ = resolver.resolve(row.speaker_name)
+        addressee_key, _ = resolver.resolve(row.addressee_name)
+        key = (speaker_key, addressee_key)
+        current = rows.get(key)
+        if current is None or (
+            (row.locked, row.origin == "manual")
+            > (current.locked, current.origin == "manual")
+        ):
+            rows[key] = row
 
     written = 0
     for pair in pairs:
@@ -118,13 +214,15 @@ def upsert_address_pairs(
         mode = (pair.mode or "").strip().lower()
         if not speaker or not addressee or mode not in _VALID_MODES:
             continue
-        key = (speaker.casefold(), addressee.casefold())
+        speaker_key, canonical_speaker = resolver.resolve(speaker)
+        addressee_key, canonical_addressee = resolver.resolve(addressee)
+        key = (speaker_key, addressee_key)
         row = rows.get(key)
         if row is None:
             row = ProjectAddressPair(
                 project_id=project_id,
-                speaker_name=speaker,
-                addressee_name=addressee,
+                speaker_name=canonical_speaker,
+                addressee_name=canonical_addressee,
                 mode=mode,
                 origin=origin,
                 locked=0,
@@ -134,7 +232,7 @@ def upsert_address_pairs(
             session.add(row)
             rows[key] = row
             written += 1
-        elif not row.locked and row.mode != mode:
+        elif update_existing_mode and not row.locked and row.mode != mode:
             row.mode = mode
             row.origin = origin
             row.updated_at = now

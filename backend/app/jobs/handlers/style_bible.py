@@ -17,14 +17,15 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.orm import selectinload
 
 from app.core.database import SyncSessionLocal
 from app.db.models import (
     File,
-    ProjectAddressPair,
     ProjectCharacterStyle,
     ProjectCharacter,
     ProjectGlossaryTerm,
+    ProjectSpeaker,
     ProjectStyleBible,
     ProjectWatchedWord,
     SubtitleEvent,
@@ -32,6 +33,7 @@ from app.db.models import (
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.prompt_context import build_character_block, load_prompt_characters
 from app.jobs.handlers.style_store import (
+    canonical_address_pairs,
     insert_new_glossary_terms,
     upsert_address_pairs,
     upsert_character_voices,
@@ -83,6 +85,32 @@ def _seed_character_glossary(session, project_id: int, now: str) -> int:
         for c in characters if c.name and c.name.strip()
     ]
     return insert_new_glossary_terms(session, project_id, seeds, "metadata", now)
+
+
+def _episode_speaker_mappings(session, project_id: int, file_id: int) -> list[tuple[str, str]]:
+    """Mapped raw speaker labels that actually occur in this episode."""
+    present = {
+        name.casefold()
+        for name in session.scalars(
+            select(SubtitleEvent.name)
+            .where(SubtitleEvent.file_id == file_id)
+            .where(SubtitleEvent.event_type == "dialogue")
+            .where(SubtitleEvent.content_type == "dialogue")
+            .where(SubtitleEvent.name.is_not(None))
+        ).all()
+        if name and name.strip()
+    }
+    speakers = session.scalars(
+        select(ProjectSpeaker)
+        .where(ProjectSpeaker.project_id == project_id)
+        .options(selectinload(ProjectSpeaker.character))
+        .order_by(ProjectSpeaker.name)
+    ).all()
+    return [
+        (speaker.name, speaker.character.name)
+        for speaker in speakers
+        if speaker.name.casefold() in present and speaker.character is not None
+    ]
 
 
 @register_job_handler("generate_style_bible")
@@ -222,9 +250,7 @@ def update_style_bible(
             .where(ProjectGlossaryTerm.project_id == project_id)
             .where(ProjectGlossaryTerm.is_active == 1)
         ).all())
-        pairs = list(session.scalars(
-            select(ProjectAddressPair).where(ProjectAddressPair.project_id == project_id)
-        ).all())
+        pairs = canonical_address_pairs(session, project_id)
         voices = list(session.execute(
             select(ProjectCharacter.name, ProjectCharacterStyle.voice_note, ProjectCharacterStyle.register)
             .join(ProjectCharacterStyle, ProjectCharacterStyle.project_character_id == ProjectCharacter.id)
@@ -232,6 +258,7 @@ def update_style_bible(
         ).all())
 
         sample_lines = _sample_dialogue(session, file_id, with_translation=True)
+        speaker_mappings = _episode_speaker_mappings(session, project_id, file_id)
 
     if not sample_lines:
         return JobResult(status="succeeded", result={"skipped": "no dialogue lines"},
@@ -245,17 +272,25 @@ def update_style_bible(
         f"- {t.source_term} => {t.target_term} ({t.category})" for t in terms
     ) or "(empty)"
     pairs_block = "\n".join(
-        f"- {p.speaker_name} -> {p.addressee_name}: {p.mode}" for p in pairs
+        f"- {speaker} -> {addressee}: {mode}" for speaker, addressee, mode in pairs
     ) or "(none)"
     voices_block = "\n".join(
         f"- {name}: {voice_note or ''} (register: {register or 'unknown'})"
         for name, voice_note, register in voices
     ) or "(none)"
 
+    mapping_block = "\n".join(
+        f"- {speaker} → {character}" for speaker, character in speaker_mappings
+    ) or "(none)"
     user_message = (
         f"## Current Glossary\n{glossary_block}\n\n"
         f"## Current Address Pairs\n{pairs_block}\n\n"
+        f"## Speaker Identity Mapping\n{mapping_block}\n\n"
         f"## Current Character Voices\n{voices_block}\n\n"
+        "## Update Rules\nExisting address pairs are authoritative. Add only genuinely new "
+        "directed relationships; never propose a different mode for an existing relationship. "
+        "The Czech translation is generated evidence and may contain T–V mistakes, so do not "
+        "infer a project-wide convention or a change of convention from it alone.\n\n"
         f"## New Episode Dialogue (EN => translation)\n" + "\n".join(sample_lines)
     )
 
@@ -282,7 +317,10 @@ def update_style_bible(
     with SyncSessionLocal() as session:
         new_terms = insert_new_glossary_terms(session, project_id, response.terms, "llm", now)
         new_voices = upsert_character_voices(session, project_id, response.character_voices, "llm", now)
-        new_pairs = upsert_address_pairs(session, project_id, response.address_pairs, "llm", now)
+        new_pairs = upsert_address_pairs(
+            session, project_id, response.address_pairs, "llm", now,
+            update_existing_mode=False,
+        )
         session.commit()
 
     progress(1.0, "Done")

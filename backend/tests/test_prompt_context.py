@@ -94,6 +94,15 @@ def test_style_block_filters_voices_and_pairs_to_present_speakers():
     assert "carl addresses bob" not in block
 
 
+def test_style_block_matches_canonical_pair_to_raw_speaker_identity():
+    style = StyleContext(pairs=[("Luxion", "Leon Fou Bartfort", "vykani")])
+    identities = {"LUXION": ("Luxion", None)}
+
+    block = build_style_block(style, {"LUXION"}, identities)
+
+    assert "Luxion addresses Leon Fou Bartfort: vykani" in block
+
+
 # ---------------------------------------------------------------------------
 # Scene / tricky notes
 # ---------------------------------------------------------------------------

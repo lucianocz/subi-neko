@@ -21,7 +21,6 @@ from sqlalchemy import delete, select
 from app.core.database import SyncSessionLocal
 from app.db.models import (
     File,
-    ProjectAddressPair,
     ProjectCharacter,
     QaItem,
     SubtitleChunk,
@@ -29,6 +28,7 @@ from app.db.models import (
 )
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.prompt_context import build_speaker_identity_map, load_glossary_terms
+from app.jobs.handlers.style_store import canonical_address_pairs
 from app.jobs.handlers.validate_chunk import check_escape_mismatch
 from app.jobs.registry import register_job_handler
 from app.subs.czech_checks import (
@@ -78,9 +78,9 @@ def _modes_for(
 ) -> set[str] | None:
     """The stored T-V modes for this exact speaker→addressee pair.
 
-    Address pairs are keyed by the raw speaker labels the script uses, while
-    the inferred addressee is a glossary name as it appears in the
-    translation, so the two are matched through the name's aliases.
+    Persisted pairs are canonicalized, while the inferred addressee is a
+    glossary name as it appears in the translation, so addressees are matched
+    through the glossary aliases.
     """
     if not speaker or not addressee:
         return None
@@ -158,15 +158,14 @@ def review_chunk_final(
         # they must not count as untranslated-English evidence.
         english_exclude: set[str] = set()
         if file is not None:
-            for pair in session.scalars(
-                select(ProjectAddressPair)
-                .where(ProjectAddressPair.project_id == file.project_id)
-            ).all():
-                speaker_modes.setdefault(pair.speaker_name, set()).add(pair.mode)
+            for pair_speaker, pair_addressee, pair_mode in canonical_address_pairs(
+                session, file.project_id
+            ):
+                speaker_modes.setdefault(pair_speaker, set()).add(pair_mode)
                 pair_modes.setdefault(
-                    (pair.speaker_name.casefold(), pair.addressee_name.casefold()),
+                    (pair_speaker.casefold(), pair_addressee.casefold()),
                     set(),
-                ).add(pair.mode)
+                ).add(pair_mode)
 
             character_genders = {
                 name.casefold(): gender
@@ -265,7 +264,8 @@ def review_chunk_final(
             findings += check_addressee_gender_agreement(
                 translated, name_genders.get(addressee), addressee)
 
-        speaker = snap["name"]
+        raw_speaker = snap["name"]
+        speaker = identities.get(raw_speaker, (raw_speaker, None))[0] if raw_speaker else None
         modes = _modes_for(speaker, addressee, pair_modes, name_aliases)
         paired_with = addressee if modes is not None else None
         if modes is None and speaker and speaker in speaker_modes:

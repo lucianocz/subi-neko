@@ -10,7 +10,6 @@ from sqlalchemy.orm import Session, selectinload
 from app.db.models import (
     File,
     FileAnalysis,
-    ProjectAddressPair,
     ProjectCharacter,
     ProjectCharacterStyle,
     ProjectEpisode,
@@ -19,6 +18,7 @@ from app.db.models import (
     ProjectStyleBible,
     SubtitleEvent,
 )
+from app.jobs.handlers.style_store import canonical_address_pairs
 from app.subs.tag_masking import plain_text
 
 # AniDB character_type values that denote non-speaking "characters"
@@ -317,10 +317,7 @@ def load_style_context(session: Session, project_id: int) -> StyleContext:
     for name, voice_note, register in rows:
         ctx.voices[name] = (voice_note, register)
 
-    pairs = session.scalars(
-        select(ProjectAddressPair).where(ProjectAddressPair.project_id == project_id)
-    ).all()
-    ctx.pairs = [(p.speaker_name, p.addressee_name, p.mode) for p in pairs]
+    ctx.pairs = canonical_address_pairs(session, project_id)
 
     return ctx
 
@@ -353,11 +350,14 @@ def build_style_block(
     if voice_lines:
         parts.append("Character voices:\n" + "\n".join(voice_lines))
 
-    present_raw = {s.casefold() for s in raw_speakers_present if s}
+    present_identities = {
+        (identities.get(raw, (raw, None))[0] or raw).casefold()
+        for raw in raw_speakers_present if raw
+    }
     pair_lines = [
         f"- {speaker} addresses {addressee}: {mode}"
         for speaker, addressee, mode in style.pairs
-        if speaker.casefold() in present_raw
+        if speaker.casefold() in present_identities
     ]
     if pair_lines:
         parts.append("Address (T-V) pairs:\n" + "\n".join(pair_lines))
