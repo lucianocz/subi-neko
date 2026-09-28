@@ -449,6 +449,13 @@ _RETRANSLATABLE_STATUSES = {
     FileStatus.ACCEPTED.value,
     FileStatus.COMPLETED.value,
 }
+_RETRANSLATION_CHUNK_JOB_TYPES = {
+    "translate_chunk",
+    "validate_chunk",
+    "repair_chunk",
+    "polish_chunk",
+    "review_chunk_final",
+}
 
 
 @router.get("/{project_id}/files/{file_id}/subtitles/{variant}")
@@ -535,10 +542,12 @@ async def retranslate_file(project_id: int, file_id: int):
         events = list((await session.scalars(
             select(SubtitleEvent).where(SubtitleEvent.file_id == file_id)
         )).all())
-        chunks = list((await session.scalars(
-            select(SubtitleChunk).where(SubtitleChunk.file_id == file_id)
-        )).all())
-        if not chunks:
+        chunk_count = await session.scalar(
+            select(func.count())
+            .select_from(SubtitleChunk)
+            .where(SubtitleChunk.file_id == file_id)
+        )
+        if not chunk_count:
             raise HTTPException(status_code=409, detail="File has no translation chunks")
 
         for event in events:
@@ -551,19 +560,10 @@ async def retranslate_file(project_id: int, file_id: int):
             event.is_approved = 0
             event.updated_at = now
 
-        for chunk in chunks:
-            chunk.status = "pending"
-            chunk.model = None
-            chunk.llm_review_needed = 0
-            chunk.retry_count = 0
-            chunk.repair_attempt_count = 0
-            chunk.polish_attempt_count = 0
-            chunk.prompt_version = None
-            chunk.last_error_code = None
-            chunk.last_error_message = None
-            chunk.failed_job_type = None
-            chunk.updated_at = now
-
+        # Re-plan from scratch rather than reusing the old chunk boundaries.
+        # The READY orchestrator sees zero chunks and reruns
+        # plan_translation_chunks before any translation job is scheduled.
+        await session.execute(delete(SubtitleChunk).where(SubtitleChunk.file_id == file_id))
         await session.execute(delete(QaItem).where(QaItem.file_id == file_id))
         await session.execute(delete(FileQualityMetric).where(FileQualityMetric.file_id == file_id))
         await session.execute(
@@ -576,12 +576,19 @@ async def retranslate_file(project_id: int, file_id: int):
         # These jobs describe artifacts/snapshots invalidated by the reset.
         # Marking them cancelled lets the manager reuse their canonical keys.
         invalidated_keys = {
+            f"plan_translation_chunks:{file_id}",
             f"render_output_ass:{file_id}",
             f"mux_output_mkv:{file_id}",
             f"compute_file_metrics:{file_id}",
         }
         records = list((await session.scalars(
-            select(JobRecord).where(JobRecord.dedupe_key.in_(invalidated_keys))
+            select(JobRecord).where(
+                JobRecord.file_id == file_id,
+                (
+                    JobRecord.dedupe_key.in_(invalidated_keys)
+                    | JobRecord.job_type.in_(_RETRANSLATION_CHUNK_JOB_TYPES)
+                ),
+            )
         )).all())
         for record in records:
             record.status = JobStatus.CANCELLED.value

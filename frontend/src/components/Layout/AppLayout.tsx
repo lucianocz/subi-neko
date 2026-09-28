@@ -954,7 +954,7 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
               const fileId = retranslateFile.id;
               try {
                 await retranslateMutation.mutateAsync(fileId);
-                handleCollapseFile(fileId);
+                handleExpandFile(fileId);
                 setRetranslateFile(null);
               } catch {
                 notifications.show({

@@ -2360,12 +2360,23 @@ class TestFileActions:
             src_line_index=0,
         ))
         await db_session.commit()
-        for job_type in ("render_output_ass", "mux_output_mkv", "compute_file_metrics"):
+        for job_type in (
+            "plan_translation_chunks",
+            "translate_chunk",
+            "render_output_ass",
+            "mux_output_mkv",
+            "compute_file_metrics",
+        ):
+            dedupe_key = (
+                f"translate_chunk:{file.id}:0"
+                if job_type == "translate_chunk"
+                else f"{job_type}:{file.id}"
+            )
             await _create_job(
                 db_session,
                 project.id,
                 job_type,
-                f"{job_type}:{file.id}",
+                dedupe_key,
                 file_id=file.id,
             )
 
@@ -2379,7 +2390,6 @@ class TestFileActions:
         await db_session.refresh(project)
         await db_session.refresh(file)
         await db_session.refresh(event)
-        await db_session.refresh(chunk)
         assert project.status == ProjectStatus.PROCESSING.value
         assert file.completed_at is None
         assert event.translated_text is None
@@ -2389,9 +2399,9 @@ class TestFileActions:
         assert not event.is_user_edited
         assert not event.is_locked
         assert not event.is_approved
-        assert chunk.status == "pending"
-        assert chunk.model is None
-        assert chunk.prompt_version is None
+        assert await db_session.scalar(
+            select(func.count()).select_from(SubtitleChunk).where(SubtitleChunk.file_id == file.id)
+        ) == 0
 
         assert await db_session.scalar(
             select(func.count()).select_from(QaItem).where(QaItem.file_id == file.id)
