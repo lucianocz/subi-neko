@@ -14,7 +14,13 @@ from app.db.options import AppOptions
 from app.jobs.context import JobContext
 from app.jobs.handlers import audit_chunk_final as audit_module
 from app.llm.client import LlmError
-from app.llm.schemas import FinalAuditResponse
+from app.llm.schemas import (
+    FINAL_AUDIT_CATEGORIES,
+    FINAL_AUDIT_SEVERITIES,
+    FinalAuditIssue,
+    FinalAuditResponse,
+    strict_json_schema,
+)
 
 
 @pytest.fixture
@@ -174,7 +180,12 @@ def test_findings_are_namespaced_and_preserve_existing_qa(session_factory, monke
 def test_invalid_findings_fail_without_persistence(session_factory, monkeypatch, bad_issue):
     _, file_id, _ = _seed(session_factory)
     monkeypatch.setattr(audit_module, "SyncSessionLocal", session_factory)
-    response = FinalAuditResponse(issues=[bad_issue])
+    # Bypass Pydantic to exercise the handler's defense-in-depth checks.  A
+    # real LLM response is rejected and correctively retried by llm_client
+    # before it can reach this point.
+    response = FinalAuditResponse.model_construct(issues=[
+        FinalAuditIssue.model_construct(**bad_issue)
+    ])
     monkeypatch.setattr(audit_module.llm_client, "complete", lambda **_kwargs: (response, _stats()))
 
     result = audit_module.audit_chunk_final(
@@ -209,15 +220,69 @@ def test_llm_failure_does_not_mark_chunk_audited(session_factory, monkeypatch):
 
 
 def test_schema_accepts_required_variants_and_rejects_malformed():
-    parsed = FinalAuditResponse.model_validate({"issues": [
-        {"i": 1, "category": "grammar", "severity": "warning",
-         "explanation": "Wrong case government.", "suggestion": "Oprava"},
-        {"i": 2, "category": "meaning", "severity": "warning",
-         "explanation": "Agency is reversed.", "suggestion": "Oprava"},
-        {"i": 3, "category": "ambiguity", "severity": "info",
-         "explanation": "The reference may point elsewhere.", "suggestion": None},
-    ]})
-    assert len(parsed.issues) == 3
+    issues = [
+        {"i": index, "category": category,
+         "severity": "warning" if index % 2 else "info",
+         "explanation": f"Concrete {category} defect.", "suggestion": None}
+        for index, category in enumerate(sorted(FINAL_AUDIT_CATEGORIES), start=1)
+    ]
+    parsed = FinalAuditResponse.model_validate({"issues": issues})
+    assert {issue.category for issue in parsed.issues} == FINAL_AUDIT_CATEGORIES
+    assert {issue.severity for issue in parsed.issues} == FINAL_AUDIT_SEVERITIES
     assert FinalAuditResponse.model_validate({"issues": []}).issues == []
     with pytest.raises(ValidationError):
         FinalAuditResponse.model_validate({"issues": [{"i": 1, "category": "grammar"}]})
+    with pytest.raises(ValidationError):
+        FinalAuditResponse.model_validate({"issues": [{
+            "i": 1, "category": "naturalness", "severity": "warning",
+            "explanation": "Too literal.", "suggestion": None,
+        }]})
+    with pytest.raises(ValidationError):
+        FinalAuditResponse.model_validate({"issues": [{
+            "i": 1, "category": "grammar", "severity": "blocker",
+            "explanation": "Wrong case.", "suggestion": None,
+        }]})
+
+
+def test_structured_output_schema_enumerates_categories_and_severities():
+    schema = strict_json_schema(FinalAuditResponse)
+    issue_schema = schema["$defs"]["FinalAuditIssue"]["properties"]
+    assert set(issue_schema["category"]["enum"]) == FINAL_AUDIT_CATEGORIES
+    assert set(issue_schema["severity"]["enum"]) == FINAL_AUDIT_SEVERITIES
+
+
+def test_failed_replacement_preserves_existing_audit_findings(session_factory, monkeypatch):
+    _, file_id, event_ids = _seed(session_factory, status="audited")
+    with session_factory() as session:
+        session.add(QaItem(
+            file_id=file_id, subtitle_event_id=event_ids[0], severity="warning",
+            qa_type="final_audit_meaning", message="previous valid finding", is_resolved=0,
+        ))
+        session.commit()
+
+    monkeypatch.setattr(audit_module, "SyncSessionLocal", session_factory)
+    malformed = FinalAuditResponse.model_construct(issues=[
+        FinalAuditIssue.model_construct(
+            i=10, category="naturalness", severity="warning",
+            explanation="A proposed replacement finding.", suggestion=None,
+        )
+    ])
+    monkeypatch.setattr(
+        audit_module.llm_client, "complete", lambda **_kwargs: (malformed, _stats())
+    )
+
+    result = audit_module.audit_chunk_final(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "RESPONSE_VALIDATION_ERROR"
+    with session_factory() as session:
+        chunk = session.scalar(select(SubtitleChunk).where(SubtitleChunk.file_id == file_id))
+        findings = list(session.scalars(select(QaItem).where(
+            QaItem.qa_type.like("final_audit_%")
+        )))
+        assert chunk.status == "audited"
+        assert [(item.qa_type, item.message) for item in findings] == [
+            ("final_audit_meaning", "previous valid finding")
+        ]

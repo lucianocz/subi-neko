@@ -67,6 +67,18 @@ def test_blank_value_falls_back_to_the_default(option_key):
     assert getattr(options, field) == getattr(default_prompts, constant)
 
 
+def test_final_qa_default_has_classification_without_overwriting_saved_prompt():
+    assert "## Finding classification" in default_prompts.DEFAULT_FINAL_QA_PROMPT
+    for category in ("meaning", "grammar", "context", "cross_event", "formality",
+                     "ambiguity", "other"):
+        assert f"`{category}`" in default_prompts.DEFAULT_FINAL_QA_PROMPT
+
+    custom = "My saved final QA prompt for {TARGET_LANG_NAME}"
+    options = AppOptions.from_dict({"FINAL_QA_PROMPT": custom, "TARGET_LANG_NAME": "Czech"})
+    assert options.final_qa_prompt == custom
+    assert options.resolved_final_qa_prompt() == "My saved final QA prompt for Czech"
+
+
 def test_no_handler_imports_a_default_prompt_constant():
     """Handlers must go through ctx.options.resolved_*_prompt(). Importing
     the constant bypasses the user's saved prompt without failing."""

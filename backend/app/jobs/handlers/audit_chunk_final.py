@@ -35,22 +35,16 @@ from app.jobs.handlers.prompt_context import (
 )
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
-from app.llm.schemas import FinalAuditResponse
+from app.llm.schemas import (
+    FINAL_AUDIT_CATEGORIES,
+    FINAL_AUDIT_SEVERITIES,
+    FinalAuditResponse,
+)
 from app.subs.tag_masking import plain_text
 
 logger = logging.getLogger(__name__)
 
-FINAL_AUDIT_CATEGORIES = {
-    "meaning",
-    "grammar",
-    "context",
-    "cross_event",
-    "formality",
-    "ambiguity",
-    "other",
-}
 FINAL_AUDIT_QA_TYPES = {f"final_audit_{category}" for category in FINAL_AUDIT_CATEGORIES}
-_VALID_SEVERITIES = {"warning", "info"}
 _MIN_EXPLANATION_LENGTH = 4
 
 
@@ -83,7 +77,7 @@ def _validate_issues(
         if category not in FINAL_AUDIT_CATEGORIES:
             return None, f"Issue {position} has unsupported category {issue.category!r}"
         severity = issue.severity.strip().lower()
-        if severity not in _VALID_SEVERITIES:
+        if severity not in FINAL_AUDIT_SEVERITIES:
             return None, f"Issue {position} has unsupported severity {issue.severity!r}"
         explanation = issue.explanation.strip()
         if len(explanation) < _MIN_EXPLANATION_LENGTH or not re.search(r"\w", explanation):

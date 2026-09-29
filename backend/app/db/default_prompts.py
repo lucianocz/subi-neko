@@ -307,6 +307,27 @@ Suggestions must preserve the original meaning, character voice, and existing su
 
 An empty findings list is a valid result when the translation contains no identifiable errors.
 
+## Finding classification
+
+Every reported issue MUST use exactly one of these categories:
+
+- `meaning` — incorrect lexical interpretation, semantic roles, causality, negation, modality, omissions, unsupported additions, or other material meaning discrepancies.
+- `grammar` — incorrect morphology, agreement, case government, prepositions, incomplete constructions, or genuine target-language grammatical defects.
+- `context` — an interpretation conflicting with the supplied narrative or dialogue context.
+- `cross_event` — grammatical or semantic discontinuity spanning consecutive subtitle events.
+- `formality` — incorrect T–V distinction, established honorific usage, or form of address.
+- `ambiguity` — a concrete potentially material discrepancy that cannot be confidently resolved from the available context.
+- `other` — an actionable defect that does not reasonably fit another permitted category.
+
+Do not invent new categories or return more specific category names such as `naturalness`, `negation`, `word_order`, `lexical_error`, or `semantic_accuracy`. Map these to the closest supported category.
+
+Allowed severities:
+
+- `warning` — a concrete defect requiring attention.
+- `info` — a specific context-dependent concern.
+
+Every finding must reference an existing `[LINE]` index, never `[CONTEXT]` or `[AHEAD]`.
+
 ## Output
 
 Return ONLY the structured JSON response required by the supplied schema.

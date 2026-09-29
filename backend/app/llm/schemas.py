@@ -8,7 +8,7 @@ therefore declared as nullable-but-required (e.g. ``c: float | None``).
 """
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict
 
@@ -64,13 +64,31 @@ class PolishResponse(BaseModel):
     issues: list[PolishIssue]
 
 
+FinalAuditCategory = Literal[
+    "meaning",
+    "grammar",
+    "context",
+    "cross_event",
+    "formality",
+    "ambiguity",
+    "other",
+]
+FinalAuditSeverity = Literal["warning", "info"]
+
+# Runtime validators and persistence code use these values too.  Deriving
+# them from the Literal aliases keeps the Python validation contract and the
+# generated structured-output schema in one place.
+FINAL_AUDIT_CATEGORIES = frozenset(get_args(FinalAuditCategory))
+FINAL_AUDIT_SEVERITIES = frozenset(get_args(FinalAuditSeverity))
+
+
 class FinalAuditIssue(BaseModel):
     """Read-only finding produced by the post-review semantic QA pass."""
     model_config = ConfigDict(extra="forbid")
 
     i: int
-    category: str
-    severity: str
+    category: FinalAuditCategory
+    severity: FinalAuditSeverity
     explanation: str
     # Nullable-but-required in the strict JSON schema.  The auditor may be
     # certain that a defect exists without being certain of the best wording.
