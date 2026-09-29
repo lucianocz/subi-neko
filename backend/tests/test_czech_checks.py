@@ -374,11 +374,50 @@ def test_agreement_sees_through_intervening_clitics():
 # Polish drift
 # ---------------------------------------------------------------------------
 
-def test_drift_flags_added_negation():
-    findings = check_polish_drift("Zvládnu to sám.", "Nezvládnu to sám.")
-    assert findings
-    assert findings[0][0] == "polish_drift"
-    assert "negation_changed" in findings[0][2]["reasons"]
+@pytest.mark.parametrize(("before", "after"), [
+    ("Nikdy se nepoučíš.", "Copak se vůbec někdy poučíš?"),
+    ("Nemáme žádné námitky.", "Všechno je v pořádku."),
+    ("Není třeba, abys tu zůstával.", "Klidně můžeš odejít."),
+    ("Nemusíš se tím zabývat.", "Nech to na mně."),
+    ("Ani nikdo nic nevěděl.", "Všichni byli bez informací."),
+    ("Proč se nikdy nepoučíš?", "Copak se vůbec někdy poučíš?"),
+    ("Ne!", "To tedy ne."),
+    ("Nebe zakryly mraky.", "Obloha se zatáhla."),
+    ("Netopýr má neobyčejné nervy.", "Ten tvor je překvapivě klidný."),
+])
+def test_drift_negative_surface_rewrites_do_not_trigger_negation(before, after):
+    findings = check_polish_drift(before, after)
+    assert not any("negation_changed" in finding[2]["reasons"] for finding in findings)
+
+
+@pytest.mark.parametrize(("before", "after", "positive", "negative", "direction"), [
+    ("Vím, co chceš.", "Nevím, co chceš.", "vím", "nevím", "added"),
+    ("Nevím, co chceš.", "Vím, co chceš.", "vím", "nevím", "removed"),
+    ("Nemám čas.", "Mám čas.", "mám", "nemám", "removed"),
+    ("Mám čas.", "Nemám čas.", "mám", "nemám", "added"),
+    ("Chci odejít.", "Nechci odejít.", "chci", "nechci", "added"),
+    ("Nechci odejít.", "Chci odejít.", "chci", "nechci", "removed"),
+])
+def test_drift_flags_narrow_aligned_verb_polarity_change(
+    before, after, positive, negative, direction,
+):
+    finding = check_polish_drift(before, after)[0]
+    assert finding[0] == "polish_drift"
+    assert "negation_changed" in finding[2]["reasons"]
+    assert finding[2]["polarity_changes"] == [{
+        "positive": positive,
+        "negative": negative,
+        "direction": direction,
+    }]
+    assert "negation_count" not in finding[2]
+    assert "polarity" in finding[1]
+
+
+def test_drift_does_not_pair_polarity_forms_across_changed_clauses():
+    before = "Když dorazí Petr, vím to. Když dorazí Eva, mlčím."
+    after = "Když dorazí Petr, mlčím. Když dorazí Eva, nevím to."
+    findings = check_polish_drift(before, after)
+    assert not any("negation_changed" in finding[2]["reasons"] for finding in findings)
 
 
 def test_drift_flags_changed_numbers():
@@ -419,6 +458,38 @@ def test_drift_length_jump_not_reported_for_deliberate_condensing():
 def test_drift_ignores_short_lines_and_markup():
     assert check_polish_drift("Ano.", "Jo.") == []
     assert check_polish_drift("{\\i1}Ano.{\\i0}", "{\\i1}Jo.{\\i0}") == []
+
+
+def test_drift_ass_tags_do_not_hide_or_create_polarity_changes():
+    finding = check_polish_drift(
+        r"{\i1}Vím,{\i0} co chceš.", r"{\i1}Nevím,{\i0} co chceš.",
+    )[0]
+    assert finding[2]["polarity_changes"][0]["positive"] == "vím"
+    assert check_polish_drift(
+        r"{\i1}Nikdy{\i0} se nepoučíš.",
+        r"{\i1}Copak{\i0} se vůbec někdy poučíš?",
+    ) == []
+
+
+def test_drift_consolidates_independent_reasons_without_negation_count():
+    finding = check_polish_drift(
+        "Vím, že Aria čeká 12 dlouhých dní na naši odpověď.",
+        "Nevím, že čeká 13 dní.",
+        glossary_targets=["Aria"],
+    )[0]
+    assert finding[2]["reasons"] == [
+        "numbers_changed", "negation_changed", "glossary_term_dropped",
+    ]
+    assert "numbers" in finding[2]
+    assert "polarity_changes" in finding[2]
+    assert "dropped_terms" in finding[2]
+    assert "negation_count" not in finding[2]
+
+
+def test_drift_identical_visible_text_is_quiet():
+    assert check_polish_drift(
+        r"{\i1}Vím, co chceš.{\i0}", r"{\b1}Vím, co chceš.{\b0}",
+    ) == []
 
 
 def test_drift_ignores_empty_sides():

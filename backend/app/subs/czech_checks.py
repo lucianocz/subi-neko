@@ -11,6 +11,7 @@ narrow, high-precision patterns rather than a grammar model.
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 from app.subs.tag_masking import plain_text
 
@@ -453,45 +454,64 @@ def check_untranslated_english(
 
 _DIGIT_RUN_RE = re.compile(r"\d+")
 
-# Negative pronouns/adverbs and the bare particle "ne" ("no"): a small,
-# closed set that isn't usually swapped for an unrelated positive synonym,
-# so counting their occurrences is a reasonably clean signal on its own.
-_NEGATIVE_CLOSED_RE = re.compile(
-    r"\b(?:ne|ni(?:kdy|c|kdo|jak|kam|kde)|ani|žádn\w*)\b",
-    re.IGNORECASE | re.UNICODE,
-)
-
-# Productive verbal/adjectival "ne-" prefix. A raw count of these words is
-# noisy on its own: "ne\w+" also matches ordinary vocabulary that merely
-# starts with "ne" (nebo, nebe, nervy, netopýr), and even restricted to true
-# negations, Czech frequently carries the same polarity through an unrelated
-# word on the other side of a polish edit ("je zbytečné" <-> "je to únavné"
-# vs "netřeba" — no meaning change, different lexeme). What IS diagnostic of
-# an actual flip is the same word root gaining or losing the prefix between
-# the two versions ("vím" -> "nevím"), so that's what _negation_flip checks
-# instead of a bare count.
-_NEG_PREFIX_WORD_RE = re.compile(r"\bne(\w{2,})\b", re.IGNORECASE | re.UNICODE)
-_WORD_RE = re.compile(r"\w+", re.UNICODE)
+# A deliberately small set of unambiguous, high-frequency finite verb forms.
+# Czech ``ne-`` is productive, but treating every ``ne...`` token as a verb
+# also treats ordinary words such as ``nebe`` and ``nemoc`` as negations.
+# Precision matters more than recall here; broader semantic comparison belongs
+# to Final QA.
+_POLARITY_VERB_FORMS = {
+    "chci", "chceš", "chce", "chceme", "chcete",
+    "mám", "máš", "má", "máme", "máte", "mají",
+    "vím", "víš", "ví", "víme", "víte",
+    "zvládnu", "zvládneš", "zvládne", "zvládneme", "zvládnete",
+}
+_WORD_RE = re.compile(r"[^\W\d_]+", re.UNICODE)
 
 
-def _negation_flip(old: str, new: str) -> bool:
-    """True if some word's polarity plausibly flipped between old and new —
-    the same root gained or lost its "ne-" negation — rather than the text
-    merely switching to a different, unrelated word or phrase.
+def _negation_flip(old: str, new: str) -> list[dict[str, str]]:
+    """Return narrow evidence of an aligned finite verb gaining/losing ``ne``.
+
+    Sequence alignment and a shared neighbouring token keep a positive form
+    in one clause from being paired with a negative form elsewhere. Complete
+    word tokens are compared; arbitrary substrings never participate.
     """
-    old_words = {w.casefold() for w in _WORD_RE.findall(old)}
-    new_words = {w.casefold() for w in _WORD_RE.findall(new)}
+    old_words = [w.casefold() for w in _WORD_RE.findall(old)]
+    new_words = [w.casefold() for w in _WORD_RE.findall(new)]
+    changes: list[dict[str, str]] = []
 
-    old_stems = {m.group(1).casefold() for m in _NEG_PREFIX_WORD_RE.finditer(old)}
-    new_stems = {m.group(1).casefold() for m in _NEG_PREFIX_WORD_RE.finditer(new)}
+    for tag, old_start, old_end, new_start, new_end in SequenceMatcher(
+        None, old_words, new_words, autojunk=False,
+    ).get_opcodes():
+        if tag != "replace" or old_end - old_start != new_end - new_start:
+            continue
+        for offset, (old_word, new_word) in enumerate(zip(
+            old_words[old_start:old_end], new_words[new_start:new_end],
+        )):
+            if old_word == "ne" + new_word and new_word in _POLARITY_VERB_FORMS:
+                positive, negative, direction = new_word, old_word, "removed"
+            elif new_word == "ne" + old_word and old_word in _POLARITY_VERB_FORMS:
+                positive, negative, direction = old_word, new_word, "added"
+            else:
+                continue
 
-    # Negation dropped: "ne<stem>" in old, bare "<stem>" now in new.
-    if any(stem in new_words for stem in old_stems - new_stems):
-        return True
-    # Negation added: bare "<stem>" in old, "ne<stem>" now in new.
-    if any(stem in old_words for stem in new_stems - old_stems):
-        return True
-    return False
+            old_index = old_start + offset
+            new_index = new_start + offset
+            left_matches = (
+                old_index > 0 and new_index > 0
+                and old_words[old_index - 1] == new_words[new_index - 1]
+            )
+            right_matches = (
+                old_index + 1 < len(old_words) and new_index + 1 < len(new_words)
+                and old_words[old_index + 1] == new_words[new_index + 1]
+            )
+            only_tokens = len(old_words) == len(new_words) == 1
+            if left_matches or right_matches or only_tokens:
+                changes.append({
+                    "positive": positive,
+                    "negative": negative,
+                    "direction": direction,
+                })
+    return changes
 
 # Below this many visible characters, a large relative length change is not
 # evidence of anything — one word in a three-word line moves it.
@@ -520,11 +540,10 @@ def check_polish_drift(
         reasons.append("numbers_changed")
         details["numbers"] = {"before": old_digits, "after": new_digits}
 
-    old_closed_neg = len(_NEGATIVE_CLOSED_RE.findall(old))
-    new_closed_neg = len(_NEGATIVE_CLOSED_RE.findall(new))
-    if old_closed_neg != new_closed_neg or _negation_flip(old, new):
+    polarity_changes = _negation_flip(old, new)
+    if polarity_changes:
         reasons.append("negation_changed")
-        details["negation_count"] = {"before": old_closed_neg, "after": new_closed_neg}
+        details["polarity_changes"] = polarity_changes
 
     dropped = [
         term for term in (glossary_targets or [])
@@ -552,7 +571,7 @@ def check_polish_drift(
     details["after"] = new
     return [(
         "polish_drift",
-        "Polish edit may have changed the meaning of the line ("
+        "Polish edit may have changed the line's polarity or protected details ("
         + ", ".join(reasons) + ").",
         details,
     )]

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -397,6 +398,110 @@ def test_empty_targeted_polish_response_keeps_unrelated_finding(
             QaItem.qa_type == "polish_meaning",
             QaItem.is_resolved == 0,
         )) is None
+
+
+def test_polish_persists_equivalent_negative_rewrite_without_drift(
+    session_factory, monkeypatch,
+):
+    _, file_id, _ = _seed(session_factory, chunk_status="validated")
+    before = "Nemáme žádné námitky."
+    after = "Všechno je v pořádku."
+    with session_factory() as session:
+        event = _event(session, file_id, 1, "Then there are no objections.", before,
+                       status="validated")
+        session.add(QaItem(
+            file_id=file_id, subtitle_event_id=event.id, severity="warning",
+            qa_type="number_format", message="unrelated", is_resolved=0,
+        ))
+        session.commit()
+        event_id = event.id
+
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module.llm_client,
+        "complete",
+        lambda **_kwargs: (
+            PolishResponse(
+                edits=[{"i": 1, "t": after, "reason": "naturalness"}], issues=[]
+            ),
+            _stats(),
+        ),
+    )
+
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["result"]["drift_flagged"] == 0
+    with session_factory() as session:
+        event = session.get(SubtitleEvent, event_id)
+        items = list(session.scalars(
+            select(QaItem).where(QaItem.subtitle_event_id == event_id)
+        ))
+        assert event.translated_text == after
+        assert event.original_ai_translated_text == after
+        assert not any(item.qa_type == "polish_drift" for item in items)
+        assert any(item.qa_type == "number_format" and not item.is_resolved
+                   for item in items)
+        history = next(item for item in items if item.qa_type == "polish_edit")
+        assert json.loads(history.details_json) == {
+            "before": before, "after": after, "reason": "naturalness",
+        }
+        chunk = session.scalar(
+            select(SubtitleChunk).where(SubtitleChunk.file_id == file_id)
+        )
+        assert chunk.status == "polished"
+        assert chunk.polish_attempt_count == 1
+
+
+def test_polish_persists_narrow_polarity_drift_with_evidence(
+    session_factory, monkeypatch,
+):
+    _, file_id, _ = _seed(session_factory, chunk_status="validated")
+    with session_factory() as session:
+        event = _event(
+            session, file_id, 1, "I know what you want.", "Vím, co chceš.",
+            status="validated",
+        )
+        session.commit()
+        event_id = event.id
+
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module.llm_client,
+        "complete",
+        lambda **_kwargs: (
+            PolishResponse(edits=[{
+                "i": 1, "t": "Nevím, co chceš.", "reason": "naturalness",
+            }], issues=[]),
+            _stats(),
+        ),
+    )
+
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+
+    assert result["status"] == "succeeded"
+    assert result["result"]["drift_flagged"] == 1
+    with session_factory() as session:
+        drift = session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == event_id,
+            QaItem.qa_type == "polish_drift",
+        ))
+        details = json.loads(drift.details_json)
+        assert details["reasons"] == ["negation_changed"]
+        assert details["polarity_changes"] == [{
+            "positive": "vím", "negative": "nevím", "direction": "added",
+        }]
+        assert "negation_count" not in details
+        assert details["before"] == "Vím, co chceš."
+        assert details["after"] == "Nevím, co chceš."
+        assert session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == event_id,
+            QaItem.qa_type == "polish_edit",
+        )) is not None
 
 
 def test_translate_skips_locked_and_user_edited_events(session_factory, monkeypatch):
