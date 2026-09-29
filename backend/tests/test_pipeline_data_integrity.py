@@ -400,6 +400,253 @@ def test_empty_targeted_polish_response_keeps_unrelated_finding(
         )) is None
 
 
+def test_targeted_polish_coordinates_primary_and_optional_support(
+    session_factory, monkeypatch,
+):
+    project_id, file_id, _ = _seed(
+        session_factory, chunk_status="needs_polish", polish_attempts=1
+    )
+    before = {
+        120: "Pokud tomu opravdu věříš",
+        121: "že tohle je odpověď,",
+        122: "pak mi řekni proč.",
+        123: "Samostatná věta.",
+    }
+    with session_factory() as session:
+        chunk = session.scalar(select(SubtitleChunk).where(SubtitleChunk.file_id == file_id))
+        chunk.translate_to_line = 200
+        character = ProjectCharacter(project_id=project_id, name="Alice", gender="female")
+        session.add(character)
+        session.flush()
+        session.add_all([
+            ProjectSpeaker(project_id=project_id, name="ALICE", character_id=character.id),
+            ProjectSpeaker(project_id=project_id, name="ALYCE", character_id=character.id),
+        ])
+        rows = {}
+        for line, source, name in [
+            (120, "If you really believe", "ALICE"),
+            (121, "that this is the answer,", "ALYCE"),
+            (122, "then tell me why.", "ALICE"),
+            (123, "This is separate.", "ALICE"),
+        ]:
+            rows[line] = _event(
+                session, file_id, line, source, before[line], status="validated"
+            )
+            rows[line].name = name
+        rows[124] = _event(
+            session, file_id, 124, "Protected context", "Chráněný kontext",
+            status="validated", locked=1,
+        )
+        session.add_all([
+            QaItem(file_id=file_id, subtitle_event_id=rows[121].id, severity="warning",
+                   qa_type="gender_agreement", message="repair split clause", is_resolved=0),
+            QaItem(file_id=file_id, subtitle_event_id=rows[120].id, severity="warning",
+                   qa_type="polish_meaning", message="support finding", is_resolved=0),
+            QaItem(file_id=file_id, subtitle_event_id=rows[123].id, severity="warning",
+                   qa_type="polish_meaning", message="unrelated finding", is_resolved=0),
+            QaItem(file_id=file_id, subtitle_event_id=rows[124].id, severity="warning",
+                   qa_type="polish_meaning", message="protected finding", is_resolved=0),
+        ])
+        session.commit()
+        ids = {line: row.id for line, row in rows.items()}
+
+    captured = {}
+    drift_calls = []
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module, "check_polish_drift",
+        lambda before_text, after_text, reason, glossary: (
+            drift_calls.append((before_text, after_text, reason)) or []
+        ),
+    )
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return PolishResponse(edits=[
+            {"i": 120, "t": "Jestli opravdu věříš", "reason": "cross-event grammar"},
+            {"i": 121, "t": "že právě tohle je odpověď,", "reason": "cross-event grammar"},
+        ], issues=[]), _stats()
+
+    monkeypatch.setattr(polish_module.llm_client, "complete", complete)
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+
+    assert result["status"] == "succeeded"
+    prompt = captured["user"]
+    assert "[LINE] 121 (Alice, female)" in prompt
+    assert "fix: gender_agreement: repair split clause" in prompt
+    assert "[LINE] 120 (Alice, female)" in prompt
+    assert "support: Adjacent part of a flagged utterance" in prompt
+    assert prompt.count("[LINE] 120") == 1
+    assert "[LINE] 122 (Alice, female)" in prompt
+    assert "[CONTEXT] 123 (Alice)" in prompt
+    assert "[CONTEXT] 124" in prompt
+    assert "[LINE] 124" not in prompt
+    assert len(drift_calls) == 2
+
+    with session_factory() as session:
+        assert session.get(SubtitleEvent, ids[120]).translated_text == "Jestli opravdu věříš"
+        assert session.get(SubtitleEvent, ids[121]).translated_text == "že právě tohle je odpověď,"
+        assert session.get(SubtitleEvent, ids[122]).translated_text == before[122]
+        assert session.get(SubtitleEvent, ids[123]).translated_text == before[123]
+        assert session.get(SubtitleEvent, ids[124]).translated_text == "Chráněný kontext"
+        for line in (120, 121):
+            event = session.get(SubtitleEvent, ids[line])
+            assert event.original_ai_translated_text == event.translated_text
+            assert session.scalar(select(QaItem).where(
+                QaItem.subtitle_event_id == ids[line], QaItem.qa_type == "polish_edit"
+            )) is not None
+        assert session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == ids[123], QaItem.message == "unrelated finding"
+        )) is not None
+        assert session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == ids[124], QaItem.message == "protected finding"
+        )) is not None
+
+
+def test_targeted_polish_ignores_support_rewrite_without_primary_correction(
+    session_factory, monkeypatch,
+):
+    _, file_id, _ = _seed(
+        session_factory, chunk_status="needs_polish", polish_attempts=1
+    )
+    with session_factory() as session:
+        support = _event(session, file_id, 1, "If you believe", "Jestli věříš",
+                         status="validated")
+        primary = _event(session, file_id, 2, "that this is right.", "že je to správně.",
+                         status="validated")
+        session.add_all([
+            QaItem(file_id=file_id, subtitle_event_id=primary.id, severity="warning",
+                   qa_type="gender_agreement", message="fix primary", is_resolved=0),
+            QaItem(file_id=file_id, subtitle_event_id=support.id, severity="warning",
+                   qa_type="polish_meaning", message="retain me", is_resolved=0),
+        ])
+        session.commit()
+        support_id = support.id
+
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module.llm_client, "complete",
+        lambda **_kwargs: (
+            PolishResponse(edits=[{
+                "i": 1, "t": "Když tomu věříš", "reason": "unrelated naturalness",
+            }], issues=[]),
+            _stats(),
+        ),
+    )
+
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+    assert result["status"] == "succeeded"
+    assert result["result"]["edits_applied"] == 0
+    with session_factory() as session:
+        assert session.get(SubtitleEvent, support_id).translated_text == "Jestli věříš"
+        assert session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == support_id, QaItem.message == "retain me"
+        )) is not None
+
+
+def test_targeted_polish_can_change_only_primary_and_leave_support_untouched(
+    session_factory, monkeypatch,
+):
+    _, file_id, _ = _seed(
+        session_factory, chunk_status="needs_polish", polish_attempts=1
+    )
+    with session_factory() as session:
+        support = _event(session, file_id, 1, "If you believe", "Jestli věříš",
+                         status="validated")
+        primary = _event(session, file_id, 2, "that this is right.", "že je to správný.",
+                         status="validated")
+        session.add_all([
+            QaItem(file_id=file_id, subtitle_event_id=primary.id, severity="warning",
+                   qa_type="gender_agreement", message="fix primary", is_resolved=0),
+            QaItem(file_id=file_id, subtitle_event_id=support.id, severity="warning",
+                   qa_type="polish_meaning", message="retain support QA", is_resolved=0),
+        ])
+        session.commit()
+        support_id, primary_id = support.id, primary.id
+
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module.llm_client, "complete",
+        lambda **_kwargs: (
+            PolishResponse(edits=[{
+                "i": 2, "t": "že je to správné.", "reason": "gender agreement",
+            }], issues=[]),
+            _stats(),
+        ),
+    )
+
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+    assert result["status"] == "succeeded"
+    assert result["result"]["edits_applied"] == 1
+    with session_factory() as session:
+        assert session.get(SubtitleEvent, support_id).translated_text == "Jestli věříš"
+        assert session.get(SubtitleEvent, primary_id).translated_text == "že je to správné."
+        assert session.scalar(select(QaItem).where(
+            QaItem.subtitle_event_id == support_id, QaItem.message == "retain support QA"
+        )) is not None
+
+
+@pytest.mark.parametrize(("bad_edits", "context_locked"), [
+    ([
+        {"i": 1, "t": "Pokud věříš", "reason": "grammar"},
+        {"i": 2, "t": "Přepsaný kontext.", "reason": "unauthorized"},
+    ], False),
+    ([
+        {"i": 1, "t": "Pokud věříš", "reason": "grammar"},
+        {"i": 2, "t": "Přepsaný chráněný kontext.", "reason": "unauthorized"},
+    ], True),
+    ([
+        {"i": 1, "t": "Pokud věříš", "reason": "grammar"},
+        {"i": 1, "t": "Jestli tomu věříš", "reason": "duplicate"},
+    ], False),
+])
+def test_invalid_targeted_response_is_atomic(
+    session_factory, monkeypatch, bad_edits, context_locked,
+):
+    _, file_id, _ = _seed(
+        session_factory, chunk_status="needs_polish", polish_attempts=1
+    )
+    with session_factory() as session:
+        primary = _event(session, file_id, 1, "If you believe", "Jestli věříš",
+                         status="validated")
+        context = _event(session, file_id, 2, "Separate sentence.", "Samostatná věta.",
+                         status="validated", locked=int(context_locked))
+        context.name = "BOB"
+        session.add(QaItem(
+            file_id=file_id, subtitle_event_id=primary.id, severity="warning",
+            qa_type="gender_agreement", message="fix primary", is_resolved=0,
+        ))
+        session.commit()
+        primary_id, context_id = primary.id, context.id
+
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(
+        polish_module.llm_client, "complete",
+        lambda **_kwargs: (
+            PolishResponse(edits=bad_edits, issues=[]),
+            _stats(),
+        ),
+    )
+
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress
+    )
+    assert result["status"] == "failed"
+    assert result["error_code"] == "INVALID_POLISH_RESPONSE"
+    with session_factory() as session:
+        assert session.get(SubtitleEvent, primary_id).translated_text == "Jestli věříš"
+        assert session.get(SubtitleEvent, context_id).translated_text == "Samostatná věta."
+        chunk = session.scalar(select(SubtitleChunk).where(SubtitleChunk.file_id == file_id))
+        assert chunk.status == "needs_polish"
+        assert chunk.polish_attempt_count == 1
+
+
 def test_polish_persists_equivalent_negative_rewrite_without_drift(
     session_factory, monkeypatch,
 ):

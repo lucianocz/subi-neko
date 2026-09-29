@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from datetime import datetime
 from typing import Any
@@ -52,7 +53,9 @@ from app.subs.tag_masking import MaskedLine, mask_line, plain_text, unmask_line
 logger = logging.getLogger(__name__)
 
 _CONTEXT_LINES = 5
+_TARGET_CONTEXT_RADIUS = 2
 _VALID_ISSUE_SEVERITIES = {"warning", "info"}
+_CLEAR_UTTERANCE_END_RE = re.compile(r"[.!?…](?:[\"'”’)\]]+)?$")
 
 
 def _identity_suffix(identity: tuple[str | None, str | None]) -> str:
@@ -62,6 +65,74 @@ def _identity_suffix(identity: tuple[str | None, str | None]) -> str:
     if name:
         return f" ({name})"
     return ""
+
+
+def _speaker_key(
+    event: dict[str, Any],
+    identities: dict[str, tuple[str | None, str | None]],
+) -> str:
+    """Return the canonical speaker when known, otherwise the raw ASS name."""
+    raw = (event.get("name") or "").strip()
+    canonical = identities.get(raw, (raw, None))[0] or raw
+    return canonical.casefold()
+
+
+def _clearly_ends_utterance(source_text: str | None) -> bool:
+    """A deliberately small English boundary test for adjacent ASS events."""
+    return bool(_CLEAR_UTTERANCE_END_RE.search(plain_text(source_text or "").rstrip()))
+
+
+def select_targeted_support_events(
+    events: list[dict[str, Any]],
+    primary_lines: set[int],
+    identities: dict[str, tuple[str | None, str | None]],
+) -> tuple[set[int], dict[int, set[int]]]:
+    """Select at most the immediate neighbour on either side of each primary.
+
+    Continuity is established from the English source and canonical speaker
+    identity.  Protected/untranslated neighbours remain context, not edit
+    targets.  The returned association lets response validation require a
+    supporting rewrite to accompany a real correction to its primary.
+    """
+    if not primary_lines:
+        return set(), {}
+
+    ordered = sorted(events, key=lambda e: e["line_index"])
+    positions = {event["line_index"]: pos for pos, event in enumerate(ordered)}
+    support_to_primaries: dict[int, set[int]] = {}
+
+    for primary_line in sorted(primary_lines):
+        pos = positions.get(primary_line)
+        if pos is None:
+            continue
+        primary = ordered[pos]
+        primary_speaker = _speaker_key(primary, identities)
+        for direction in (-1, 1):
+            neighbour_pos = pos + direction
+            if neighbour_pos < 0 or neighbour_pos >= len(ordered):
+                continue
+            neighbour = ordered[neighbour_pos]
+            neighbour_line = neighbour["line_index"]
+            if neighbour_line in primary_lines:
+                continue
+            if not (
+                neighbour.get("translated_text")
+                and allows_ai_edit(neighbour.get("is_user_edited"), neighbour.get("is_locked"))
+            ):
+                continue
+            if _speaker_key(neighbour, identities) != primary_speaker:
+                continue
+
+            # For a left neighbour, it must continue into the primary.  For a
+            # right neighbour, the primary must continue into it.  This uses
+            # source English rather than a potentially defective Czech draft.
+            preceding = neighbour if direction < 0 else primary
+            if _clearly_ends_utterance(preceding.get("source_text")):
+                continue
+
+            support_to_primaries.setdefault(neighbour_line, set()).add(primary_line)
+
+    return set(support_to_primaries), support_to_primaries
 
 
 @register_job_handler("polish_chunk")
@@ -183,12 +254,23 @@ def polish_chunk(
             limit=ctx.options.lookahead_context_size,
         ))
 
-    editable = [
+    eligible = [
         e for e in tgt_snapshot
         if e["translated_text"] and allows_ai_edit(e["is_user_edited"], e["is_locked"])
     ]
+    primary_lines: set[int] = set()
+    support_lines: set[int] = set()
+    support_to_primaries: dict[int, set[int]] = {}
     if targeted:
-        editable = [e for e in editable if e["line_index"] in fix_notes]
+        primary_lines = {e["line_index"] for e in eligible if e["line_index"] in fix_notes}
+        if content_type == "dialogue":
+            support_lines, support_to_primaries = select_targeted_support_events(
+                tgt_snapshot, primary_lines, identities,
+            )
+        authorized_lines = primary_lines | support_lines
+        editable = [e for e in eligible if e["line_index"] in authorized_lines]
+    else:
+        editable = eligible
 
     if not editable:
         # Nothing to polish (all lines user-edited/locked, or targeted pass
@@ -236,7 +318,39 @@ def polish_chunk(
         else:
             lines.append(f"[CONTEXT] {e['line_index']}{suffix}: {plain_text(e['source_text'])}")
 
-    for e in editable:
+    # A targeted request also shows a narrow read-only window inside the
+    # chunk.  Those rows are useful dialogue context but are never accepted
+    # from the response.  Normal full-coverage payloads remain unchanged.
+    targeted_context_lines: set[int] = set()
+    if targeted:
+        ordered_lines = [e["line_index"] for e in tgt_snapshot]
+        line_positions = {line: pos for pos, line in enumerate(ordered_lines)}
+        for editable_line in primary_lines | support_lines:
+            pos = line_positions[editable_line]
+            start = max(0, pos - _TARGET_CONTEXT_RADIUS)
+            end = min(len(ordered_lines), pos + _TARGET_CONTEXT_RADIUS + 1)
+            targeted_context_lines.update(ordered_lines[start:end])
+        targeted_context_lines -= primary_lines | support_lines
+
+    editable_by_index = {e["line_index"]: e for e in editable}
+    target_by_index = {e["line_index"]: e for e in tgt_snapshot}
+    payload_lines = (
+        sorted(set(editable_by_index) | targeted_context_lines)
+        if targeted else [e["line_index"] for e in editable]
+    )
+    for line_index in payload_lines:
+        if targeted and line_index in targeted_context_lines:
+            e = target_by_index[line_index]
+            identity = identities.get(e["name"] or "", (e["name"], None))
+            suffix = _identity_suffix((identity[0], None))
+            if e["translated_text"]:
+                lines.append(f"[CONTEXT] {line_index}{suffix}: "
+                             f"{plain_text(e['source_text'])} => {plain_text(e['translated_text'])}")
+            else:
+                lines.append(f"[CONTEXT] {line_index}{suffix}: {plain_text(e['source_text'])}")
+            continue
+
+        e = editable_by_index[line_index]
         identity = identities.get(e["name"] or "", (e["name"], None))
         suffix = _identity_suffix(identity)
         # Signs/lyrics have no CPS reading constraint — they are glanced at,
@@ -251,10 +365,22 @@ def polish_chunk(
         lines.append(f"  DRAFT: {masked[e['line_index']].text}")
         for note in fix_notes.get(e["line_index"], []):
             lines.append(f"  fix: {note}")
+        if targeted and e["line_index"] in support_lines:
+            lines.append("  support: Adjacent part of a flagged utterance. "
+                         "Edit only if necessary to make the primary correction coherent.")
 
     lines += lookahead_lines
 
     user_parts = []
+    if targeted:
+        user_parts.append(
+            "## Targeted correction rules\n"
+            "Primary [LINE] events with a `fix:` note are the requested corrections. "
+            "A [LINE] event marked `support:` is optional: change it only when directly "
+            "necessary to make a primary correction coherent, and otherwise leave it "
+            "unchanged. Any supporting edit must preserve source meaning and formatting. "
+            "Never return edits for [CONTEXT] or [AHEAD] events."
+        )
     if content_type == "dialogue":
         char_block = build_character_block(characters)
         speaker_block = build_unmapped_speaker_block(unmapped_speakers)
@@ -319,6 +445,22 @@ def polish_chunk(
         return JobResult(status="failed", result=None,
                          error_code=exc.code, error_message=exc.message)
 
+    if targeted:
+        returned_lines = [edit.i for edit in response.edits]
+        duplicate_lines = sorted({line for line in returned_lines if returned_lines.count(line) > 1})
+        unauthorized_lines = sorted(set(returned_lines) - set(editable_by_index))
+        if duplicate_lines or unauthorized_lines:
+            details = []
+            if duplicate_lines:
+                details.append(f"duplicate edit indices: {duplicate_lines}")
+            if unauthorized_lines:
+                details.append(f"unauthorized edit indices: {unauthorized_lines}")
+            return JobResult(
+                status="failed", result=None,
+                error_code="INVALID_POLISH_RESPONSE",
+                error_message="Targeted Polish response contains " + "; ".join(details),
+            )
+
     progress(0.75, "Applying edits")
 
     editable_by_line = {e["line_index"]: e for e in editable}
@@ -338,6 +480,14 @@ def polish_chunk(
             # A polish edit that corrupts markup is dropped — the validated
             # draft stays in place.
             logger.info("Polish edit for line %d dropped (marker errors: %s)", edit.i, errors)
+            if targeted:
+                return JobResult(
+                    status="failed", result=None,
+                    error_code="INVALID_POLISH_RESPONSE",
+                    error_message=(
+                        f"Targeted Polish edit for line {edit.i} has invalid formatting markers"
+                    ),
+                )
             edits_skipped += 1
             continue
         if final_text == e["translated_text"]:
@@ -351,9 +501,19 @@ def polish_chunk(
             if member_text != all_editable_by_line[member]["translated_text"]:
                 edit_map[member] = (member_text, edit.reason)
 
+    if targeted:
+        effective_primary_lines = set(edit_map) & primary_lines
+        edit_map = {
+            line: value for line, value in edit_map.items()
+            if line in primary_lines
+            or bool(support_to_primaries.get(line, set()) & effective_primary_lines)
+        }
+
     for issue in response.issues:
         e = editable_by_line.get(issue.i)
         if e is None:
+            continue
+        if targeted and issue.i in support_lines and issue.i not in edit_map:
             continue
         severity = issue.severity if issue.severity in _VALID_ISSUE_SEVERITIES else "warning"
         if content_type != "dialogue":
@@ -374,7 +534,14 @@ def polish_chunk(
     with SyncSessionLocal() as session:
         # A fresh polish pass supersedes the previous pass's issue notes —
         # without this they accumulate once per attempt.
-        processed_ids = [e["id"] for e in all_editable_by_line.values()]
+        if targeted:
+            cleanup_lines = primary_lines | (set(edit_map) & support_lines)
+            processed_ids = [
+                e["id"] for line, e in all_editable_by_line.items()
+                if line in cleanup_lines
+            ]
+        else:
+            processed_ids = [e["id"] for e in all_editable_by_line.values()]
         if processed_ids:
             session.execute(
                 delete(QaItem).where(
@@ -385,10 +552,30 @@ def polish_chunk(
                 )
             )
 
-        for line_index, (final_text, reason) in edit_map.items():
+        # Re-check every target before making any write.  If a user protected
+        # one while the LLM was running, fail the whole targeted correction
+        # instead of committing only half of a coordinated rewrite.
+        pending_events: dict[int, SubtitleEvent] = {}
+        for line_index in edit_map:
             e = all_editable_by_line[line_index]
             event = session.get(SubtitleEvent, e["id"])
             if event is None or not allows_ai_edit(event.is_user_edited, event.is_locked):
+                if targeted:
+                    session.rollback()
+                    return JobResult(
+                        status="failed", result=None,
+                        error_code="POLISH_TARGET_CHANGED",
+                        error_message=(
+                            f"Targeted Polish event {line_index} became unavailable before persistence"
+                        ),
+                    )
+                continue
+            pending_events[line_index] = event
+
+        for line_index, (final_text, reason) in edit_map.items():
+            e = all_editable_by_line[line_index]
+            event = pending_events.get(line_index)
+            if event is None:
                 continue
             previous = event.translated_text
             event.translated_text = final_text
@@ -441,7 +628,10 @@ def polish_chunk(
         # consumed — resolve them so the UI doesn't show fixed issues while
         # the follow-up review is still pending (it re-flags anything left).
         if targeted and edit_map:
-            edited_ids = [all_editable_by_line[li]["id"] for li in edit_map]
+            edited_ids = [
+                all_editable_by_line[li]["id"]
+                for li in edit_map if li in primary_lines
+            ]
             session.execute(
                 update(QaItem)
                 .where(
