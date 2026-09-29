@@ -48,6 +48,7 @@ async def get_options() -> dict[str, str | None]:
         "TRANSLATION_PROMPT": opts.translation_prompt,
         "REPAIR_PROMPT": opts.repair_prompt,
         "POLISH_PROMPT": opts.polish_prompt,
+        "FINAL_QA_PROMPT": opts.final_qa_prompt,
         "SIGN_TRANSLATION_PROMPT": opts.sign_translation_prompt,
         "SONG_TRANSLATION_PROMPT": opts.song_translation_prompt,
         "ANALYZE_PROMPT": opts.analyze_prompt,

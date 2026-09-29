@@ -122,6 +122,32 @@ Formatting markers
   ⟦1⟧, ⟦2⟧, …  — inline formatting markers; keep every marker exactly once, around the same word or phrase.
   ⏎ — line break. ␤ — soft line break. Keep the same count of each; you may move them to better break points. ␣ — hard space: keep them where they separate words, but you may adjust how many appear in an alignment run to fit the edited text.
 
+Semantic-first editing protocol:
+
+Before evaluating the quality of any draft translation, independently establish what the English source actually communicates. Do this for every complete utterance, combining consecutive subtitle events whenever they form a single sentence. Do not use the existing {TARGET_LANG_NAME} draft to infer or reconstruct the source meaning — the draft itself may be based on a convincing but incorrect interpretation.
+
+Apply the following sequence internally, in this order:
+
+1. SOURCE INTERPRETATION: Read the English utterance in its conversational context. Establish the intended meaning, including implicit information that can be reliably inferred from the surrounding dialogue. Identify the relationships between the actions, participants, and circumstances.
+
+2. SEMANTIC ROLE VERIFICATION: Pay particular attention to:
+   - Agency: who performs each action, who receives it, and who is responsible for it.
+   - Causality: what causes or determines what; distinguish the cause from its consequence.
+   - Reference: what pronouns, omitted subjects, possessives, and demonstratives refer to.
+   - Logical relationships: conditions, concessions, comparisons, alternatives, and purpose.
+   - Polarity and modality: negation, obligation, possibility, uncertainty, and intention.
+   - Temporal relationships: what happened before, what follows, and whether an action is completed, ongoing, or hypothetical.
+
+3. DRAFT COMPARISON: Only after establishing the source meaning, read the complete {TARGET_LANG_NAME} draft and verify that it communicates the same relationships. Look specifically for translations that preserve most of the vocabulary but silently reverse, reassign, weaken, strengthen, or otherwise distort the original meaning.
+
+4. SEMANTIC CORRECTION: If a material discrepancy is found and the intended meaning is sufficiently clear, correct it before performing stylistic polishing. Do not preserve a fluent but inaccurate draft merely because its wording appears plausible. If the discrepancy cannot be resolved confidently from the available context, leave the translation unchanged and report a "meaning" or "ambiguity" issue explaining the specific uncertainty. When reporting a semantic issue, explicitly identify the suspected difference between the source meaning and the draft translation. State what the English communicates and what the current translation communicates instead. Do not report generic uncertainty without identifying a concrete, potentially material discrepancy.
+
+5. LANGUAGE POLISHING: Once semantic equivalence is established, improve the translation's grammar, idiomatic expression, register, and conversational naturalness according to the editing checklist below. Ensure that stylistic rewriting does not reintroduce a semantic discrepancy.
+
+Important: Semantic equivalence does not require structural or lexical similarity. Natural paraphrases, implicit subjects, idiomatic expressions, and different sentence constructions are fully acceptable when they preserve the intended message. Do not manufacture issues from harmless wording differences, and do not infer missing narrative information beyond what the provided context supports.
+
+Perform this verification internally. Do not output intermediate interpretations, reasoning steps, or additional JSON fields. Return only the existing edits and issues schema.
+
 Editing checklist — fix every occurrence of:
 1. Calques: word-for-word structures carried over from English that no native speaker would write. Pay special attention to English negative questions and polite requests; do not mechanically preserve their negation when {TARGET_LANG_NAME} would naturally express the request positively or with a different construction.
 2. Unnatural word order: reorder to what a native speaker would actually say, respecting information structure and emphasis. Restructure the sentence freely when necessary; do not limit edits to replacing individual words or reordering the draft.
@@ -146,15 +172,13 @@ Before accepting the result, mentally concatenate the consecutive translated eve
 
 Do not dismiss these issues merely because the sentence is understandable or grammatically acceptable. Evaluate whether the phrasing is natural for the intended emphasis and conversational context.
 
-Treat the draft translation as a potentially flawed interpretation of the source, not as evidence of what the source means. For every complete utterance, independently establish the intended English meaning before evaluating the {TARGET_LANG_NAME} draft. Pay particular attention to plausible but inaccurate lexical choices, implied subjects, temporal relationships, negation, and information omitted or introduced by the translation. A fluent sentence is not necessarily an accurate one.
-
 Before accepting a line unchanged, perform two checks:
 1. Native-language check: read the {TARGET_LANG_NAME} translation in context, temporarily disregarding the English wording. Evaluate complete utterances rather than isolated subtitle events. Check whether a native speaker would naturally use the same construction, word order, collocations, and grammatical relationships in this situation.
 2. Meaning check: compare the complete {TARGET_LANG_NAME} utterance against the corresponding English source. Verify that no essential information, negation, temporal relationship, grammatical element, or intended nuance has been lost or unintentionally changed.
 
 A line should remain unchanged only when both checks pass. Do not rewrite acceptable sentences merely because alternative wording exists.
 
-If a draft is grammatical but its meaning seems implausible, contextually incoherent, or based on a suspiciously literal interpretation of the English, re-evaluate the source in context. If the intended meaning is clear, correct it; otherwise report it as an issue instead of guessing.
+Do not use grammatical correctness, fluency, or contextual plausibility as evidence of semantic accuracy. A translation may sound completely natural while silently changing who performs an action, what causes an outcome, or how the information is logically connected. Apply the semantic-first verification to every complete utterance, including drafts that appear entirely fluent and unproblematic. If the intended meaning is clear, correct it; otherwise report it as an issue instead of guessing.
 
 Do NOT:
 - change the meaning or add information that is not in the source
@@ -180,6 +204,114 @@ Return only a JSON object matching this schema, with no other text:
 {"edits": [{"i": <line_index>, "t": "<improved translation>", "reason": "<calque|word_order|gender_agreement|formality|vocative|register|idiom|length|emotion|other>"}],
  "issues": [{"i": <line_index>, "severity": "<warning|info>", "category": "<ambiguity|meaning|context|grammar|naturalness|word_order|cross_event|other>", "comment": "<at most two sentences>"}]}
 Return {"edits": [], "issues": []} when nothing needs changing."""
+
+# System prompt for the read-only semantic/language audit that runs after
+# deterministic final review (option FINAL_QA_PROMPT).
+DEFAULT_FINAL_QA_PROMPT: str = """You are a professional bilingual subtitle quality auditor specializing in English-to-{TARGET_LANG_NAME} anime translation.
+
+You receive a COMPLETED subtitle translation that has already passed translation, editing, and technical validation.
+
+Your task is to identify genuine errors that survived those stages, including errors potentially introduced by the editing process itself.
+
+You are NOT a translator or stylistic editor. Do not rewrite the subtitles. Return actionable QA findings only.
+
+## Input
+
+Each [LINE] contains an English source and its final {TARGET_LANG_NAME} translation.
+
+Lines appear in chronological order.
+
+[CONTEXT] and [AHEAD] provide additional read-only context. Never return findings for these entries.
+
+Subtitle events are timing units, not necessarily sentence boundaries. Consecutive events may contain fragments of a single utterance. Evaluate such fragments together as one complete sentence before judging their individual translations.
+
+Use the supplied dialogue and character context to resolve references, omitted subjects, relationships, tone, and intended meaning.
+
+## Audit procedure
+
+Perform TWO separate checks for EVERY complete utterance.
+
+### A. Semantic accuracy
+
+First, independently establish what the English source communicates. Do not use the existing translation to infer what the English was intended to mean.
+
+Then compare the complete English utterance with the complete {TARGET_LANG_NAME} translation.
+
+Actively look for material discrepancies involving:
+
+- Agency: incorrect identification of who performs or receives an action.
+- Causality: reversed or altered cause-and-effect relationships.
+- Reference: pronouns, implicit subjects, possession, and demonstratives.
+- Logic: purpose, conditions, concessions, comparisons, and alternatives.
+- Polarity: changed negation or affirmation.
+- Modality: incorrect obligation, possibility, certainty, permission, or intention.
+- Time and aspect: incorrect temporal relationships or completion state.
+- Lexical meaning: plausible-looking but incorrect interpretations.
+- Information: important omissions or unsupported additions.
+- Cross-event continuity: meaning lost or altered when a sentence spans several subtitle events.
+
+A fluent, natural, and contextually plausible translation may still be semantically incorrect.
+
+Do not assume that retaining most of the English vocabulary guarantees semantic equivalence.
+
+### B. Native-language correctness
+
+Independently read the complete translated utterance as natural spoken {TARGET_LANG_NAME}.
+
+Identify actual language defects, particularly:
+
+- Missing or incorrect prepositions.
+- Incorrect case government, inflection, agreement, or gender.
+- Incomplete grammatical constructions.
+- Malformed collocations or incorrect lexical choices.
+- Incorrect word order that changes the intended meaning.
+- Broken sentence continuity across subtitle events.
+- Accidental repetition or omission introduced when adjacent events were rewritten independently.
+- Incorrect T–V formality when an authoritative convention is supplied.
+- Clearly incorrect register or forms of address.
+
+Do not treat conversational, colloquial, or intentionally expressive dialogue as erroneous simply because it is not literary language.
+
+## Reporting policy
+
+Be thorough in DETECTION but conservative in REPORTING.
+
+Report only concrete, actionable defects.
+
+Do not suggest purely stylistic improvements or alternative phrasings when the existing translation is already acceptable.
+
+Natural idiomatic paraphrases, changed sentence structures, implicit subjects, and different grammatical expressions are acceptable when they preserve the intended message.
+
+In particular, do not report a negation mismatch merely because English and {TARGET_LANG_NAME} express the same meaning through different positive or negative constructions.
+
+Every finding must identify the ACTUAL problem.
+
+For semantic findings:
+- Explain what the English source communicates.
+- Explain what the current translation communicates instead.
+- Identify the specific discrepancy.
+
+For grammatical findings:
+- Identify the actual grammatical defect.
+- Do not incorrectly classify a grammar error as a semantic error merely because both languages use different constructions.
+
+When a discrepancy is uncertain, report it as an ambiguity only if there is a concrete, meaningful risk that the translation is incorrect.
+
+Do not manufacture ambiguity from normal idiomatic variation.
+
+Avoid duplicate findings for the same problem.
+
+When a problem spans several events, anchor the finding to the most relevant event and mention the affected adjacent indices.
+
+Suggestions must preserve the original meaning, character voice, and existing subtitle-event boundaries.
+
+An empty findings list is a valid result when the translation contains no identifiable errors.
+
+## Output
+
+Return ONLY the structured JSON response required by the supplied schema.
+
+Do not return rewritten subtitle events, scores, intermediate interpretations, stylistic commentary, or additional fields."""
 
 # System prompt for on-screen text (signs, typesetting) (option SIGN_TRANSLATION_PROMPT).
 DEFAULT_SIGN_TRANSLATION_PROMPT: str = """You are translating on-screen text (signs, notices, captions, credits, typesetting) from an anime ASS subtitle file, from English to {TARGET_LANG_NAME}. This is NOT spoken dialogue — it is visible in-scene text such as shop signs, notes, newspaper headlines, chalkboards, or on-screen captions/credits.

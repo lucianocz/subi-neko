@@ -21,6 +21,7 @@ Extracts subtitles from MKV files, translates them using an OpenAI-compatible LL
   - **Repair** — automated LLM repair pass when validation fails (one attempt before requiring user action)
   - **Polish** — better-model full-coverage pass reworking every line for naturalness, gender agreement, register, and length. Every edit is diffed against the draft (no extra LLM call): a rewrite that changes a number, flips a negation, or drops an established glossary term is flagged as `polish_drift` for review
   - **Final review** — deterministic Czech-agreement, T–V consistency, readability (CPS/row length), and untranslated-text checks; strong findings trigger one targeted polish re-pass
+  - **Final QA audit** — better-model, read-only semantic and Czech-language inspection of the committed dialogue translation; findings go to human review and never trigger another edit cycle
 - **Content-type aware** — dialogue, signs, songs, and karaoke get separate prompts and rules; karaoke lines keep their per-syllable timing untouched by default
 - **Series-wide consistency**:
   - **Style bible** — LLM-generated per project before the first episode translates (tone, register rules, honorific policy, character voices, T–V address pairs); learns additively from each accepted episode; fully user-editable in the Style guide dialog
@@ -102,6 +103,7 @@ Only the directory paths and low-level flags are set via environment variables (
 | `TRANSLATION_PROMPT` | built-in | System prompt for the translation job; `{TARGET_LANG_NAME}` is substituted |
 | `REPAIR_PROMPT` | built-in | System prompt for the repair job |
 | `POLISH_PROMPT` | built-in | System prompt for the polish (naturalness) pass |
+| `FINAL_QA_PROMPT` | built-in | System prompt for the read-only final semantic/language audit |
 | `SIGN_TRANSLATION_PROMPT` | built-in | System prompt for on-screen text (signs/typesetting) |
 | `SONG_TRANSLATION_PROMPT` | built-in | System prompt for song lyrics |
 | `ANALYZE_PROMPT` | built-in | System prompt for the per-file script analysis pass |
@@ -118,7 +120,7 @@ All prompt defaults live in `backend/app/db/default_prompts.py`; each is overrid
 | `OPENAI_API_KEY` | *(required)* | API key; set to any value for local/proxy endpoints |
 | `OPENAI_API_BASE` | `https://api.openai.com/v1` | API base URL; point to any OpenAI-compatible endpoint |
 | `OPENAI_MODEL_CHEAP` | `gpt-5.4-mini` | Model used for translation |
-| `OPENAI_MODEL_BETTER` | `gpt-5.4` | Model used for the polish and repair passes |
+| `OPENAI_MODEL_BETTER` | `gpt-5.6-terra` | Model used for repair, polish, and final QA audit passes |
 | `LLM_STRUCTURED_OUTPUTS` | `auto` | `auto`, `json_schema`, `json_object`, or `text`; auto probes the backend and downgrades automatically |
 | `LLM_PRICES_JSON` | *(empty)* | Per-million-token prices for cost tracking, e.g. `{"gpt-5.4-mini": {"in": 0.4, "out": 1.6}}` |
 | `LLM_MAX_COMPLETION_TOKENS` | `16384` | Upper bound on completion tokens per call |
@@ -182,6 +184,7 @@ context; signs/karaoke/songs and all later stages run in parallel):
   └─ polish_chunk        – better-model naturalness pass over every line
   └─ review_chunk_final  – deterministic Czech/readability checks;
                            strong findings trigger one targeted re-polish
+  └─ audit_chunk_final   – dialogue-only read-only semantic/language audit
 
 All chunks complete
   └─ clean file (no unresolved QA) → auto-accepted; flagged file → review queue

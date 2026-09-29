@@ -455,6 +455,7 @@ _RETRANSLATION_CHUNK_JOB_TYPES = {
     "repair_chunk",
     "polish_chunk",
     "review_chunk_final",
+    "audit_chunk_final",
 }
 
 
@@ -1290,6 +1291,7 @@ CHUNK_PIPELINE_JOB_TYPES = {
     "repair_chunk",
     "polish_chunk",
     "review_chunk_final",
+    "audit_chunk_final",
 }
 
 
@@ -1413,6 +1415,7 @@ _RETRY_STATUS_BY_JOB_TYPE: dict[str, str] = {
     "repair_chunk":        "validate_trans_failed",
     "polish_chunk":        "validated",
     "review_chunk_final":  "polished",
+    "audit_chunk_final":   "final_reviewed",
 }
 
 

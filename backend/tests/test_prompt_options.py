@@ -25,6 +25,8 @@ PROMPT_OPTIONS = {
                       "resolved_repair_prompt"),
     "POLISH_PROMPT": ("polish_prompt", "DEFAULT_POLISH_PROMPT",
                       "resolved_polish_prompt"),
+    "FINAL_QA_PROMPT": ("final_qa_prompt", "DEFAULT_FINAL_QA_PROMPT",
+                        "resolved_final_qa_prompt"),
     "SIGN_TRANSLATION_PROMPT": ("sign_translation_prompt", "DEFAULT_SIGN_TRANSLATION_PROMPT",
                                 "resolved_sign_translation_prompt"),
     "SONG_TRANSLATION_PROMPT": ("song_translation_prompt", "DEFAULT_SONG_TRANSLATION_PROMPT",

@@ -546,6 +546,7 @@ _CHUNK_JOB_TYPES = {
     "repair_chunk",
     "polish_chunk",
     "review_chunk_final",
+    "audit_chunk_final",
 }
 
 _FAILED_JOB_ALLOWED_CHUNK_STATUSES = {
@@ -554,6 +555,7 @@ _FAILED_JOB_ALLOWED_CHUNK_STATUSES = {
     "repair_chunk": {"validate_trans_failed"},
     "polish_chunk": {"validated", "needs_polish"},
     "review_chunk_final": {"polished"},
+    "audit_chunk_final": {"final_reviewed", "audited"},
 }
 
 # Error codes worth an automatic re-run of the same chunk stage: the LLM
@@ -562,6 +564,7 @@ _FAILED_JOB_ALLOWED_CHUNK_STATUSES = {
 _RETRYABLE_CHUNK_ERROR_CODES = {
     "OPENAI_API_ERROR",
     "RESPONSE_PARSE_ERROR",
+    "RESPONSE_VALIDATION_ERROR",
     "UNEXPECTED_ERROR",
 }
 

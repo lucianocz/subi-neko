@@ -298,7 +298,7 @@ function OptionsForm({ options }: { options: OptionsMap }) {
         <SaveOnBlurText
           optionKey="OPENAI_MODEL_BETTER"
           label="Better model"
-          description="Used for the polish and repair passes where quality is critical."
+          description="Used for repair, polish, and the final read-only QA audit where quality is critical."
           defaultValue={options['OPENAI_MODEL_BETTER'] ?? null}
         />
         <SaveOnChangeSelect
@@ -430,6 +430,13 @@ function OptionsForm({ options }: { options: OptionsMap }) {
           description="Instructs the model how to rework draft translations into natural, fluent target-language subtitles."
           defaultValue={options['POLISH_PROMPT'] ?? null}
           onReset={() => resetPrompt('POLISH_PROMPT')}
+        />
+        <SaveOnBlurTextarea
+          optionKey="FINAL_QA_PROMPT"
+          label="Final QA audit prompt"
+          description="Instructs the read-only post-review auditor to find semantic and target-language defects without changing subtitles."
+          defaultValue={options['FINAL_QA_PROMPT'] ?? null}
+          onReset={() => resetPrompt('FINAL_QA_PROMPT')}
         />
         <SaveOnBlurTextarea
           optionKey="SIGN_TRANSLATION_PROMPT"

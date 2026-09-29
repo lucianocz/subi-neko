@@ -31,6 +31,7 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from app.core.database import AsyncSessionLocal, SyncSessionLocal
 from app.db.default_prompts import (
     DEFAULT_ANALYZE_PROMPT,
+    DEFAULT_FINAL_QA_PROMPT,
     DEFAULT_MAPPING_PROMPT,
     DEFAULT_POLISH_PROMPT,
     DEFAULT_REPAIR_PROMPT,
@@ -61,7 +62,7 @@ class AppOptions:
     openai_api_base: str = "https://api.openai.com/v1"
     openai_api_key: str | None = None
     openai_model_cheap: str = "gpt-5.4-mini"
-    openai_model_better: str = "gpt-5.4"
+    openai_model_better: str = "gpt-5.6-terra"
     llm_structured_outputs: str = "auto"
     llm_prices_json: str | None = None
     llm_max_completion_tokens: int = 32768
@@ -80,6 +81,7 @@ class AppOptions:
     translation_prompt: str = DEFAULT_TRANSLATION_PROMPT
     repair_prompt: str = DEFAULT_REPAIR_PROMPT
     polish_prompt: str = DEFAULT_POLISH_PROMPT
+    final_qa_prompt: str = DEFAULT_FINAL_QA_PROMPT
     sign_translation_prompt: str = DEFAULT_SIGN_TRANSLATION_PROMPT
     song_translation_prompt: str = DEFAULT_SONG_TRANSLATION_PROMPT
     analyze_prompt: str = DEFAULT_ANALYZE_PROMPT
@@ -101,7 +103,7 @@ class AppOptions:
             openai_api_base=d.get("OPENAI_API_BASE") or "https://api.openai.com/v1",
             openai_api_key=d.get("OPENAI_API_KEY"),
             openai_model_cheap=d.get("OPENAI_MODEL_CHEAP") or "gpt-5.4-mini",
-            openai_model_better=d.get("OPENAI_MODEL_BETTER") or "gpt-5.4",
+            openai_model_better=d.get("OPENAI_MODEL_BETTER") or "gpt-5.6-terra",
             llm_structured_outputs=_validated_structured_outputs(d.get("LLM_STRUCTURED_OUTPUTS")),
             llm_prices_json=d.get("LLM_PRICES_JSON"),
             llm_max_completion_tokens=_validated_positive_int(
@@ -122,6 +124,7 @@ class AppOptions:
             translation_prompt=d.get("TRANSLATION_PROMPT") or DEFAULT_TRANSLATION_PROMPT,
             repair_prompt=d.get("REPAIR_PROMPT") or DEFAULT_REPAIR_PROMPT,
             polish_prompt=d.get("POLISH_PROMPT") or DEFAULT_POLISH_PROMPT,
+            final_qa_prompt=d.get("FINAL_QA_PROMPT") or DEFAULT_FINAL_QA_PROMPT,
             sign_translation_prompt=d.get("SIGN_TRANSLATION_PROMPT") or DEFAULT_SIGN_TRANSLATION_PROMPT,
             song_translation_prompt=d.get("SONG_TRANSLATION_PROMPT") or DEFAULT_SONG_TRANSLATION_PROMPT,
             analyze_prompt=d.get("ANALYZE_PROMPT") or DEFAULT_ANALYZE_PROMPT,
@@ -143,6 +146,9 @@ class AppOptions:
 
     def resolved_polish_prompt(self) -> str:
         return self._resolve(self.polish_prompt)
+
+    def resolved_final_qa_prompt(self) -> str:
+        return self._resolve(self.final_qa_prompt)
 
     def resolved_sign_translation_prompt(self) -> str:
         return self._resolve(self.sign_translation_prompt)

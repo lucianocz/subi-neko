@@ -266,11 +266,12 @@ async def _create_qa_item(
     severity: str = "blocker",
     is_resolved: int = 0,
     subtitle_event_id: int | None = None,
+    qa_type: str = "test_issue",
 ) -> QaItem:
     q = QaItem(
         file_id=file_id,
         severity=severity,
-        qa_type="test_issue",
+        qa_type=qa_type,
         message="Test QA issue",
         is_resolved=is_resolved,
         subtitle_event_id=subtitle_event_id,
@@ -406,12 +407,48 @@ class TestChunkOrchestrator:
         assert call_kwargs["job_type"] == "polish_chunk"
 
     @pytest.mark.asyncio
-    async def test_final_reviewed_sets_complete(self, db_session, enqueue_mock):
+    async def test_dialogue_final_reviewed_enqueues_final_audit(self, db_session, enqueue_mock):
         from app.orchestrator.chunk_orchestrator import orchestrate_chunks
 
         project = await _create_project(db_session, status="processing")
         file = await _create_file(db_session, project.id, status="processing")
         chunk = await _create_chunk(db_session, file.id, 0, status="final_reviewed")
+
+        result = await orchestrate_chunks(file.id, project.id, enqueue_mock)
+
+        assert result is False
+        assert enqueue_mock.call_args.kwargs["job_type"] == "audit_chunk_final"
+        assert enqueue_mock.call_args.kwargs["dedupe_key"] == f"audit_chunk_final:{file.id}:0"
+        await db_session.refresh(chunk)
+        assert chunk.status == "final_reviewed"
+
+    @pytest.mark.asyncio
+    async def test_audited_sets_complete(self, db_session, enqueue_mock):
+        from app.orchestrator.chunk_orchestrator import orchestrate_chunks
+
+        project = await _create_project(db_session, status="processing")
+        file = await _create_file(db_session, project.id, status="processing")
+        chunk = await _create_chunk(db_session, file.id, 0, status="audited")
+
+        result = await orchestrate_chunks(file.id, project.id, enqueue_mock)
+
+        assert result is True
+        enqueue_mock.assert_not_called()
+        await db_session.refresh(chunk)
+        assert chunk.status == "complete"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("content_type", ["sign", "song", "karaoke"])
+    async def test_non_dialogue_final_reviewed_still_completes_directly(
+        self, db_session, enqueue_mock, content_type,
+    ):
+        from app.orchestrator.chunk_orchestrator import orchestrate_chunks
+
+        project = await _create_project(db_session, status="processing")
+        file = await _create_file(db_session, project.id, status="processing")
+        chunk = await _create_chunk(
+            db_session, file.id, 0, status="final_reviewed", content_type=content_type,
+        )
 
         result = await orchestrate_chunks(file.id, project.id, enqueue_mock)
 
@@ -500,6 +537,7 @@ class TestChunkOrchestrator:
         "previous_status,expected_job",
         [
             ("polished", "review_chunk_final"),
+            ("final_reviewed", "audit_chunk_final"),
             # The full-coverage pass has run; the targeted re-polish only
             # revisits a handful of flagged lines, so it does not hold N back.
             ("needs_polish", "polish_chunk"),
@@ -992,6 +1030,24 @@ class TestFileOrchestrator:
         file = await _create_file(db_session, project.id, status="processing")
         await _create_chunk(db_session, file.id, 0, status="complete")
         await _create_qa_item(db_session, file.id, severity="warning", is_resolved=0)
+
+        await orchestrate_file(file.id, enqueue_mock)
+
+        await db_session.refresh(file)
+        assert file.status == "review_required"
+        assert file.blocking_reason == "user_review_required"
+
+    @pytest.mark.asyncio
+    async def test_fully_clean_routes_final_audit_warning_to_review(self, db_session, enqueue_mock):
+        from app.orchestrator.file_orchestrator import orchestrate_file
+
+        project = await _create_project(db_session, status="processing")
+        file = await _create_file(db_session, project.id, status="processing")
+        await _create_chunk(db_session, file.id, 0, status="complete")
+        await _create_qa_item(
+            db_session, file.id, severity="warning", is_resolved=0,
+            qa_type="final_audit_meaning",
+        )
 
         await orchestrate_file(file.id, enqueue_mock)
 

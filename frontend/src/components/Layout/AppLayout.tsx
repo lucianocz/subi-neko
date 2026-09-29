@@ -138,9 +138,10 @@ const CONTENT_TYPE_COLORS: Record<string, string> = {
   karaoke: 'teal',
 };
 
-const COMPLETE_AFTER_VALIDATE = new Set(['validated', 'polished', 'needs_polish', 'final_reviewed', 'complete']);
-const COMPLETE_AFTER_POLISH = new Set(['polished', 'final_reviewed', 'complete']);
-const COMPLETE_AFTER_FINAL = new Set(['final_reviewed', 'complete']);
+const COMPLETE_AFTER_VALIDATE = new Set(['validated', 'polished', 'needs_polish', 'final_reviewed', 'audited', 'complete']);
+const COMPLETE_AFTER_POLISH = new Set(['polished', 'final_reviewed', 'audited', 'complete']);
+const COMPLETE_AFTER_FINAL = new Set(['final_reviewed', 'audited', 'complete']);
+const COMPLETE_AFTER_AUDIT = new Set(['audited', 'complete']);
 
 function isProcessing(job?: ChunkJob) {
   return job?.status === 'running';
@@ -276,11 +277,29 @@ function finalBadge(chunk: SubtitleChunk): PipelineBadge {
   return { label: 'Waiting', tone: 'waiting', jobType: 'review_chunk_final', job };
 }
 
+function auditBadge(chunk: SubtitleChunk): PipelineBadge {
+  const job = chunkJob(chunk, 'audit_chunk_final');
+  if (chunk.content_type !== 'dialogue') {
+    return { label: 'Not needed', tone: 'not-needed', jobType: 'audit_chunk_final', job };
+  }
+  const findings = numberResult(job, 'findings_created') ?? 0;
+  if (job?.status === 'failed') return { label: labelWithRuns('Failed', job), tone: 'failed', jobType: 'audit_chunk_final', job };
+  if (isProcessing(job)) return { label: 'Processing', tone: 'processing', jobType: 'audit_chunk_final', job };
+  if (isQueued(job)) return { label: 'Queued', tone: 'queued', jobType: 'audit_chunk_final', job };
+  if (isCompleted(job) || COMPLETE_AFTER_AUDIT.has(chunk.status)) {
+    return findings > 0
+      ? { label: `Issues (${findings})`, tone: 'issues', jobType: 'audit_chunk_final', job }
+      : { label: labelWithRuns('Done', job), tone: 'done', jobType: 'audit_chunk_final', job };
+  }
+  return { label: 'Waiting', tone: 'waiting', jobType: 'audit_chunk_final', job };
+}
+
 function isQaCompleted(chunk: SubtitleChunk) {
   return Boolean(
     chunkJob(chunk, 'validate_chunk')?.status === 'completed'
     || chunkJob(chunk, 'polish_chunk')?.status === 'completed'
     || chunkJob(chunk, 'review_chunk_final')?.status === 'completed'
+    || chunkJob(chunk, 'audit_chunk_final')?.status === 'completed'
     || COMPLETE_AFTER_VALIDATE.has(chunk.status)
   );
 }
@@ -341,6 +360,7 @@ const CHUNK_STATUS_LABELS: Record<string, { label: string; color: string }> = {
   needs_polish:           { label: 'Needs polish',       color: 'yellow' },
   polished:               { label: 'Polished',           color: 'violet' },
   final_reviewed:         { label: 'Final reviewed',     color: 'teal' },
+  audited:                { label: 'Audited',            color: 'cyan' },
   complete:               { label: 'Complete',           color: 'green' },
   job_failed:             { label: 'Job failed',         color: 'red' },
   validate_trans_failed:  { label: 'Needs repair',       color: 'yellow' },
@@ -434,7 +454,7 @@ function FileChunksPanel({ projectId, fileId }: { projectId: number; fileId: num
 
   return (
     <ScrollArea type="auto" offsetScrollbars>
-      <Table fz="xs" withColumnBorders={false} style={{ minWidth: 1105, tableLayout: 'fixed' }}>
+      <Table fz="xs" withColumnBorders={false} style={{ minWidth: 1197, tableLayout: 'fixed' }}>
       <Table.Thead>
         <Table.Tr>
           <Table.Th style={{ width: 40 }}>#</Table.Th>
@@ -445,6 +465,7 @@ function FileChunksPanel({ projectId, fileId }: { projectId: number; fileId: num
           <Table.Th style={{ width: 92 }}>Fix</Table.Th>
           <Table.Th style={{ width: 110 }}>Polish</Table.Th>
           <Table.Th style={{ width: 92 }}>Final</Table.Th>
+          <Table.Th style={{ width: 92 }}>Audit</Table.Th>
           <Table.Th style={{ width: 72 }}>Issues</Table.Th>
           <Table.Th style={{ width: 130 }}>Status</Table.Th>
           <Table.Th style={{ width: 80 }} />
@@ -485,6 +506,9 @@ function FileChunksPanel({ projectId, fileId }: { projectId: number; fileId: num
             </Table.Td>
             <Table.Td>
               <PipelineStatus badge={finalBadge(c)} />
+            </Table.Td>
+            <Table.Td>
+              <PipelineStatus badge={auditBadge(c)} />
             </Table.Td>
             <Table.Td>
               <IssuesCell chunk={c} />

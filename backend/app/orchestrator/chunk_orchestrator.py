@@ -10,7 +10,8 @@ Chunk state machine:
     validated             → polish_chunk      (full-coverage quality pass)
     polished              → review_chunk_final
     needs_polish          → polish_chunk      (targeted re-pass, max 1)
-    final_reviewed        → complete          (auto)
+    final_reviewed        → audit_chunk_final (dialogue only)
+    audited               → complete          (auto)
 
 Terminal: job_failed, validate_repair_failed (require user action).
 
@@ -53,7 +54,7 @@ _CHUNK_TRANSITIONS: dict[str, str] = {
     "validated":              "polish_chunk",
     "polished":               "review_chunk_final",
     "needs_polish":           "polish_chunk",
-    # final_reviewed handled with custom logic (auto-complete)
+    "final_reviewed":         "audit_chunk_final",
 }
 
 # Terminal statuses that require user action — orchestrator must not enqueue anything.
@@ -136,8 +137,16 @@ async def orchestrate_chunks(
                 previous_status[content_type] = "complete"
                 continue
 
-        # --- final_reviewed: auto-complete ---
-        if status == "final_reviewed":
+        # Non-dialogue review intentionally remains deterministic-only.
+        # Dialogue must pass the read-only semantic audit before completion.
+        if status == "final_reviewed" and content_type != _GATED_CONTENT_TYPE:
+            await _set_chunk_complete(file_id, chunk.chunk_index)
+            any_auto_completed = True
+            previous_status[content_type] = "complete"
+            continue
+
+        # --- successfully audited dialogue: auto-complete ---
+        if status == "audited":
             await _set_chunk_complete(file_id, chunk.chunk_index)
             any_auto_completed = True
             previous_status[content_type] = "complete"

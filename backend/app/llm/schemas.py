@@ -64,6 +64,25 @@ class PolishResponse(BaseModel):
     issues: list[PolishIssue]
 
 
+class FinalAuditIssue(BaseModel):
+    """Read-only finding produced by the post-review semantic QA pass."""
+    model_config = ConfigDict(extra="forbid")
+
+    i: int
+    category: str
+    severity: str
+    explanation: str
+    # Nullable-but-required in the strict JSON schema.  The auditor may be
+    # certain that a defect exists without being certain of the best wording.
+    suggestion: str | None = None
+
+
+class FinalAuditResponse(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    issues: list[FinalAuditIssue]
+
+
 class GlossaryTermOut(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
