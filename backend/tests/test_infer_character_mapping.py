@@ -47,6 +47,9 @@ def _seed(session, speakers: list[dict], characters: list[dict]) -> int:
             project_id=project.id, name=c["name"],
             external_id=c.get("external_id"), gender=c.get("gender"),
             aliases=c.get("aliases"),
+            role=c.get("role"), description=c.get("description"),
+            voice_actor=c.get("voice_actor"), character_type=c.get("character_type"),
+            social_position=c.get("social_position"), note=c.get("note"),
             created_at=_now(), updated_at=_now(),
         ))
     for s in speakers:
@@ -63,8 +66,8 @@ def _seed(session, speakers: list[dict], characters: list[dict]) -> int:
     return project.id
 
 
-def _run(project_id: int):
-    ctx = JobContext(import_root=Path("."), output_root=Path("."), options=AppOptions())
+def _run(project_id: int, options: AppOptions | None = None):
+    ctx = JobContext(import_root=Path("."), output_root=Path("."), options=options or AppOptions())
     return icm.infer_character_mapping({"project_id": project_id}, ctx, _progress)
 
 
@@ -167,6 +170,20 @@ def test_extras_marked_and_never_sent_to_llm(factory, monkeypatch):
         assert speakers["Crowd"].is_extra == 1
 
 
+def test_exact_role_like_character_name_wins_before_generic_extra(factory, monkeypatch):
+    monkeypatch.setattr(icm.llm_client, "complete", lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("exact character must not reach LLM")))
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Doctor"}], [
+            {"name": "Doctor", "external_id": "doctor", "gender": "female"},
+        ])
+    _run(project_id)
+    with factory() as session:
+        speaker = session.scalar(select(ProjectSpeaker))
+        assert speaker.character_id is not None
+        assert speaker.is_extra == 0
+
+
 def test_manual_mapping_never_overwritten(factory, monkeypatch):
     def _no_llm(**kwargs):
         raise AssertionError("Manual rows must not reach the LLM")
@@ -224,6 +241,101 @@ def test_llm_matches_written_with_confidence_and_gender(factory, monkeypatch):
         assert speakers["Mystery Man"].gender == "male"  # gender kept even unmatched
         project = session.get(Project, project_id)
         assert project.speaker_mapping_status == "complete"
+
+
+def test_canonical_gender_precedes_conflicting_llm_gender(factory, monkeypatch):
+    def _fake_complete(**kwargs):
+        return MappingResponse(matches=[SpeakerMatch(
+            speaker="Captain", character_external_id="c1", confidence=0.9,
+            inferred_gender="female", rationale="dialogue guess")]), None
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Captain"}], [
+            {"name": "Alex Morgan", "external_id": "c1", "gender": "male"},
+        ])
+    _run(project_id)
+    with factory() as session:
+        assert session.scalar(select(ProjectSpeaker)).gender == "male"
+
+
+def test_low_confidence_character_does_not_override_llm_gender(factory, monkeypatch):
+    def _fake_complete(**kwargs):
+        return MappingResponse(matches=[SpeakerMatch(
+            speaker="Captain", character_external_id="c1", confidence=0.4,
+            inferred_gender="female", rationale="uncertain match")]), None
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Captain"}], [
+            {"name": "Alex Morgan", "external_id": "c1", "gender": "male"},
+        ])
+    _run(project_id)
+    with factory() as session:
+        assert session.scalar(select(ProjectSpeaker)).gender == "female"
+
+
+def test_existing_speaker_gender_is_not_destructively_overwritten(factory, monkeypatch):
+    def _fake_complete(**kwargs):
+        return MappingResponse(matches=[SpeakerMatch(
+            speaker="Captain", character_external_id="c1", confidence=0.9,
+            inferred_gender="male", rationale="guess")]), None
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Captain", "gender": "female"}], [
+            {"name": "Alex Morgan", "external_id": "c1", "gender": "male"},
+        ])
+    _run(project_id)
+    with factory() as session:
+        assert session.scalar(select(ProjectSpeaker)).gender == "female"
+
+
+def test_cryptic_label_does_not_propagate_character_or_llm_gender(factory, monkeypatch):
+    def _fake_complete(**kwargs):
+        return MappingResponse(matches=[SpeakerMatch(
+            speaker="20", character_external_id="c1", confidence=0.99,
+            inferred_gender="female", rationale="guess")]), None
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "20"}], [
+            {"name": "Aria", "external_id": "c1", "gender": "female"},
+        ])
+    _run(project_id)
+    with factory() as session:
+        speaker = session.scalar(select(ProjectSpeaker))
+        assert speaker.match_confidence == 0.5
+        assert speaker.gender is None
+
+
+def test_mapping_payload_has_aliases_metadata_and_configured_description_limits(factory, monkeypatch):
+    captured = {}
+    def _fake_complete(**kwargs):
+        captured.update(kwargs)
+        return MappingResponse(matches=[]), None
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Unknown"}], [{
+            "name": "Aria Vermillion", "external_id": "c1", "gender": "female",
+            "aliases": "Heroine, Aria V", "role": "MAIN", "voice_actor": "Jane",
+            "character_type": "Human", "social_position": "Princess", "note": "Formal",
+            "description": "One sentence. " + "x" * 100,
+        }])
+    options = AppOptions(mapping_character_description_max=30,
+                         mapping_character_description_budget=30)
+    _run(project_id, options)
+    user = captured["user"]
+    assert "id=c1: Aria Vermillion" in user
+    assert "aliases: Heroine, Aria V" in user
+    assert "type: Human" in user and "VA: Jane" in user
+    assert "social position: Princess" in user and "note: Formal" in user
+    assert "x" * 30 not in user
+
+
+@pytest.mark.parametrize(("count", "expected"), [(1, 1184), (20, 4224), (100, 16000)])
+def test_mapping_completion_budget_scales_and_is_bounded(count, expected):
+    assert icm.mapping_completion_budget(count, 32768) == expected
+
+
+def test_mapping_completion_budget_respects_configured_maximum():
+    assert icm.mapping_completion_budget(100, 6000) == 6000
 
 
 def test_llm_failure_fails_job_and_keeps_mapping_aggregated(factory, monkeypatch):

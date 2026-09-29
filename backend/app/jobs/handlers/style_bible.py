@@ -31,7 +31,11 @@ from app.db.models import (
     SubtitleEvent,
 )
 from app.jobs.context import JobContext, JobResult, ProgressFn
-from app.jobs.handlers.prompt_context import build_character_block, load_prompt_characters
+from app.jobs.handlers.character_context import (
+    allocate_character_descriptions,
+    build_preparation_character_block,
+)
+from app.jobs.handlers.prompt_context import load_prompt_characters
 from app.jobs.handlers.style_store import (
     canonical_address_pairs,
     insert_new_glossary_terms,
@@ -113,6 +117,28 @@ def _episode_speaker_mappings(session, project_id: int, file_id: int) -> list[tu
     ]
 
 
+def _episode_character_ids(session, project_id: int, file_id: int) -> set[int]:
+    """Canonical characters tied to labels actually present in the sample."""
+    present = {
+        name.casefold()
+        for name in session.scalars(
+            select(SubtitleEvent.name)
+            .where(SubtitleEvent.file_id == file_id)
+            .where(SubtitleEvent.event_type == "dialogue")
+            .where(SubtitleEvent.content_type == "dialogue")
+            .where(SubtitleEvent.name.is_not(None))
+        ).all()
+        if name and name.strip()
+    }
+    return {
+        speaker.character_id
+        for speaker in session.scalars(
+            select(ProjectSpeaker).where(ProjectSpeaker.project_id == project_id)
+        ).all()
+        if speaker.character_id is not None and speaker.name.casefold() in present
+    }
+
+
 @register_job_handler("generate_style_bible")
 def generate_style_bible(
     payload: dict[str, Any],
@@ -140,7 +166,13 @@ def generate_style_bible(
         session.commit()
 
         characters = load_prompt_characters(session, project_id)
-        char_block = build_character_block(characters)
+        descriptions = allocate_character_descriptions(
+            characters,
+            ctx.options.style_bible_character_description_max,
+            ctx.options.style_bible_character_description_budget,
+            _episode_character_ids(session, project_id, sample_file_id),
+        )
+        char_block = build_preparation_character_block(characters, descriptions)
         sample_lines = _sample_dialogue(session, sample_file_id, with_translation=False)
         watched = [
             w.word for w in session.scalars(

@@ -390,6 +390,38 @@ function OptionsForm({ options }: { options: OptionsMap }) {
           min={1}
           max={32}
         />
+        <SaveOnBlurNumber
+          optionKey="MAPPING_CHARACTER_DESCRIPTION_MAX"
+          label="Mapping description per character"
+          description="Maximum character-description length used for speaker mapping. Larger values provide richer evidence but consume more LLM input. Set to 0 to omit descriptions."
+          defaultValue={options['MAPPING_CHARACTER_DESCRIPTION_MAX'] ?? '400'}
+          min={0}
+          max={4000}
+        />
+        <SaveOnBlurNumber
+          optionKey="MAPPING_CHARACTER_DESCRIPTION_BUDGET"
+          label="Mapping description total budget"
+          description="Total character-description text available to speaker mapping across the roster. Set to 0 to omit descriptions."
+          defaultValue={options['MAPPING_CHARACTER_DESCRIPTION_BUDGET'] ?? '24000'}
+          min={0}
+          max={200000}
+        />
+        <SaveOnBlurNumber
+          optionKey="STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX"
+          label="Style Bible description per character"
+          description="Maximum character-description length used for initial Style Bible generation. Larger values improve characterization but consume more LLM input. Set to 0 to omit descriptions."
+          defaultValue={options['STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX'] ?? '600'}
+          min={0}
+          max={4000}
+        />
+        <SaveOnBlurNumber
+          optionKey="STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET"
+          label="Style Bible description total budget"
+          description="Total character-description text available to initial Style Bible generation across the roster. Set to 0 to omit descriptions."
+          defaultValue={options['STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET'] ?? '32000'}
+          min={0}
+          max={200000}
+        />
       </Section>
 
       <Divider />

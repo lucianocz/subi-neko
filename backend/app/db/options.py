@@ -78,6 +78,10 @@ class AppOptions:
     translation_confidence_flag_threshold: float = 0.55
     log_level: str = "INFO"
     job_worker_count: int = 4
+    mapping_character_description_max: int = 400
+    mapping_character_description_budget: int = 24000
+    style_bible_character_description_max: int = 600
+    style_bible_character_description_budget: int = 32000
     translation_prompt: str = DEFAULT_TRANSLATION_PROMPT
     repair_prompt: str = DEFAULT_REPAIR_PROMPT
     polish_prompt: str = DEFAULT_POLISH_PROMPT
@@ -121,6 +125,18 @@ class AppOptions:
                 "TRANSLATION_CONFIDENCE_FLAG_THRESHOLD", 0.55),
             log_level=_validated_log_level(d.get("LOG_LEVEL")),
             job_worker_count=_validated_worker_count(d.get("JOB_WORKER_COUNT")),
+            mapping_character_description_max=_validated_bounded_non_negative_int(
+                d.get("MAPPING_CHARACTER_DESCRIPTION_MAX"),
+                "MAPPING_CHARACTER_DESCRIPTION_MAX", 400, 4000),
+            mapping_character_description_budget=_validated_bounded_non_negative_int(
+                d.get("MAPPING_CHARACTER_DESCRIPTION_BUDGET"),
+                "MAPPING_CHARACTER_DESCRIPTION_BUDGET", 24000, 200000),
+            style_bible_character_description_max=_validated_bounded_non_negative_int(
+                d.get("STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX"),
+                "STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX", 600, 4000),
+            style_bible_character_description_budget=_validated_bounded_non_negative_int(
+                d.get("STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET"),
+                "STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET", 32000, 200000),
             translation_prompt=d.get("TRANSLATION_PROMPT") or DEFAULT_TRANSLATION_PROMPT,
             repair_prompt=d.get("REPAIR_PROMPT") or DEFAULT_REPAIR_PROMPT,
             polish_prompt=d.get("POLISH_PROMPT") or DEFAULT_POLISH_PROMPT,
@@ -234,6 +250,17 @@ def _validated_non_negative_int(raw: str | None, name: str, default: int) -> int
         return default
     if value < 0:
         _logger.warning("%s must be >= 0, got %d, falling back to %d", name, value, default)
+        return default
+    return value
+
+
+def _validated_bounded_non_negative_int(
+    raw: str | None, name: str, default: int, maximum: int,
+) -> int:
+    value = _validated_non_negative_int(raw, name, default)
+    if value > maximum:
+        _logger.warning("%s must be <= %d, got %d, falling back to %d",
+                        name, maximum, value, default)
         return default
     return value
 

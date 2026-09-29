@@ -104,6 +104,52 @@ def test_options_endpoint_exposes_every_prompt_option():
     assert missing == [], f"not returned by GET /options: {missing}"
 
 
+def test_character_description_options_defaults_independence_and_validation():
+    defaults = AppOptions()
+    assert defaults.mapping_character_description_max == 400
+    assert defaults.mapping_character_description_budget == 24000
+    assert defaults.style_bible_character_description_max == 600
+    assert defaults.style_bible_character_description_budget == 32000
+
+    configured = AppOptions.from_dict({
+        "MAPPING_CHARACTER_DESCRIPTION_MAX": "123",
+        "MAPPING_CHARACTER_DESCRIPTION_BUDGET": "4567",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX": "789",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET": "9876",
+    })
+    assert configured.mapping_character_description_max == 123
+    assert configured.mapping_character_description_budget == 4567
+    assert configured.style_bible_character_description_max == 789
+    assert configured.style_bible_character_description_budget == 9876
+
+    disabled = AppOptions.from_dict({
+        "MAPPING_CHARACTER_DESCRIPTION_MAX": "0",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET": "0",
+    })
+    assert disabled.mapping_character_description_max == 0
+    assert disabled.style_bible_character_description_budget == 0
+
+    invalid = AppOptions.from_dict({
+        "MAPPING_CHARACTER_DESCRIPTION_MAX": "-1",
+        "MAPPING_CHARACTER_DESCRIPTION_BUDGET": "200001",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX": "4001",
+    })
+    assert invalid.mapping_character_description_max == 400
+    assert invalid.mapping_character_description_budget == 24000
+    assert invalid.style_bible_character_description_max == 600
+
+
+def test_options_endpoint_exposes_character_description_budgets():
+    source = (HANDLERS_DIR.parents[1] / "api" / "routes" / "options.py").read_text(encoding="utf-8")
+    for key in (
+        "MAPPING_CHARACTER_DESCRIPTION_MAX",
+        "MAPPING_CHARACTER_DESCRIPTION_BUDGET",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_MAX",
+        "STYLE_BIBLE_CHARACTER_DESCRIPTION_BUDGET",
+    ):
+        assert f'"{key}"' in source
+
+
 def test_prompt_defaults_have_no_data_file_dependency():
     """The defaults are code constants; the old app/prompts/*.txt tree is
     gone and must not come back (it made a prompt default behave unlike

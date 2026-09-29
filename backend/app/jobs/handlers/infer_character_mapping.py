@@ -34,6 +34,7 @@ from sqlalchemy import select
 from app.core.database import SyncSessionLocal
 from app.db.models import Project, ProjectCharacter, ProjectSpeaker
 from app.jobs.context import JobContext, JobResult, ProgressFn
+from app.jobs.handlers.character_context import allocate_character_descriptions
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import MappingResponse
@@ -48,12 +49,17 @@ _NON_WORD_RE = re.compile(r"[^\w\s]")
 
 # Speaker labels that denote unnamed extras / non-character sources — never
 # mapped to roster characters, never sent to the LLM.
-_EXTRA_PATTERNS: list[tuple[re.Pattern, str | None]] = [
+_GENERIC_EXTRA_PATTERNS: list[tuple[re.Pattern, str | None]] = [
     (re.compile(r"^(boy|man|guy|male student|male)\s*[a-d1-9]?$", re.IGNORECASE), "male"),
     (re.compile(r"^(girl|woman|lady|female student|female)\s*[a-d1-9]?$", re.IGNORECASE), "female"),
     (re.compile(r"^(student|soldier|villager|guard|guest|customer|clerk|waiter|"
                 r"reporter|announcer|doctor|nurse|teacher|police(man)?|thug|bandit|"
                 r"knight|maid|servant|stranger|passerby|voice)\s*[a-d1-9]?$", re.IGNORECASE), None),
+]
+
+# These labels are intrinsically collective or non-character sources. They
+# remain extras even if a metadata roster happens to contain the same text.
+_EXPLICIT_EXTRA_PATTERNS: list[tuple[re.Pattern, str | None]] = [
     (re.compile(r"^(crowd|everyone|all|both|others|students|children|kids|mob|audience)$",
                 re.IGNORECASE), None),
     (re.compile(r"^(tv|radio|pa|announcement|intercom|phone|speaker|narration|narrator|"
@@ -74,12 +80,20 @@ def normalize_name(name: str) -> str:
     return " ".join(text.split())
 
 
-def detect_extra(name: str) -> tuple[bool, str | None]:
+def _detect_from_patterns(
+    name: str, patterns: list[tuple[re.Pattern, str | None]],
+) -> tuple[bool, str | None]:
     normalized = normalize_name(name)
-    for pattern, gender in _EXTRA_PATTERNS:
+    for pattern, gender in patterns:
         if pattern.match(normalized):
             return True, gender
     return False, None
+
+
+def detect_extra(name: str) -> tuple[bool, str | None]:
+    """Compatibility helper covering both explicit and generic extras."""
+    explicit = _detect_from_patterns(name, _EXPLICIT_EXTRA_PATTERNS)
+    return explicit if explicit[0] else _detect_from_patterns(name, _GENERIC_EXTRA_PATTERNS)
 
 
 # LLM confidence for cryptic labels is capped below the auto-accept
@@ -140,6 +154,16 @@ def fuzzy_match(name: str, index: dict[str, list[ProjectCharacter]]) -> ProjectC
 
 _VALID_GENDERS = {"male", "female"}
 
+_MAPPING_COMPLETION_BASE = 1024
+_MAPPING_COMPLETION_PER_SPEAKER = 160
+_MAPPING_COMPLETION_CAP = 16000
+
+
+def mapping_completion_budget(unresolved_count: int, configured_max: int) -> int:
+    """Bound response space by expected output entries, not roster size."""
+    requested = _MAPPING_COMPLETION_BASE + max(0, unresolved_count) * _MAPPING_COMPLETION_PER_SPEAKER
+    return min(max(1, configured_max), _MAPPING_COMPLETION_CAP, requested)
+
 
 @register_job_handler("infer_character_mapping")
 def infer_character_mapping(
@@ -169,6 +193,7 @@ def infer_character_mapping(
         characters = list(session.scalars(
             select(ProjectCharacter)
             .where(ProjectCharacter.project_id == project_id)
+            .order_by(ProjectCharacter.id)
         ).all())
 
         # --- Stage 0: deterministic ---------------------------------------
@@ -181,7 +206,8 @@ def infer_character_mapping(
             if speaker.match_origin == "manual":
                 continue  # user decision is final
 
-            is_extra, extra_gender = detect_extra(speaker.name)
+            is_extra, extra_gender = _detect_from_patterns(
+                speaker.name, _EXPLICIT_EXTRA_PATTERNS)
             if is_extra:
                 speaker.is_extra = 1
                 speaker.character_id = None
@@ -206,6 +232,22 @@ def infer_character_mapping(
                 fuzzy_matched += 1
                 continue
 
+            # Broad role labels are extras only after an exact unambiguous
+            # canonical-name/alias match had a chance to win.
+            is_extra, extra_gender = _detect_from_patterns(
+                speaker.name, _GENERIC_EXTRA_PATTERNS)
+            if is_extra:
+                speaker.is_extra = 1
+                speaker.character_id = None
+                speaker.match_origin = "fuzzy"
+                speaker.match_confidence = 1.0
+                speaker.match_rationale = "unnamed extra / non-character source"
+                if extra_gender and not speaker.gender:
+                    speaker.gender = extra_gender
+                speaker.updated_at = now
+                extras += 1
+                continue
+
             unresolved.append(speaker)
 
         unresolved_snapshot = [
@@ -217,6 +259,20 @@ def infer_character_mapping(
             }
             for s in unresolved
         ]
+        relevant_character_ids = {
+            s.character_id for s in speakers if s.character_id is not None
+        }
+        speaking_characters = [
+            c for c in characters
+            if not (c.character_type and c.character_type.strip().lower()
+                    in ("organization", "vessel"))
+        ]
+        descriptions = allocate_character_descriptions(
+            speaking_characters,
+            ctx.options.mapping_character_description_max,
+            ctx.options.mapping_character_description_budget,
+            relevant_character_ids,
+        )
         roster_snapshot = [
             {
                 "external_id": c.external_id or f"internal:{c.id}",
@@ -224,11 +280,14 @@ def infer_character_mapping(
                 "name": c.name,
                 "gender": c.gender,
                 "role": c.role,
+                "aliases": c.aliases,
                 "voice_actor": c.voice_actor,
-                "description": (c.description or "")[:200],
+                "character_type": c.character_type,
+                "social_position": c.social_position,
+                "note": c.note,
+                "description": descriptions.get(c.id),
             }
-            for c in characters
-            if not (c.character_type and c.character_type.strip().lower() in ("organization", "vessel"))
+            for c in speaking_characters
         ]
         session.commit()
 
@@ -258,7 +317,11 @@ def infer_character_mapping(
             f'- id={c["external_id"]}: {c["name"]}'
             + (f' (gender: {c["gender"]})' if c["gender"] else "")
             + (f' (role: {c["role"]})' if c["role"] else "")
+            + (f' (aliases: {c["aliases"]})' if c["aliases"] else "")
+            + (f' (type: {c["character_type"]})' if c["character_type"] else "")
             + (f' (VA: {c["voice_actor"]})' if c["voice_actor"] else "")
+            + (f' (social position: {c["social_position"]})' if c["social_position"] else "")
+            + (f' (note: {c["note"]})' if c["note"] else "")
             + (f' — {c["description"]}' if c["description"] else "")
             for c in roster_snapshot
         ]
@@ -276,7 +339,8 @@ def infer_character_mapping(
                 user=user_message,
                 schema=MappingResponse,
                 options=ctx.options,
-                max_completion_tokens=4000,
+                max_completion_tokens=mapping_completion_budget(
+                    len(unresolved_snapshot), ctx.options.llm_max_completion_tokens),
                 project_id=project_id,
             )
         except llm_client.LlmError as exc:
@@ -319,15 +383,19 @@ def infer_character_mapping(
                     speaker.match_confidence = confidence
                     speaker.match_rationale = rationale
                     gender = (match.inferred_gender or "").strip().lower()
-                    if gender in _VALID_GENDERS and not speaker.gender:
-                        speaker.gender = gender
-                        llm_gendered += 1
-                    elif (character and character.get("gender") and not speaker.gender
-                          and not is_cryptic_label(match.speaker)):
-                        # A cryptic label may cover several characters — the
-                        # matched character's gender would drive false
-                        # gender-agreement flags on the other voices.
-                        speaker.gender = character["gender"]
+                    cryptic = is_cryptic_label(match.speaker)
+                    reliable_character = (
+                        character is not None
+                        and confidence >= ctx.options.auto_mapping_accept_threshold
+                    )
+                    if not speaker.gender and not cryptic:
+                        # Canonical provider/user metadata is stronger than
+                        # dialogue-based inference for a reliable match.
+                        if reliable_character and character.get("gender"):
+                            speaker.gender = character["gender"]
+                        elif gender in _VALID_GENDERS:
+                            speaker.gender = gender
+                            llm_gendered += 1
                     speaker.updated_at = now
                     if character:
                         llm_matched += 1
