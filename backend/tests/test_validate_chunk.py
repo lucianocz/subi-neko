@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from app.jobs.handlers.validate_chunk import (
     _check_escape_mismatch,
+    _check_empty_hard_break,
     _check_formatting_tag_mismatch,
     _check_formatting_tag_mismatch_relaxed,
     _check_text_corruption,
@@ -62,6 +63,33 @@ def test_escape_mismatch_accepts_preserved_ass_newline():
     )
 
     assert issues == []
+
+
+def test_empty_hard_break_flags_new_trailing_visual_row():
+    issues = _check_empty_hard_break(
+        EventProxy(
+            translated_text=r"Ve hře ale byla záporačka. \N",
+            source_text=r"But in the game, she was a villain.\NAnother row",
+        )  # type: ignore[arg-type]
+    )
+
+    assert issues
+    assert issues[0][0] == "empty_hard_break"
+    assert issues[0][2]["locations"] == ["trailing"]
+
+
+def test_empty_hard_break_ignores_tags_and_respects_source_placement():
+    assert _check_empty_hard_break(
+        EventProxy(
+            translated_text=r"{\an8}\N{\i1}Text",
+            source_text=r"{\an8}\N{\i1}Text",
+        )  # type: ignore[arg-type]
+    ) == []
+
+
+def test_empty_hard_break_is_non_blocking_warning():
+    assert _is_blocking("empty_hard_break") is False
+    assert _severity_for("empty_hard_break") == "warning"
 
 
 def test_escape_mismatch_allows_hard_space_count_change():
@@ -212,6 +240,7 @@ def test_checks_for_content_type_dialogue_uses_strict_tag_check():
     checks = _checks_for_content_type("dialogue")
     assert _check_formatting_tag_mismatch in checks
     assert _check_formatting_tag_mismatch_relaxed not in checks
+    assert _check_empty_hard_break in checks
 
 
 def test_checks_for_content_type_sign_and_song_use_relaxed_tag_check():
@@ -219,12 +248,14 @@ def test_checks_for_content_type_sign_and_song_use_relaxed_tag_check():
         checks = _checks_for_content_type(content_type)
         assert _check_formatting_tag_mismatch_relaxed in checks
         assert _check_formatting_tag_mismatch not in checks
+        assert _check_empty_hard_break not in checks
 
 
 def test_checks_for_content_type_karaoke_skips_tag_check_entirely():
     checks = _checks_for_content_type("karaoke")
     assert _check_formatting_tag_mismatch not in checks
     assert _check_formatting_tag_mismatch_relaxed not in checks
+    assert _check_empty_hard_break not in checks
     # Other structural checks (missing translation, locked line) still apply.
     assert _check_missing_translation in checks
     assert _check_locked_line_modified in checks

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from app.subs.line_breaking import rebalance_rows
+from app.subs.line_breaking import (
+    empty_hard_break_edges,
+    rebalance_empty_hard_break,
+    rebalance_rows,
+)
 
 
 def test_short_line_untouched():
@@ -67,6 +71,27 @@ def test_needs_three_rows_returns_none():
 def test_empty_and_markup_only():
     assert rebalance_rows("", 42) is None
     assert rebalance_rows("{\\pos(1,2)}", 42) is None
+
+
+def test_empty_hard_break_edges_ignore_override_tags():
+    assert empty_hard_break_edges(r"{\an8}\NText") == {"leading"}
+    assert empty_hard_break_edges(r"Text\N{\i0}") == {"trailing"}
+    assert empty_hard_break_edges(r"{\an8}Text\NMore{\i0}") == set()
+
+
+def test_empty_hard_break_is_moved_without_changing_count():
+    text = r"a s nápadníky porazí finálního bosse. \N"
+    fixed = rebalance_empty_hard_break(text, 42)
+    assert fixed is not None
+    assert fixed.count(r"\N") == text.count(r"\N") == 1
+    assert not empty_hard_break_edges(fixed)
+    assert " ".join(fixed.split(r"\N")) == text.replace(r"\N", "").strip()
+
+
+def test_complex_empty_hard_break_is_not_auto_fixed():
+    assert rebalance_empty_hard_break(r"Text{\i0}\N", 42) is None
+    assert rebalance_empty_hard_break(r"Text\hmore\N", 42) is None
+    assert rebalance_empty_hard_break(r"Onlyword\N", 42) is None
 
 
 # ---------------------------------------------------------------------------

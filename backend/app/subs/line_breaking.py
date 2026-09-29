@@ -19,6 +19,7 @@ from __future__ import annotations
 import re
 
 _LEADING_OVERRIDE_RE = re.compile(r"^(?:\{[^}]*\})+")
+_OVERRIDE_RE = re.compile(r"\{\\[^}]*\}")
 _HARD_BREAK_RE = re.compile(r"\s*\\N\s*")
 
 # ---------------------------------------------------------------------------
@@ -95,6 +96,62 @@ def _break_cost(row1: str, row2: str, last_word: str, next_word: str) -> int:
     return cost
 
 
+def empty_hard_break_edges(text: str) -> set[str]:
+    """Return visible edges occupied by ``\\N`` (``leading``/``trailing``).
+
+    Override blocks and surrounding whitespace are not visible subtitle
+    content, so they do not make an otherwise empty rendered row non-empty.
+    """
+    visible = _OVERRIDE_RE.sub("", text or "").strip()
+    edges: set[str] = set()
+    if visible.startswith(r"\N"):
+        edges.add("leading")
+    if visible.endswith(r"\N"):
+        edges.add("trailing")
+    return edges
+
+
+def _best_two_row_split(words: list[str], max_row_chars: int) -> tuple[str, str] | None:
+    best: tuple[int, str, str] | None = None
+    for i in range(1, len(words)):
+        row1 = " ".join(words[:i])
+        row2 = " ".join(words[i:])
+        if len(row1) <= max_row_chars and len(row2) <= max_row_chars:
+            cost = _break_cost(row1, row2, words[i - 1], words[i])
+            if best is None or cost < best[0]:
+                best = (cost, row1, row2)
+    return None if best is None else (best[1], best[2])
+
+
+def rebalance_empty_hard_break(text: str, max_row_chars: int) -> str | None:
+    """Move one edge ``\\N`` to a safe word boundary, preserving its count.
+
+    This intentionally shares the ordinary dialogue rebalancer's safety
+    boundary: only an optional leading override run is allowed. More complex
+    inline typesetting, soft breaks and hard spaces are left for QA review.
+    """
+    if not empty_hard_break_edges(text) or text.count(r"\N") != 1:
+        return None
+
+    prefix, body = "", text
+    match = _LEADING_OVERRIDE_RE.match(text)
+    if match:
+        prefix, body = text[:match.end()], text[match.end():]
+
+    if "{" in body or r"\n" in body or r"\h" in body:
+        return None
+
+    words = " ".join(_HARD_BREAK_RE.split(body.strip())).split()
+    if len(words) < 2:
+        return None
+
+    split = _best_two_row_split(words, max_row_chars)
+    if split is None:
+        return None
+    fixed = f"{prefix}{split[0]}\\N{split[1]}"
+    return fixed if fixed != text else None
+
+
 def rebalance_rows(text: str, max_row_chars: int) -> str | None:
     """Return `text` re-broken so no row exceeds `max_row_chars`, or None
     when the line already fits, can't be fixed with two rows, or isn't safe
@@ -123,17 +180,9 @@ def rebalance_rows(text: str, max_row_chars: int) -> str | None:
         fixed = prefix + full
         return fixed if fixed != text else None
 
-    best: tuple[int, str, str] | None = None
-    for i in range(1, len(words)):
-        row1 = " ".join(words[:i])
-        row2 = " ".join(words[i:])
-        if len(row1) <= max_row_chars and len(row2) <= max_row_chars:
-            cost = _break_cost(row1, row2, words[i - 1], words[i])
-            if best is None or cost < best[0]:
-                best = (cost, row1, row2)
-
+    best = _best_two_row_split(words, max_row_chars)
     if best is None:
         return None  # no two-row split fits — surfaces as long_row
 
-    fixed = f"{prefix}{best[1]}\\N{best[2]}"
+    fixed = f"{prefix}{best[0]}\\N{best[1]}"
     return fixed if fixed != text else None

@@ -15,6 +15,7 @@ from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.translate_chunk import FRAGMENT_QA_TYPE
 from app.jobs.handlers.utils import allows_ai_edit
 from app.jobs.registry import register_job_handler
+from app.subs.line_breaking import empty_hard_break_edges
 from app.subs.tag_masking import plain_text
 
 logger = logging.getLogger(__name__)
@@ -192,6 +193,28 @@ def _check_escape_mismatch(event: SubtitleEvent) -> list[tuple[str, str, dict]]:
     return check_escape_mismatch(event.source_text, event.translated_text)
 
 
+def check_empty_hard_break(source_text: str, translated_text: str) -> list[tuple[str, str, dict]]:
+    """Flag newly introduced empty visual rows at either edge of a line."""
+    source_edges = empty_hard_break_edges(source_text or "")
+    translated_edges = empty_hard_break_edges(translated_text or "")
+    introduced = translated_edges - source_edges
+    if not introduced:
+        return []
+    locations = sorted(introduced)
+    return [(
+        "empty_hard_break",
+        f"Hard line break creates an empty visible row at the {' and '.join(locations)} of the subtitle.",
+        {
+            "locations": locations,
+            "source_locations": sorted(source_edges),
+        },
+    )]
+
+
+def _check_empty_hard_break(event: SubtitleEvent) -> list[tuple[str, str, dict]]:
+    return check_empty_hard_break(event.source_text, event.translated_text)
+
+
 def _check_locked_line_modified(event: SubtitleEvent) -> list[tuple[str, str, dict]]:
     if not event.is_locked:
         return []
@@ -241,12 +264,15 @@ def _is_json_output(text: str) -> bool:
 # translation being wrong, unlike a genuine markup/syntax defect. It does
 # not fail the event, block chunk progression, or trigger repair_chunk;
 # AUTO_ACCEPT_POLICY (no_blockers) lets it through auto-accept too.
-_NON_BLOCKING_QA_TYPES = {"escape_mismatch"}
+_NON_BLOCKING_QA_TYPES = {"escape_mismatch", "empty_hard_break"}
 
 # Severity for non-blocking types; anything not listed defaults to "warning".
 # A reflowed line is a notice about layout, not a defect in the translation,
 # so it lands at "info" — its message names the actual row-count change.
-_NON_BLOCKING_SEVERITY = {"escape_mismatch": "info"}
+_NON_BLOCKING_SEVERITY = {
+    "escape_mismatch": "info",
+    "empty_hard_break": "warning",
+}
 
 
 def _is_blocking(qa_type: str) -> bool:
@@ -263,6 +289,7 @@ _CHECKS = [
     _check_missing_translation,
     _check_formatting_tag_mismatch,
     _check_escape_mismatch,
+    _check_empty_hard_break,
     _check_locked_line_modified,
     _check_text_corruption,
 ]

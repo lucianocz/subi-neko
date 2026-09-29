@@ -29,7 +29,7 @@ from app.db.models import (
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.prompt_context import build_speaker_identity_map, load_glossary_terms
 from app.jobs.handlers.style_store import canonical_address_pairs
-from app.jobs.handlers.validate_chunk import check_escape_mismatch
+from app.jobs.handlers.validate_chunk import check_empty_hard_break, check_escape_mismatch
 from app.jobs.registry import register_job_handler
 from app.subs.czech_checks import (
     check_addressee_gender_agreement,
@@ -41,7 +41,7 @@ from app.subs.czech_checks import (
     check_vocative,
     infer_addressee,
 )
-from app.subs.line_breaking import rebalance_rows
+from app.subs.line_breaking import rebalance_empty_hard_break, rebalance_rows
 logger = logging.getLogger(__name__)
 
 # qa_types produced here — used to scope deletion of stale findings and to
@@ -57,13 +57,16 @@ FINAL_REVIEW_QA_TYPES = {
     "untranslated_english",
     "low_confidence",
     "escape_mismatch",
+    "empty_hard_break",
 }
 
 # Findings that route the chunk into the targeted polish re-pass.
 # low_confidence is triage information for the reviewer, not something a
 # blind re-polish can reliably fix; escape_mismatch is a layout notice about
 # a line-break count change, not a translation defect a re-polish would fix.
-_STRONG_QA_TYPES = FINAL_REVIEW_QA_TYPES - {"low_confidence", "escape_mismatch"}
+_STRONG_QA_TYPES = FINAL_REVIEW_QA_TYPES - {
+    "low_confidence", "escape_mismatch", "empty_hard_break",
+}
 
 # One targeted polish re-pass: first review may send the chunk back, the
 # second review always lets it through.
@@ -90,6 +93,22 @@ def _modes_for(
     for alias in aliases:
         modes |= pair_modes.get((speaker_key, alias), set())
     return modes or None
+
+
+def _rebalance_dialogue_text(
+    source_text: str,
+    translated_text: str,
+    max_row_chars: int,
+) -> str | None:
+    """Apply safe empty-row repair, then the ordinary length rebalancer."""
+    current = translated_text
+    fixed = None
+    if check_empty_hard_break(source_text, current):
+        fixed = rebalance_empty_hard_break(current, max_row_chars)
+        if fixed is not None:
+            current = fixed
+    length_fixed = rebalance_rows(current, max_row_chars)
+    return length_fixed if length_fixed is not None else fixed
 
 
 @register_job_handler("review_chunk_final")
@@ -239,7 +258,11 @@ def review_chunk_final(
         for snap in events_snapshot:
             if snap["untouchable"]:
                 continue
-            fixed = rebalance_rows(snap["translated_text"] or "", max_row_chars)
+            fixed = _rebalance_dialogue_text(
+                snap["source_text"] or "",
+                snap["translated_text"] or "",
+                max_row_chars,
+            )
             if fixed is not None:
                 snap["translated_text"] = fixed
                 rebalanced[snap["id"]] = fixed
@@ -284,6 +307,7 @@ def review_chunk_final(
         # Re-run after auto line breaking (above) so this reflects the row
         # count actually shipped, not the pre-rebalance draft validate_chunk saw.
         findings += check_escape_mismatch(snap["source_text"] or "", translated)
+        findings += check_empty_hard_break(snap["source_text"] or "", translated)
 
         confidence = snap["translation_confidence"]
         if confidence is not None and confidence < confidence_threshold:
