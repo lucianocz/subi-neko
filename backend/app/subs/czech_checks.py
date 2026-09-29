@@ -124,14 +124,88 @@ def check_addressee_gender_agreement(
 # a translation error, so only that narrow case is flagged.
 # ---------------------------------------------------------------------------
 
-_T_MARKERS = re.compile(r"\b(ty|tě|ti|tebe|tobě|tvůj|tvoje|tvá|tvé|tvého|tvou)\b", re.IGNORECASE)
-_V_MARKERS = re.compile(r"\b(vás|vám|vámi|váš|vaše|vašeho|vaší|vaši)\b", re.IGNORECASE)
+_QUOTED_TEXT = re.compile(r'"[^"\n]*"|„[^“\n]*“|‚[^‘\n]*‘|«[^»\n]*»')
+
+# Pronouns other than bare ``ty`` are useful singular-informal evidence.  Ty
+# itself is deliberately absent: in ordinary Czech ``ty dvě`` / ``ty knihy``
+# is a demonstrative, and an isolated pronoun is not enough evidence for a
+# deterministic warning.
+_INFORMAL_PRONOUNS = re.compile(
+    r"\b(tě|ti|tebe|tobě|tvůj|tvoje|tvá|tvé|tvého|tvou)\b", re.IGNORECASE)
+_INFORMAL_AUXILIARIES = re.compile(r"\b(jsi|bys|abys)\b", re.IGNORECASE)
+
+# A deliberately small lexicon of high-frequency, unmistakable 2sg finite
+# forms.  A generic -š suffix rule also matches nouns and foreign names, so it
+# is too broad for a high-precision subtitle flagger.  Prefixes are included
+# only where the resulting form remains unambiguous.
+_INFORMAL_VERBS = re.compile(
+    r"\b(?:"
+    r"můžeš|nemůžeš|musíš|nemusíš|chceš|nechceš|víš|nevíš|máš|nemáš|"
+    r"jdeš|nejdeš|smíš|nesmíš|umíš|neumíš|jsi|nejsi|"
+    r"uděláš|neuděláš|vypadáš|nevypadáš|pozveš|nepozveš|řekneš|neřekneš|"
+    r"půjdeš|nepůjdeš|dokážeš|nedokážeš|vidíš|nevidíš|slyšíš|neslyšíš"
+    r")\b",
+    re.IGNORECASE,
+)
+
+# Plural-looking pronouns and finite verbs are ambiguous between polite
+# singular and genuine plural.  Formal singular is only established when a
+# plural auxiliary/conditional is paired with singular gender/number
+# agreement ("jste ukradl", "měla byste").
+_FORMAL_OR_PLURAL_MARKERS = re.compile(
+    r"\b(vy|vás|vám|vámi|váš|vaše|vašeho|vaší|vaši|jste|byste|abyste)\b",
+    re.IGNORECASE,
+)
+_EXPLICIT_PLURAL = re.compile(
+    r"\b(?:vy|vás|vám|jste|byste|abyste)\s+"
+    r"(?:dva|dvě|oba|obě|všichni|všechny)\b",
+    re.IGNORECASE,
+)
+_FORMAL_SINGULAR_PATTERNS = (
+    re.compile(
+        r"\b(?:jste|byste|abyste)\b(?:\s+\w+){0,3}\s+"
+        r"(\w{2,}(?:l|la|ný|ná|tý|tá|vý|vá))\b",
+        re.IGNORECASE | re.UNICODE,
+    ),
+    re.compile(
+        r"\b(\w{2,}(?:l|la|ný|ná|tý|tá|vý|vá))\b"
+        r"(?:\s+\w+){0,3}\s+(?:jste|byste|abyste)\b",
+        re.IGNORECASE | re.UNICODE,
+    ),
+)
+
+
+def _tv_evidence(translated: str) -> dict[str, list[str]]:
+    """Return grammatical evidence without deciding who is addressed.
+
+    ``formal_or_plural`` is intentionally not promoted to ``formal_singular``
+    unless singular agreement independently disambiguates it.  That keeps
+    forms such as ``můžete``/``vás``/``běžte`` from manufacturing a T-V fact.
+    Quoted speech is removed because it need not be addressed to the current
+    interlocutor.
+    """
+    text = _QUOTED_TEXT.sub(" ", plain_text(translated))
+    informal = (
+        _INFORMAL_PRONOUNS.findall(text)
+        + _INFORMAL_AUXILIARIES.findall(text)
+        + _INFORMAL_VERBS.findall(text)
+    )
+    formal_singular: list[str] = []
+    if not _EXPLICIT_PLURAL.search(text):
+        for pattern in _FORMAL_SINGULAR_PATTERNS:
+            formal_singular.extend(pattern.findall(text))
+    return {
+        "informal_singular": informal,
+        "formal_singular": formal_singular,
+        "formal_or_plural": _FORMAL_OR_PLURAL_MARKERS.findall(text),
+        "explicit_plural": _EXPLICIT_PLURAL.findall(text),
+    }
 
 
 def check_tv_mixed_in_line(translated: str) -> list[Finding]:
-    text = plain_text(translated)
-    t_hits = _T_MARKERS.findall(text)
-    v_hits = _V_MARKERS.findall(text)
+    evidence = _tv_evidence(translated)
+    t_hits = evidence["informal_singular"]
+    v_hits = evidence["formal_singular"]
     if t_hits and v_hits:
         return [(
             "tv_address_mixed",
@@ -142,39 +216,42 @@ def check_tv_mixed_in_line(translated: str) -> list[Finding]:
 
 
 def check_tv_against_pairs(
-    translated: str, speaker_pair_modes: set[str], addressee: str | None = None,
+    translated: str,
+    speaker_pair_modes: set[str],
+    addressee: str | None = None,
+    speaker: str | None = None,
 ) -> list[Finding]:
     """Compare a line's T/V markers against the stored address pairs.
 
-    With an `addressee` the modes are that exact speaker→addressee pair, which
-    is the case worth checking: a speaker with mixed relationships is only
-    inconsistent relative to one particular person. Without one the caller has
-    fallen back to the speaker's uniform mode, which can only be checked when
-    they address EVERYONE the same way.
+    A deterministic mismatch requires an exact directed pair and independent
+    addressee evidence.  The grammatical form being checked is never used to
+    infer the addressee.
     """
-    if speaker_pair_modes not in ({"tykani"}, {"vykani"}):
+    if not addressee or speaker_pair_modes not in ({"tykani"}, {"vykani"}):
         return []
     expected = next(iter(speaker_pair_modes))
-
-    text = plain_text(translated)
-    t_hits = _T_MARKERS.findall(text)
-    v_hits = _V_MARKERS.findall(text)
+    evidence = _tv_evidence(translated)
+    t_hits = evidence["informal_singular"]
+    v_hits = evidence["formal_singular"]
+    details_base = {
+        "expected": expected,
+        "speaker": speaker,
+        "addressee": addressee,
+    }
 
     if expected == "tykani" and v_hits and not t_hits:
-        whom = (f"toward {addressee}, whom this speaker addresses informally"
-                if addressee else "by a speaker who addresses everyone informally")
+        whom = f"toward {addressee}, whom {speaker or 'this speaker'} addresses informally"
         return [(
             "tv_address_mismatch",
             f"Formal address (vykání) used {whom}.",
-            {"expected": expected, "found": v_hits[:3], "addressee": addressee},
+            {**details_base, "found": v_hits[:3]},
         )]
     if expected == "vykani" and t_hits and not v_hits:
-        whom = (f"toward {addressee}, whom this speaker addresses formally"
-                if addressee else "by a speaker who addresses everyone formally")
+        whom = f"toward {addressee}, whom {speaker or 'this speaker'} addresses formally"
         return [(
             "tv_address_mismatch",
             f"Informal address (tykání) used {whom}.",
-            {"expected": expected, "found": t_hits[:3], "addressee": addressee},
+            {**details_base, "found": t_hits[:3]},
         )]
     return []
 

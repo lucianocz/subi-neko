@@ -254,6 +254,8 @@ A fluent, natural, and contextually plausible translation may still be semantica
 
 Do not assume that retaining most of the English vocabulary guarantees semantic equivalence.
 
+Pay equal attention to ordinary dialogue and narratively important statements. Do not concentrate semantic verification only on obviously complex sentences. Independently verify the intended meaning of seemingly simple lexical choices and common expressions, including references to locations, facilities, activities, and the purpose of an action.
+
 ### B. Native-language correctness
 
 Independently read the complete translated utterance as natural spoken {TARGET_LANG_NAME}.
@@ -274,38 +276,72 @@ Do not treat conversational, colloquial, or intentionally expressive dialogue as
 
 ## Reporting policy
 
-Be thorough in DETECTION but conservative in REPORTING.
+Your primary objective is HIGH RECALL of genuine translation defects. This audit exists to provide a reliable shortlist for human review, not to certify that the translation is flawless or minimize the number of reported findings.
 
-Report only concrete, actionable defects.
+Systematically inspect EVERY [LINE] and every complete utterance, including lines that appear fluent, ordinary, or semantically straightforward.
 
-Do not suggest purely stylistic improvements or alternative phrasings when the existing translation is already acceptable.
+Complete both the semantic accuracy check and the native-language correctness check across the entire supplied dialogue. Do not stop, reduce scrutiny, or change your reporting threshold after identifying one or more significant errors.
 
-Natural idiomatic paraphrases, changed sentence structures, implicit subjects, and different grammatical expressions are acceptable when they preserve the intended message.
+Report every independently identifiable, actionable defect, including:
+- Material semantic discrepancies, even when the translation is otherwise fluent.
+- Straightforward grammatical mistakes, even when the intended meaning remains understandable.
+- Broken or unnatural constructions that a native speaker would recognize as erroneous rather than merely stylistically different.
+- Inconsistencies with authoritative character, glossary, or T–V conventions supplied in the context.
+- Errors affecting a complete utterance across multiple subtitle events.
 
-In particular, do not report a negation mismatch merely because English and {TARGET_LANG_NAME} express the same meaning through different positive or negative constructions.
+A finding does not need to be severe, difficult to correct, or narratively significant to deserve reporting.
 
-Every finding must identify the ACTUAL problem.
+## Evidence requirements
+
+Every finding must identify a specific problem supported by the supplied text or authoritative project context.
 
 For semantic findings:
 - Explain what the English source communicates.
 - Explain what the current translation communicates instead.
-- Identify the specific discrepancy.
+- Identify the material discrepancy.
 
 For grammatical findings:
 - Identify the actual grammatical defect.
-- Do not incorrectly classify a grammar error as a semantic error merely because both languages use different constructions.
+- Explain the required construction when useful.
 
-When a discrepancy is uncertain, report it as an ambiguity only if there is a concrete, meaningful risk that the translation is incorrect.
+For context or formality findings:
+- Identify the relevant contextual evidence or established convention.
+- Distinguish genuine second-person address from plural forms, demonstrative pronouns, quoted speech, and references to third parties.
 
-Do not manufacture ambiguity from normal idiomatic variation.
+Do not classify a harmless difference in positive/negative grammatical construction as a meaning or negation error when the intended message is preserved.
 
-Avoid duplicate findings for the same problem.
+Natural idiomatic paraphrases, colloquial expressions, implicit subjects, and different sentence structures are acceptable when they preserve the intended meaning and are grammatically natural.
 
-When a problem spans several events, anchor the finding to the most relevant event and mention the affected adjacent indices.
+Do not report purely subjective stylistic alternatives.
 
-Suggestions must preserve the original meaning, character voice, and existing subtitle-event boundaries.
+## Language-specific safeguards
 
-An empty findings list is a valid result when the translation contains no identifiable errors.
+Before reporting a formality or grammatical issue, verify the actual grammatical function of the suspicious expression in its complete utterance.
+
+For {TARGET_LANG_NAME} = Czech, distinguish in particular:
+
+- Second-person plural addressed to multiple people from formal second-person address to one person. Expressions such as "vás dva" and "můžete jít" are not evidence of vykání when the speaker addresses a group.
+- Demonstrative "ty" (those) from the informal second-person pronoun "ty" (you).
+- Titles and honorifics from grammatical T–V forms. A title such as "pane" does not by itself establish vykání or contradict an authoritative tykání convention.
+- Established colloquial Czech family possessives (e.g. "Novákovic") from malformed possessive adjectives. Do not require literary morphology in intentionally colloquial dialogue.
+
+For T–V findings, identify the specific second-person construction and the established speaker-to-addressee convention. Never infer a violation from an isolated word without resolving its grammatical role and actual addressee.
+
+## Uncertainty and severity
+
+Use "warning" for a demonstrable defect.
+
+Use "info" for a specific, actionable concern where the available context permits multiple materially different interpretations.
+
+Do not manufacture ambiguity from ordinary translation variation. However, do not suppress a concrete concern merely because you cannot establish the correction with complete certainty.
+
+If an issue spans multiple events, anchor the finding to the most relevant [LINE] index and identify any adjacent affected events in the explanation.
+
+Avoid reporting the same underlying defect more than once.
+
+Suggestions must preserve the original meaning, character voice, and existing subtitle-event boundaries. Do not automatically rewrite the translation.
+
+Do not impose an artificial minimum or maximum number of findings. An empty findings list is valid only when both inspection tasks have been completed across the supplied dialogue without identifying actionable defects.
 
 ## Finding classification
 

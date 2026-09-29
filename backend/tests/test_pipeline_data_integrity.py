@@ -13,6 +13,7 @@ from app.db.models import (
     Project,
     ProjectAddressPair,
     ProjectCharacter,
+    ProjectGlossaryTerm,
     ProjectSpeaker,
     QaItem,
     SubtitleChunk,
@@ -21,11 +22,18 @@ from app.db.models import (
 from app.db.options import AppOptions
 from app.jobs.context import JobContext
 from app.jobs.handlers import analyze_script as analyze_module
+from app.jobs.handlers import audit_chunk_final as audit_module
 from app.jobs.handlers import polish_chunk as polish_module
 from app.jobs.handlers import repair_chunk as repair_module
 from app.jobs.handlers import translate_chunk as translate_module
 from app.jobs.handlers import validate_chunk as validate_module
-from app.llm.schemas import AnalyzeResponse, PolishResponse, RepairResponse, TranslateResponse
+from app.llm.schemas import (
+    AnalyzeResponse,
+    FinalAuditResponse,
+    PolishResponse,
+    RepairResponse,
+    TranslateResponse,
+)
 
 
 @pytest.fixture
@@ -94,6 +102,117 @@ def _stats():
     return SimpleNamespace(
         response_mode="json_schema", prompt_tokens=1, completion_tokens=1
     )
+
+
+def _seed_canonical_prompt_context(session_factory, status: str) -> tuple[int, int]:
+    project_id, file_id, _ = _seed(
+        session_factory,
+        chunk_status=status,
+        polish_attempts=2 if status == "final_reviewed" else 0,
+    )
+    with session_factory() as session:
+        luxion = ProjectCharacter(project_id=project_id, name="Luxion", gender=None)
+        leon = ProjectCharacter(project_id=project_id, name="Leon Fou Bartfort", gender="male")
+        session.add_all([luxion, leon])
+        session.flush()
+        session.add_all([
+            ProjectSpeaker(project_id=project_id, name="LUXION", character_id=luxion.id),
+            ProjectSpeaker(project_id=project_id, name="LUXIN", character_id=luxion.id),
+            ProjectSpeaker(project_id=project_id, name="LEON", character_id=leon.id),
+            ProjectAddressPair(
+                project_id=project_id, speaker_name="Luxion",
+                addressee_name="Leon Fou Bartfort", mode="tykani", origin="llm", locked=0,
+            ),
+            # Same canonical direction through raw aliases: locked/manual wins.
+            ProjectAddressPair(
+                project_id=project_id, speaker_name="LUXION", addressee_name="LEON",
+                mode="vykani", origin="manual", locked=1,
+            ),
+            ProjectAddressPair(
+                project_id=project_id, speaker_name="Leon Fou Bartfort",
+                addressee_name="Luxion", mode="tykani", origin="manual", locked=1,
+            ),
+            ProjectGlossaryTerm(
+                project_id=project_id, source_term="Leon Fou Bartfort", target_term="Leon",
+                category="name", gender="male", vocative="Leone", origin="manual",
+                locked=1, is_active=1,
+            ),
+        ])
+        for line, name in enumerate(("LUXION", "LUXIN", "LEON", "UNKNOWN"), start=1):
+            event = _event(
+                session, file_id, line, f"Source {line}", f"Překlad {line}",
+                status="validated",
+            )
+            event.name = name
+        session.commit()
+    return project_id, file_id
+
+
+def _assert_canonical_context(user_prompt: str) -> None:
+    assert "Luxion addresses Leon Fou Bartfort: vykani" in user_prompt
+    assert "Leon Fou Bartfort addresses Luxion: tykani" in user_prompt
+    assert "Luxion addresses Leon Fou Bartfort: tykani" not in user_prompt
+    assert "(Luxion)" in user_prompt
+    assert "(Leon Fou Bartfort, male)" in user_prompt
+    assert "(UNKNOWN)" in user_prompt
+
+
+def test_canonical_aliases_and_pair_reach_translate(session_factory, monkeypatch):
+    project_id, file_id = _seed_canonical_prompt_context(session_factory, "pending")
+    captured = {}
+    monkeypatch.setattr(translate_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(translate_module.tm, "fuzzy_suggest", lambda *_args: {})
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return TranslateResponse(translations=[
+            {"i": i, "t": f"Překlad {i}"} for i in range(1, 5)
+        ]), _stats()
+
+    monkeypatch.setattr(translate_module.llm_client, "complete", complete)
+    result = translate_module.translate_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress)
+    assert result["status"] == "succeeded"
+    _assert_canonical_context(captured["user"])
+
+    from app.jobs.handlers.prompt_context import build_speaker_identity_map
+    with session_factory() as session:
+        identities = build_speaker_identity_map(session, project_id)
+    assert identities["LUXION"] == ("Luxion", None)
+    assert identities["LUXIN"] == ("Luxion", None)
+    assert identities["LEON"] == ("Leon Fou Bartfort", "male")
+
+
+def test_canonical_aliases_and_pair_reach_polish(session_factory, monkeypatch):
+    _, file_id = _seed_canonical_prompt_context(session_factory, "validated")
+    captured = {}
+    monkeypatch.setattr(polish_module, "SyncSessionLocal", session_factory)
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return PolishResponse(edits=[], issues=[]), _stats()
+
+    monkeypatch.setattr(polish_module.llm_client, "complete", complete)
+    result = polish_module.polish_chunk(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress)
+    assert result["status"] == "succeeded"
+    _assert_canonical_context(captured["user"])
+
+
+def test_canonical_aliases_and_pair_reach_final_qa(session_factory, monkeypatch):
+    _, file_id = _seed_canonical_prompt_context(session_factory, "final_reviewed")
+    captured = {}
+    monkeypatch.setattr(audit_module, "SyncSessionLocal", session_factory)
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return FinalAuditResponse(issues=[]), _stats()
+
+    monkeypatch.setattr(audit_module.llm_client, "complete", complete)
+    result = audit_module.audit_chunk_final(
+        {"file_id": file_id, "chunk_index": 0}, _ctx(), _progress)
+    assert result["status"] == "succeeded"
+    _assert_canonical_context(captured["user"])
 
 
 def test_episode_analysis_preserves_canonical_pair_and_adds_new_direction(

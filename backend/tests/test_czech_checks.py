@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from app.subs.czech_checks import (
     check_addressee_gender_agreement,
     check_gender_agreement,
@@ -63,7 +65,7 @@ def test_gender_agreement_ignores_ass_markup():
 # ---------------------------------------------------------------------------
 
 def test_tv_mixed_in_line_flags_mixture():
-    findings = check_tv_mixed_in_line("Můžeš mi říct, co vás sem přivádí, ty jeden?")
+    findings = check_tv_mixed_in_line("Můžeš mi říct, co jste udělal?")
     assert findings
     assert findings[0][0] == "tv_address_mixed"
 
@@ -76,24 +78,100 @@ def test_tv_consistent_formal_not_flagged():
     assert check_tv_mixed_in_line("Můžete mi říct, co vás sem přivádí?") == []
 
 
-def test_tv_against_pairs_flags_formal_from_uniformly_informal_speaker():
-    findings = check_tv_against_pairs("Co vás sem přivádí?", {"tykani"})
+def test_tv_against_pairs_flags_formal_for_known_informal_addressee():
+    findings = check_tv_against_pairs(
+        "Slyšela jsem, že jste ukradl náhrdelník.",
+        {"tykani"},
+        addressee="Leon",
+        speaker="Luxion",
+    )
     assert findings
     assert findings[0][0] == "tv_address_mismatch"
 
 
-def test_tv_against_pairs_flags_informal_from_uniformly_formal_speaker():
-    findings = check_tv_against_pairs("Co tě sem přivádí?", {"vykani"})
+@pytest.mark.parametrize("text", [
+    "Slyšela jsem, že jste ukradl náhrdelník.",
+    "Měl byste odejít.",
+    "Abyste byl připravený, přijďte včas.",
+])
+def test_tv_against_informal_pair_detects_disambiguated_formal_singular(text):
+    assert check_tv_against_pairs(
+        text, {"tykani"}, addressee="Leon", speaker="Luxion")
+
+
+def test_tv_against_pairs_flags_informal_for_known_formal_addressee():
+    findings = check_tv_against_pairs(
+        "Co tě sem přivádí?", {"vykani"}, addressee="Leon", speaker="Luxion")
     assert findings
 
 
 def test_tv_against_pairs_silent_for_mixed_relationships():
-    assert check_tv_against_pairs("Co vás sem přivádí?", {"tykani", "vykani"}) == []
-    assert check_tv_against_pairs("Co vás sem přivádí?", {"mixed"}) == []
+    assert check_tv_against_pairs(
+        "Co tě sem přivádí?", {"tykani", "vykani"}, addressee="Leon") == []
+    assert check_tv_against_pairs("Co tě sem přivádí?", {"mixed"}, addressee="Leon") == []
 
 
 def test_tv_against_pairs_silent_when_matching():
-    assert check_tv_against_pairs("Co tě sem přivádí?", {"tykani"}) == []
+    assert check_tv_against_pairs("Co tě sem přivádí?", {"tykani"}, addressee="Leon") == []
+
+
+@pytest.mark.parametrize("text", [
+    "ty dvě se mi nezamlouvají",
+    "Svatá, ty dvě mi nejsou po chuti.",
+    "vás dva tu nepotřebuju",
+    "Nepotřebuju vás. Klidně běžte.",
+    "Pane Leone, vypadáš unaveně.",
+    'Řekl: „Ty dvě se mi nezamlouvají.“',
+])
+def test_tv_mixed_avoids_demonstrative_plural_title_and_quoted_false_positives(text):
+    assert check_tv_mixed_in_line(text) == []
+
+
+@pytest.mark.parametrize("text", [
+    "Nikoho nepozveš?",
+    "Jen abys je naštval.",
+    "Říkal jsem si, že to uděláš.",
+    "Pane Leone, vypadáš unaveně.",
+    "Ty jsi to věděl.",
+    "Byl bys rád.",
+])
+def test_tv_against_formal_pair_detects_clear_singular_informal_morphology(text):
+    assert check_tv_against_pairs(
+        text, {"vykani"}, addressee="Leon Fou Bartfort", speaker="Luxion")
+
+
+@pytest.mark.parametrize("text", [
+    "ty dvě se mi nezamlouvají",
+    "Svatá, ty dvě mi nejsou po chuti.",
+    "vás dva tu nepotřebuju",
+    "Nepotřebuju vás. Klidně běžte.",
+    "Můžete odejít.",
+    'Řekl: „Ty jsi to věděl.“',
+])
+def test_tv_against_pairs_ignores_non_address_plural_quoted_and_ambiguous_forms(text):
+    assert check_tv_against_pairs(
+        text, {"vykani"}, addressee="Leon Fou Bartfort", speaker="Luxion") == []
+    assert check_tv_against_pairs(
+        text, {"tykani"}, addressee="Leon Fou Bartfort", speaker="Luxion") == []
+
+
+def test_tv_against_pairs_requires_independently_known_addressee():
+    assert check_tv_against_pairs("Nikoho nepozveš?", {"vykani"}) == []
+
+
+def test_tv_mismatch_details_identify_directed_relationship():
+    finding = check_tv_against_pairs(
+        "Jen abys je naštval.",
+        {"vykani"},
+        addressee="Leon Fou Bartfort",
+        speaker="Luxion",
+    )[0]
+    assert finding[2] == {
+        "expected": "vykani",
+        "speaker": "Luxion",
+        "addressee": "Leon Fou Bartfort",
+        "found": ["abys"],
+    }
 
 
 # ---------------------------------------------------------------------------

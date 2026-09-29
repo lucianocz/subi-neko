@@ -95,6 +95,43 @@ def _modes_for(
     return modes or None
 
 
+def _contextual_addressees(
+    events: list[dict],
+    identities: dict[str, tuple[str | None, str | None]],
+    address_forms: dict[str, str],
+) -> dict[int, str]:
+    """Resolve addressees from explicit direct address in a speaker turn.
+
+    A vocative/name in one event remains valid for immediately following
+    events by the same canonical speaker.  Any speaker change resets it.  We
+    deliberately do not infer the interlocutor from T-V morphology or merely
+    from another character appearing nearby.
+    """
+    result: dict[int, str] = {}
+    turn_speaker: str | None = None
+    turn_addressee: str | None = None
+    for event in events:
+        raw_speaker = event.get("name")
+        speaker = identities.get(raw_speaker, (raw_speaker, None))[0] if raw_speaker else None
+        speaker_key = speaker.casefold() if speaker else None
+        if speaker_key is None:
+            turn_speaker = None
+            turn_addressee = None
+            explicit = infer_addressee(event.get("translated_text") or "", address_forms)
+            if explicit is not None:
+                result[event["id"]] = explicit
+            continue
+        if speaker_key != turn_speaker:
+            turn_speaker = speaker_key
+            turn_addressee = None
+        explicit = infer_addressee(event.get("translated_text") or "", address_forms)
+        if explicit is not None:
+            turn_addressee = explicit
+        if turn_addressee is not None:
+            result[event["id"]] = turn_addressee
+    return result
+
+
 def _rebalance_dialogue_text(
     source_text: str,
     translated_text: str,
@@ -160,12 +197,9 @@ def review_chunk_final(
         file = session.get(File, file_id)
         identities = build_speaker_identity_map(session, file.project_id) if file else {}
 
-        # Address-pair modes per raw speaker name (for the uniform-mode T-V
-        # check) and glossary vocative forms.
-        speaker_modes: dict[str, set[str]] = {}
-        # (speaker, addressee) → modes, both casefolded. Lets a line whose
-        # addressee is named in the text be checked against the pair that
-        # actually applies, instead of only the uniform-mode fallback.
+        # (speaker, addressee) → modes, both casefolded. Lets a line with an
+        # independently established addressee be checked against the exact
+        # directed pair that applies.
         pair_modes: dict[tuple[str, str], set[str]] = {}
         vocatives: dict[str, str] = {}
         # Surface form (casefolded) → canonical name, for addressee detection.
@@ -180,32 +214,49 @@ def review_chunk_final(
             for pair_speaker, pair_addressee, pair_mode in canonical_address_pairs(
                 session, file.project_id
             ):
-                speaker_modes.setdefault(pair_speaker, set()).add(pair_mode)
                 pair_modes.setdefault(
                     (pair_speaker.casefold(), pair_addressee.casefold()),
                     set(),
                 ).add(pair_mode)
 
+            character_rows = session.execute(
+                select(ProjectCharacter.name, ProjectCharacter.gender)
+                .where(ProjectCharacter.project_id == file.project_id)
+            ).all()
             character_genders = {
-                name.casefold(): gender
-                for name, gender in session.execute(
-                    select(ProjectCharacter.name, ProjectCharacter.gender)
-                    .where(ProjectCharacter.project_id == file.project_id)
-                ).all() if gender
+                name.casefold(): gender for name, gender in character_rows if gender
             }
+            canonical_by_alias = {
+                name.casefold(): name for name, _gender in character_rows if name
+            }
+            canonical_by_alias.update({
+                raw.casefold(): canonical
+                for raw, (canonical, _gender) in identities.items()
+                if raw and canonical
+            })
+            for character_name, gender in character_rows:
+                if character_name and character_name.strip():
+                    address_forms.setdefault(character_name.casefold(), character_name)
+                    name_aliases.setdefault(character_name, set()).add(character_name.casefold())
+                    if gender in ("male", "female"):
+                        name_genders.setdefault(character_name, gender)
 
             for term in load_glossary_terms(session, file.project_id):
                 if term.category == "name" and term.vocative:
                     vocatives[term.target_term] = term.vocative
                 if term.category == "name":
-                    canonical = term.target_term
+                    canonical = (
+                        canonical_by_alias.get((term.source_term or "").casefold())
+                        or canonical_by_alias.get((term.target_term or "").casefold())
+                        or term.target_term
+                    )
                     forms = {term.target_term, term.vocative, term.source_term}
                     for form in forms:
                         if form and form.strip():
                             address_forms.setdefault(form.casefold(), canonical)
-                    name_aliases[canonical] = {
-                        f.casefold() for f in forms if f and f.strip()
-                    }
+                    aliases = name_aliases.setdefault(canonical, set())
+                    aliases.add(canonical.casefold())
+                    aliases.update(f.casefold() for f in forms if f and f.strip())
                     gender = term.gender or character_genders.get(
                         (term.source_term or "").casefold()
                     ) or character_genders.get((term.target_term or "").casefold())
@@ -269,6 +320,8 @@ def review_chunk_final(
 
     collected: list[dict] = []
     strong_findings = 0
+    contextual_addressees = _contextual_addressees(
+        events_snapshot, identities, address_forms) if address_forms else {}
     for snap in events_snapshot:
         translated = snap["translated_text"] or ""
         if not translated.strip():
@@ -282,7 +335,7 @@ def review_chunk_final(
 
         # Who the line is spoken to, when the line names them. Unlocks
         # second-person agreement and the exact T-V pair for this line.
-        addressee = infer_addressee(translated, address_forms) if address_forms else None
+        addressee = contextual_addressees.get(snap["id"])
         if addressee is not None:
             findings += check_addressee_gender_agreement(
                 translated, name_genders.get(addressee), addressee)
@@ -290,13 +343,9 @@ def review_chunk_final(
         raw_speaker = snap["name"]
         speaker = identities.get(raw_speaker, (raw_speaker, None))[0] if raw_speaker else None
         modes = _modes_for(speaker, addressee, pair_modes, name_aliases)
-        paired_with = addressee if modes is not None else None
-        if modes is None and speaker and speaker in speaker_modes:
-            # No pair for this specific addressee — fall back to the
-            # speaker's uniform mode, which is all the old check had.
-            modes = speaker_modes[speaker]
         if modes:
-            findings += check_tv_against_pairs(translated, modes, paired_with)
+            findings += check_tv_against_pairs(
+                translated, modes, addressee=addressee, speaker=speaker)
 
         if vocatives:
             findings += check_vocative(translated, vocatives)
