@@ -235,11 +235,11 @@ def test_retag_resets_machine_translation_but_not_user_edits(monkeypatch):
     project_id, file_id = _setup_project_file(factory, now)
 
     with factory() as session:
-        _add_event(session, file_id, 0, "TV", now, translated_text="Stroj")
-        _add_event(session, file_id, 1, "TV", now, translated_text="Člověk",
+        _add_event(session, file_id, 0, "SIGN CENTER", now, translated_text="Stroj")
+        _add_event(session, file_id, 1, "SIGN CENTER", now, translated_text="Člověk",
                    is_user_edited=1)
         session.add(ProjectSpeaker(
-            project_id=project_id, name="TV", content_tag="sign",
+            project_id=project_id, name="SIGN CENTER", content_tag="sign",
             created_at=now, updated_at=now,
         ))
         session.commit()
@@ -258,6 +258,9 @@ def test_retag_resets_machine_translation_but_not_user_edits(monkeypatch):
             select(SubtitleEvent).where(SubtitleEvent.line_index == 1)).one()
         assert edited.content_type == "sign"
         assert edited.translated_text == "Člověk"
+
+        chunks = list(session.scalars(select(SubtitleChunk)))
+        assert [chunk.content_type for chunk in chunks] == ["sign"]
 
 
 def test_speaker_tag_plan_is_idempotent(monkeypatch):

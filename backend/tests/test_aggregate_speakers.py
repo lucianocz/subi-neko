@@ -145,7 +145,7 @@ def test_speakers_carry_line_count_and_sample_lines(monkeypatch):
         assert speakers["Aria"].line_count == 10
         assert speakers["Bob"].line_count == 2
         aria_samples = json.loads(speakers["Aria"].sample_lines_json)
-        assert 0 < len(aria_samples) <= 5
+        assert 0 < len(aria_samples) <= 8
         assert all(isinstance(line, str) for line in aria_samples)
 
 
@@ -162,3 +162,72 @@ def test_rerun_updates_counts_without_duplicating_speakers(monkeypatch):
         speakers = list(session.scalars(select(ProjectSpeaker)))
         assert len(speakers) == 1
         assert speakers[0].line_count == 3
+
+
+def test_sample_selection_prefers_informative_lines_and_stays_chronological():
+    lines = [
+        "OK.",
+        "I'm Marie's brother.",
+        "Yes.",
+        "Call me Luxion.",
+        "Huh?",
+        "My daughter is waiting at home.",
+        "No.",
+        "Leon sent me.",
+        "Right.",
+        "You promised my sister you would return.",
+        "What?",
+        "I met Captain Olivia at the eastern gate.",
+    ]
+
+    first = agg._select_samples(lines, count=6)
+    second = agg._select_samples(lines, count=6)
+
+    assert first == second
+    assert first == [
+        "I'm Marie's brother.",
+        "Call me Luxion.",
+        "My daughter is waiting at home.",
+        "Leon sent me.",
+        "You promised my sister you would return.",
+        "I met Captain Olivia at the eastern gate.",
+    ]
+    assert len(first) <= 6
+
+
+def test_short_identity_rich_lines_are_informative():
+    assert agg._information_score("Call me Luxion.") >= 5
+    assert agg._information_score("Leon sent me.") >= 5
+    assert agg._information_score("My daughter is...") >= 5
+
+
+def test_sample_selection_falls_back_when_all_lines_are_low_information():
+    lines = ["OK.", "Yes.", "No.", "Huh?", "What?", "Right."]
+
+    assert agg._select_samples(lines, count=4) == [
+        "OK.", "No.", "Huh?", "Right.",
+    ]
+
+
+def test_sample_spread_includes_first_and_last_occurrences():
+    lines = [f"Line {index}" for index in range(20)]
+
+    samples = agg._sample_spread(lines, count=8)
+
+    assert samples[0] == "Line 0"
+    assert samples[-1] == "Line 19"
+    assert samples == sorted(samples, key=lines.index)
+
+
+def test_sign_speaker_is_classified_during_aggregation(monkeypatch):
+    factory = _make_engine_and_factory(monkeypatch)
+    now = datetime.utcnow().isoformat()
+    project_id = _make_project_with_events(factory, now, [(" SIGN   CENTER ",)])
+
+    _run(factory, project_id)
+
+    with factory() as session:
+        speaker = session.scalar(select(ProjectSpeaker))
+        assert speaker.is_extra == 1
+        assert speaker.character_id is None
+        assert speaker.content_tag == "sign"

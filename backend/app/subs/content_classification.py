@@ -25,6 +25,30 @@ _SONG_STYLE_RE = re.compile(
 )
 _SIGN_STYLE_RE = re.compile(r"sign|title|caption|note|typeset|credit|logo", re.IGNORECASE)
 _TAG_BLOCK_RE = re.compile(r"\{[^}]*\}")
+_SPEAKER_LABEL_SEPARATOR_RE = re.compile(r"[-_]+")
+_SIGN_SPEAKER_RE = re.compile(
+    r"^(?:"
+    r"signs?(?: (?:center|centre|left|right|top|bottom|middle|"
+    r"top left|top right|bottom left|bottom right|"
+    r"upper left|upper right|lower left|lower right))?"
+    r"|ep ?title|episode title|title|typeset|typesetting"
+    r")$",
+    re.IGNORECASE,
+)
+
+
+def classify_speaker_content_tag(name: str) -> str | None:
+    """Return a deterministic content tag for clear non-character labels.
+
+    Separators and whitespace are normalized, but matching remains anchored
+    to the complete label so character names containing words such as
+    ``sign`` are not caught accidentally.
+    """
+    normalized = _SPEAKER_LABEL_SEPARATOR_RE.sub(" ", (name or "").strip())
+    normalized = " ".join(normalized.split())
+    if _SIGN_SPEAKER_RE.fullmatch(normalized):
+        return "sign"
+    return None
 
 
 def classify_content_type(event_type: str, style: str, text: str) -> tuple[str, str | None]:

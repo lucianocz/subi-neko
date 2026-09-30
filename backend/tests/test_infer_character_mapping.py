@@ -170,6 +170,47 @@ def test_extras_marked_and_never_sent_to_llm(factory, monkeypatch):
         assert speakers["Crowd"].is_extra == 1
 
 
+@pytest.mark.parametrize("label", [
+    "SIGN", "SIGN CENTER", "SIGN LEFT", "SIGN RIGHT", "EPTITLE",
+])
+def test_sign_speakers_are_tagged_and_never_sent_to_llm(
+    factory, monkeypatch, label,
+):
+    monkeypatch.setattr(icm.llm_client, "complete", lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("Sign speakers must not reach the LLM")))
+    with factory() as session:
+        project_id = _seed(
+            session,
+            speakers=[{"name": label}],
+            characters=[{"name": "Aria", "external_id": "c1"}],
+        )
+
+    _run(project_id)
+
+    with factory() as session:
+        speaker = session.scalar(select(ProjectSpeaker))
+        assert speaker.is_extra == 1
+        assert speaker.character_id is None
+        assert speaker.content_tag == "sign"
+
+
+def test_sign_matching_does_not_affect_ordinary_character(factory, monkeypatch):
+    monkeypatch.setattr(icm.llm_client, "complete", lambda **kwargs: (_ for _ in ()).throw(
+        AssertionError("Exact character must not reach the LLM")))
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Design Manager"}], [
+            {"name": "Design Manager", "external_id": "c1"},
+        ])
+
+    _run(project_id)
+
+    with factory() as session:
+        speaker = session.scalar(select(ProjectSpeaker))
+        assert speaker.is_extra == 0
+        assert speaker.content_tag is None
+        assert speaker.character_id is not None
+
+
 def test_exact_role_like_character_name_wins_before_generic_extra(factory, monkeypatch):
     monkeypatch.setattr(icm.llm_client, "complete", lambda **kwargs: (_ for _ in ()).throw(
         AssertionError("exact character must not reach LLM")))
@@ -327,6 +368,27 @@ def test_mapping_payload_has_aliases_metadata_and_configured_description_limits(
     assert "type: Human" in user and "VA: Jane" in user
     assert "social position: Princess" in user and "note: Formal" in user
     assert "x" * 30 not in user
+
+
+def test_mapping_payload_includes_up_to_eight_speaker_samples(factory, monkeypatch):
+    captured = {}
+
+    def _fake_complete(**kwargs):
+        captured.update(kwargs)
+        return MappingResponse(matches=[]), None
+
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    samples = [f"Useful sample {index}." for index in range(8)]
+    with factory() as session:
+        project_id = _seed(
+            session,
+            [{"name": "Unknown", "samples": samples}],
+            [{"name": "Aria", "external_id": "c1"}],
+        )
+
+    _run(project_id)
+
+    assert all(sample in captured["user"] for sample in samples)
 
 
 @pytest.mark.parametrize(("count", "expected"), [(1, 1184), (20, 4224), (100, 16000)])

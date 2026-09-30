@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import pytest
+
 from app.subs.content_classification import classify_content_type as _classify_content_type
+from app.subs.content_classification import classify_speaker_content_tag
 
 
 def test_comment_event_type_is_other():
@@ -76,6 +79,34 @@ def test_plain_dialogue_with_no_signals_defaults_to_dialogue():
     )
     assert content_type == "dialogue"
     assert reason is None
+
+
+@pytest.mark.parametrize("label", [
+    "SIGN",
+    "SIGN CENTER",
+    "SIGN LEFT",
+    "SIGN RIGHT",
+    " sign   top ",
+    "sign_bottom",
+    "TITLE",
+    "EPTITLE",
+    "EP TITLE",
+    "Episode Title",
+    "TYPESETTING",
+])
+def test_sign_speaker_labels_are_anchored_and_normalized(label):
+    assert classify_speaker_content_tag(label) == "sign"
+
+
+@pytest.mark.parametrize("label", [
+    "Alice",
+    "Signal",
+    "Design Manager",
+    "Signed Letter",
+    "Title Manager",
+])
+def test_ordinary_speaker_labels_are_not_signs(label):
+    assert classify_speaker_content_tag(label) is None
 
 
 def test_dialogue_with_empty_or_unnamed_style_still_defaults_to_dialogue():

@@ -38,6 +38,7 @@ from app.jobs.handlers.character_context import allocate_character_descriptions
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import MappingResponse
+from app.subs.content_classification import classify_speaker_content_tag
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +204,18 @@ def infer_character_mapping(
         unresolved: list[ProjectSpeaker] = []
 
         for speaker in speakers:
+            content_tag = classify_speaker_content_tag(speaker.name)
+            if content_tag is not None:
+                speaker.character_id = None
+                speaker.is_extra = 1
+                speaker.content_tag = content_tag
+                speaker.match_origin = "fuzzy"
+                speaker.match_confidence = 1.0
+                speaker.match_rationale = "sign/typesetting source"
+                speaker.updated_at = now
+                extras += 1
+                continue
+
             if speaker.match_origin == "manual":
                 continue  # user decision is final
 
@@ -311,7 +324,7 @@ def infer_character_mapping(
         lang_neutral_prompt = ctx.options.resolved_mapping_prompt().strip()
         speaker_lines = []
         for s in unresolved_snapshot:
-            samples = "; ".join(f'"{line}"' for line in s["samples"][:5])
+            samples = "; ".join(f'"{line}"' for line in s["samples"][:8])
             speaker_lines.append(f'- "{s["name"]}" ({s["line_count"]} lines) — {samples or "no sample lines"}')
         roster_lines = [
             f'- id={c["external_id"]}: {c["name"]}'
