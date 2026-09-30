@@ -50,9 +50,28 @@ from app.subs.tag_masking import plain_text
 logger = logging.getLogger(__name__)
 
 _SAMPLE_SIZE = 300
+_STYLE_BIBLE_COMPLETION_BASE = 4096
+_STYLE_BIBLE_COMPLETION_PER_CHARACTER = 128
+_STYLE_BIBLE_COMPLETION_PER_SPEAKER = 96
+_STYLE_BIBLE_COMPLETION_CAP = 16000
 
 
-def _sample_dialogue(session, file_id: int, with_translation: bool) -> list[str]:
+def style_bible_completion_budget(
+    character_count: int, dialogue_speaker_count: int, configured_max: int,
+) -> int:
+    """Bound initial output space by mandatory names and likely voice/pair rows."""
+    requested = (
+        _STYLE_BIBLE_COMPLETION_BASE
+        + max(0, character_count) * _STYLE_BIBLE_COMPLETION_PER_CHARACTER
+        + max(0, dialogue_speaker_count) * _STYLE_BIBLE_COMPLETION_PER_SPEAKER
+    )
+    return min(max(1, configured_max), _STYLE_BIBLE_COMPLETION_CAP, requested)
+
+
+def _sample_dialogue(
+    session, file_id: int, with_translation: bool,
+    excluded_speaker_names: set[str] | None = None,
+) -> list[str]:
     """Up to _SAMPLE_SIZE dialogue lines, evenly spread across the file."""
     events = list(session.scalars(
         select(SubtitleEvent)
@@ -61,6 +80,12 @@ def _sample_dialogue(session, file_id: int, with_translation: bool) -> list[str]
         .where(SubtitleEvent.content_type == "dialogue")
         .order_by(SubtitleEvent.line_index)
     ).all())
+
+    excluded = excluded_speaker_names or set()
+    events = [
+        event for event in events
+        if not event.name or event.name.casefold() not in excluded
+    ]
 
     if len(events) > _SAMPLE_SIZE:
         step = len(events) / _SAMPLE_SIZE
@@ -71,11 +96,17 @@ def _sample_dialogue(session, file_id: int, with_translation: bool) -> list[str]
         source = plain_text(e.source_text)
         if not source:
             continue
-        speaker = f"({e.name}) " if e.name else ""
-        if with_translation and e.translated_text:
-            lines.append(f"{speaker}{source} => {plain_text(e.translated_text)}")
-        else:
-            lines.append(f"{speaker}{source}")
+        speaker = " ".join((e.name or "").split()) or "(unknown)"
+        fields = [
+            f"[LINE {e.line_index}]",
+            f"speaker: {speaker}",
+            f"EN: {source}",
+        ]
+        if with_translation:
+            translation = plain_text(e.translated_text) if e.translated_text else ""
+            fields.append(f"CS: {translation or '(missing)'}")
+        fields.append("[/LINE]")
+        lines.append("\n".join(fields))
     return lines
 
 
@@ -115,6 +146,37 @@ def _episode_speaker_mappings(session, project_id: int, file_id: int) -> list[tu
         for speaker in speakers
         if speaker.name.casefold() in present and speaker.character is not None
     ]
+
+
+def _tagged_speaker_names(session, project_id: int) -> set[str]:
+    """Raw labels already classified as sign/song/karaoke by the authoritative pass."""
+    return {
+        name.casefold()
+        for name in session.scalars(
+            select(ProjectSpeaker.name)
+            .where(ProjectSpeaker.project_id == project_id)
+            .where(ProjectSpeaker.content_tag.is_not(None))
+        ).all()
+        if name and name.strip()
+    }
+
+
+def _episode_dialogue_speaker_count(
+    session, file_id: int, excluded_speaker_names: set[str] | None = None,
+) -> int:
+    """Distinct non-empty raw labels represented in initial dialogue evidence."""
+    names = session.scalars(
+        select(SubtitleEvent.name)
+        .where(SubtitleEvent.file_id == file_id)
+        .where(SubtitleEvent.event_type == "dialogue")
+        .where(SubtitleEvent.content_type == "dialogue")
+        .where(SubtitleEvent.name.is_not(None))
+    ).all()
+    excluded = excluded_speaker_names or set()
+    return len({
+        name.casefold() for name in names
+        if name and name.strip() and name.casefold() not in excluded
+    })
 
 
 def _episode_character_ids(session, project_id: int, file_id: int) -> set[int]:
@@ -173,7 +235,13 @@ def generate_style_bible(
             _episode_character_ids(session, project_id, sample_file_id),
         )
         char_block = build_preparation_character_block(characters, descriptions)
-        sample_lines = _sample_dialogue(session, sample_file_id, with_translation=False)
+        tagged_speakers = _tagged_speaker_names(session, project_id)
+        sample_lines = _sample_dialogue(
+            session, sample_file_id, with_translation=False,
+            excluded_speaker_names=tagged_speakers,
+        )
+        dialogue_speaker_count = _episode_dialogue_speaker_count(
+            session, sample_file_id, excluded_speaker_names=tagged_speakers)
         watched = [
             w.word for w in session.scalars(
                 select(ProjectWatchedWord)
@@ -209,7 +277,10 @@ def generate_style_bible(
             user=user_message,
             schema=StyleBibleResponse,
             options=ctx.options,
-            max_completion_tokens=8000,
+            max_completion_tokens=style_bible_completion_budget(
+                len(characters), dialogue_speaker_count,
+                ctx.options.llm_max_completion_tokens,
+            ),
             project_id=project_id,
             file_id=sample_file_id,
         )
@@ -289,8 +360,28 @@ def update_style_bible(
             .where(ProjectCharacter.project_id == project_id)
         ).all())
 
+        current_bible = session.scalar(
+            select(ProjectStyleBible)
+            .where(ProjectStyleBible.project_id == project_id)
+            .order_by(ProjectStyleBible.version.desc())
+            .limit(1)
+        )
+
         sample_lines = _sample_dialogue(session, file_id, with_translation=True)
         speaker_mappings = _episode_speaker_mappings(session, project_id, file_id)
+        episode_character_ids = _episode_character_ids(session, project_id, file_id)
+        episode_characters = [
+            character for character in load_prompt_characters(session, project_id)
+            if character.id in episode_character_ids
+        ]
+        descriptions = allocate_character_descriptions(
+            episode_characters,
+            ctx.options.style_bible_character_description_max,
+            ctx.options.style_bible_character_description_budget,
+            episode_character_ids,
+        )
+        character_block = build_preparation_character_block(
+            episode_characters, descriptions)
 
     if not sample_lines:
         return JobResult(status="succeeded", result={"skipped": "no dialogue lines"},
@@ -310,20 +401,28 @@ def update_style_bible(
         f"- {name}: {voice_note or ''} (register: {register or 'unknown'})"
         for name, voice_note, register in voices
     ) or "(none)"
+    bible_block = "\n".join([
+        f"tone_summary: {current_bible.tone_summary or '(not provided)'}",
+        f"register_notes: {current_bible.register_notes or '(not provided)'}",
+        f"honorific_policy: {current_bible.honorific_policy or '(not provided)'}",
+    ]) if current_bible is not None else "(none)"
 
     mapping_block = "\n".join(
         f"- {speaker} → {character}" for speaker, character in speaker_mappings
     ) or "(none)"
     user_message = (
+        f"## Current Approved Style Bible\n{bible_block}\n\n"
         f"## Current Glossary\n{glossary_block}\n\n"
         f"## Current Address Pairs\n{pairs_block}\n\n"
         f"## Speaker Identity Mapping\n{mapping_block}\n\n"
+        f"## Episode Character Metadata\n{character_block or '(none)'}\n\n"
         f"## Current Character Voices\n{voices_block}\n\n"
         "## Update Rules\nExisting address pairs are authoritative. Add only genuinely new "
         "directed relationships; never propose a different mode for an existing relationship. "
         "The Czech translation is generated evidence and may contain T–V mistakes, so do not "
         "infer a project-wide convention or a change of convention from it alone.\n\n"
-        f"## New Episode Dialogue (EN => translation)\n" + "\n".join(sample_lines)
+        f"## New Episode Dialogue (source and generated translation)\n"
+        + "\n\n".join(sample_lines)
     )
 
     progress(0.4, f"Calling LLM ({model})")

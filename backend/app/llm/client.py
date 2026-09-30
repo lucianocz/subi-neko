@@ -23,6 +23,7 @@ import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from collections.abc import Callable
 
 import openai
 from pydantic import BaseModel, ValidationError
@@ -171,6 +172,7 @@ def complete(
     project_id: int | None = None,
     file_id: int | None = None,
     chunk_id: int | None = None,
+    response_validator: Callable[[BaseModel], str | None] | None = None,
     max_transient_retries: int = 3,
     backoff_base_seconds: float = 1.0,
 ) -> tuple[BaseModel, LlmCallStats]:
@@ -341,7 +343,11 @@ def complete(
         try:
             payload = json.loads(sanitize_llm_json(raw_content))
             result = schema.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError, TypeError) as exc:
+            if response_validator is not None:
+                validation_message = response_validator(result)
+                if validation_message:
+                    raise ValueError(validation_message)
+        except (json.JSONDecodeError, ValidationError, TypeError, ValueError) as exc:
             if not corrective_retry_done:
                 corrective_retry_done = True
                 logger.warning(

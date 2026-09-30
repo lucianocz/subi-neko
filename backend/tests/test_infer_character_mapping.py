@@ -363,10 +363,10 @@ def test_mapping_payload_has_aliases_metadata_and_configured_description_limits(
                          mapping_character_description_budget=30)
     _run(project_id, options)
     user = captured["user"]
-    assert "id=c1: Aria Vermillion" in user
+    assert "external_id: c1" in user and "canonical_name: Aria Vermillion" in user
     assert "aliases: Heroine, Aria V" in user
-    assert "type: Human" in user and "VA: Jane" in user
-    assert "social position: Princess" in user and "note: Formal" in user
+    assert "character_type: Human" in user and "voice_actor: Jane" in user
+    assert "social_position: Princess" in user and "notes: Formal" in user
     assert "x" * 30 not in user
 
 
@@ -389,6 +389,32 @@ def test_mapping_payload_includes_up_to_eight_speaker_samples(factory, monkeypat
     _run(project_id)
 
     assert all(sample in captured["user"] for sample in samples)
+    assert "[SPEAKER]" in captured["user"]
+    assert "name: Unknown" in captured["user"]
+    assert "line_count: 5" in captured["user"]
+
+
+def test_mapping_roster_order_is_deterministic(factory, monkeypatch):
+    captured = {}
+
+    def _fake_complete(**kwargs):
+        captured["user"] = kwargs["user"]
+        return MappingResponse(matches=[SpeakerMatch(
+            speaker="Unknown", character_external_id=None, confidence=0.1,
+            inferred_gender=None, rationale="insufficient evidence")]), None
+
+    monkeypatch.setattr(icm.llm_client, "complete", _fake_complete)
+    with factory() as session:
+        project_id = _seed(session, [{"name": "Unknown"}], [
+            {"name": "Inserted First", "external_id": "z"},
+            {"name": "Inserted Second", "external_id": "a"},
+        ])
+
+    result = _run(project_id)
+
+    assert result["status"] == "succeeded"
+    assert captured["user"].index("canonical_name: Inserted First") < captured["user"].index(
+        "canonical_name: Inserted Second")
 
 
 @pytest.mark.parametrize(("count", "expected"), [(1, 1184), (20, 4224), (100, 16000)])
@@ -398,6 +424,40 @@ def test_mapping_completion_budget_scales_and_is_bounded(count, expected):
 
 def test_mapping_completion_budget_respects_configured_maximum():
     assert icm.mapping_completion_budget(100, 6000) == 6000
+
+
+@pytest.mark.parametrize(("matches", "error_part"), [
+    ([SpeakerMatch(speaker="One", character_external_id=None, confidence=0.1,
+                   inferred_gender=None, rationale="unknown")], "missing speakers"),
+    ([SpeakerMatch(speaker="One", character_external_id=None, confidence=0.1,
+                   inferred_gender=None, rationale="unknown")] * 2, "duplicate speakers"),
+    ([SpeakerMatch(speaker="Other", character_external_id=None, confidence=0.1,
+                   inferred_gender=None, rationale="unknown")], "unexpected speakers"),
+])
+def test_mapping_response_requires_each_requested_speaker_exactly_once(matches, error_part):
+    error = icm.mapping_response_error(MappingResponse(matches=matches), ["One", "Two"])
+    assert error is not None
+    assert error_part in error
+
+
+def test_incomplete_mapping_response_fails_clearly(factory, monkeypatch):
+    monkeypatch.setattr(
+        icm.llm_client, "complete",
+        lambda **kwargs: (MappingResponse(matches=[]), None),
+    )
+    with factory() as session:
+        project_id = _seed(
+            session, [{"name": "Unknown"}],
+            [{"name": "Aria", "external_id": "c1"}],
+        )
+
+    result = _run(project_id)
+
+    assert result["status"] == "failed"
+    assert result["error_code"] == "RESPONSE_PARSE_ERROR"
+    assert "missing speakers" in result["error_message"]
+    with factory() as session:
+        assert session.get(Project, project_id).speaker_mapping_status == "aggregated"
 
 
 def test_llm_failure_fails_job_and_keeps_mapping_aggregated(factory, monkeypatch):

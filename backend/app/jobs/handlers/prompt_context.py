@@ -141,7 +141,9 @@ def char_budget(
 
 def load_prompt_characters(session: Session, project_id: int) -> list[ProjectCharacter]:
     characters = list(session.scalars(
-        select(ProjectCharacter).where(ProjectCharacter.project_id == project_id)
+        select(ProjectCharacter)
+        .where(ProjectCharacter.project_id == project_id)
+        .order_by(ProjectCharacter.id)
     ).all())
     return [
         c for c in characters

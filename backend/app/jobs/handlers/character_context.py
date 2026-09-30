@@ -56,7 +56,10 @@ def allocate_character_descriptions(
     for position, character in enumerate(characters):
         text = _clean_description(character.description)
         if text:
-            entries.append((position, character, text[:per_character_limit]))
+            # Keep the full text until rendering so truncate_description can
+            # mark an actual cut with an ellipsis instead of silently losing
+            # the tail at this stage.
+            entries.append((position, character, text))
     if not entries:
         return {}
 
@@ -66,18 +69,19 @@ def allocate_character_descriptions(
         item[0],
     ))
 
-    total_available = sum(len(text) for _, _, text in entries)
+    available_lengths = [min(len(text), per_character_limit) for _, _, text in entries]
+    total_available = sum(available_lengths)
     budget = min(aggregate_limit, total_available)
     fair_share = budget // len(entries)
-    allocations = [min(len(text), fair_share) for _, _, text in entries]
+    allocations = [min(length, fair_share) for length in available_lengths]
     remaining = budget - sum(allocations)
 
     # Priority only affects the surplus; every entry already received its
     # fair share above (possibly its whole description).
-    for idx, (_, _, text) in enumerate(entries):
+    for idx, length in enumerate(available_lengths):
         if remaining <= 0:
             break
-        extra = min(len(text) - allocations[idx], remaining)
+        extra = min(length - allocations[idx], remaining)
         allocations[idx] += extra
         remaining -= extra
 
@@ -92,23 +96,35 @@ def allocate_character_descriptions(
 def build_preparation_character_block(
     characters: Sequence[ProjectCharacter], descriptions: dict[int, str],
 ) -> str:
-    """Render rich Style Bible metadata; descriptions are pre-budgeted."""
-    lines: list[str] = []
+    """Render complete preparation metadata in explicit, stable records.
+
+    Values are collapsed to one line so provider/user text cannot blur record
+    boundaries.  Descriptions have already been independently budgeted by the
+    caller; this formatter never applies the translation-stage 200-char cap.
+    """
+    records: list[str] = []
     for character in characters:
-        parts = [f"id={character.external_id or f'internal:{character.id}'}",
-                 f"name={character.name}"]
+        def field(value: str | None) -> str:
+            return " ".join((value or "").split())
+
+        fields = [
+            "[CHARACTER]",
+            f"external_id: {field(character.external_id) if character.external_id else f'internal:{character.id}'}",
+            f"canonical_name: {field(character.name)}",
+        ]
         for label, value in (
+            ("aliases", character.aliases),
             ("gender", character.gender),
             ("role", character.role),
-            ("aliases", character.aliases),
-            ("type", character.character_type),
-            ("voice actor", character.voice_actor),
-            ("social position", character.social_position),
-            ("note", character.note),
+            ("character_type", character.character_type),
+            ("voice_actor", character.voice_actor),
+            ("social_position", character.social_position),
+            ("notes", character.note),
+            ("description", descriptions.get(character.id)),
         ):
-            if value and value.strip():
-                parts.append(f"{label}={value.strip()}")
-        description = descriptions.get(character.id)
-        suffix = f" — {description}" if description else ""
-        lines.append("- " + ", ".join(parts) + suffix)
-    return "\n".join(lines)
+            cleaned = field(value)
+            if cleaned:
+                fields.append(f"{label}: {cleaned}")
+        fields.append("[/CHARACTER]")
+        records.append("\n".join(fields))
+    return "\n\n".join(records)

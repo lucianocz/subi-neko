@@ -34,7 +34,10 @@ from sqlalchemy import select
 from app.core.database import SyncSessionLocal
 from app.db.models import Project, ProjectCharacter, ProjectSpeaker
 from app.jobs.context import JobContext, JobResult, ProgressFn
-from app.jobs.handlers.character_context import allocate_character_descriptions
+from app.jobs.handlers.character_context import (
+    allocate_character_descriptions,
+    build_preparation_character_block,
+)
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import MappingResponse
@@ -166,6 +169,49 @@ def mapping_completion_budget(unresolved_count: int, configured_max: int) -> int
     return min(max(1, configured_max), _MAPPING_COMPLETION_CAP, requested)
 
 
+def mapping_response_error(response: MappingResponse, requested_speakers: list[str]) -> str | None:
+    """Require one and only one result for every speaker sent to the model."""
+    requested = set(requested_speakers)
+    returned = [match.speaker for match in response.matches]
+    returned_set = set(returned)
+    duplicates = sorted({name for name in returned if returned.count(name) > 1})
+    missing = sorted(requested - returned_set)
+    unexpected = sorted(returned_set - requested)
+    problems = []
+    if missing:
+        problems.append(f"missing speakers: {missing}")
+    if duplicates:
+        problems.append(f"duplicate speakers: {duplicates}")
+    if unexpected:
+        problems.append(f"unexpected speakers: {unexpected}")
+    if not problems:
+        return None
+    return (
+        "Mapping response must contain exactly one result for every requested "
+        "speaker and preserve each speaker label exactly; " + "; ".join(problems)
+    )
+
+
+def build_mapping_speaker_block(speakers: list[dict[str, Any]]) -> str:
+    """Render identity evidence without letting dialogue blur field boundaries."""
+    records = []
+    for speaker in speakers:
+        samples = [" ".join(str(sample).split()) for sample in speaker["samples"][:8]]
+        fields = [
+            "[SPEAKER]",
+            f"name: {' '.join(speaker['name'].split())}",
+            f"line_count: {speaker['line_count']}",
+        ]
+        fields.extend(
+            f"sample_{index}: {sample}" for index, sample in enumerate(samples, start=1)
+        )
+        if not samples:
+            fields.append("samples: (none)")
+        fields.append("[/SPEAKER]")
+        records.append("\n".join(fields))
+    return "\n\n".join(records)
+
+
 @register_job_handler("infer_character_mapping")
 def infer_character_mapping(
     payload: dict[str, Any],
@@ -286,19 +332,13 @@ def infer_character_mapping(
             ctx.options.mapping_character_description_budget,
             relevant_character_ids,
         )
+        roster_block = build_preparation_character_block(speaking_characters, descriptions)
         roster_snapshot = [
             {
                 "external_id": c.external_id or f"internal:{c.id}",
                 "id": c.id,
                 "name": c.name,
                 "gender": c.gender,
-                "role": c.role,
-                "aliases": c.aliases,
-                "voice_actor": c.voice_actor,
-                "character_type": c.character_type,
-                "social_position": c.social_position,
-                "note": c.note,
-                "description": descriptions.get(c.id),
             }
             for c in speaking_characters
         ]
@@ -322,29 +362,15 @@ def infer_character_mapping(
         progress(0.4, f"LLM inference for {len(unresolved_snapshot)} speaker(s)")
 
         lang_neutral_prompt = ctx.options.resolved_mapping_prompt().strip()
-        speaker_lines = []
-        for s in unresolved_snapshot:
-            samples = "; ".join(f'"{line}"' for line in s["samples"][:8])
-            speaker_lines.append(f'- "{s["name"]}" ({s["line_count"]} lines) — {samples or "no sample lines"}')
-        roster_lines = [
-            f'- id={c["external_id"]}: {c["name"]}'
-            + (f' (gender: {c["gender"]})' if c["gender"] else "")
-            + (f' (role: {c["role"]})' if c["role"] else "")
-            + (f' (aliases: {c["aliases"]})' if c["aliases"] else "")
-            + (f' (type: {c["character_type"]})' if c["character_type"] else "")
-            + (f' (VA: {c["voice_actor"]})' if c["voice_actor"] else "")
-            + (f' (social position: {c["social_position"]})' if c["social_position"] else "")
-            + (f' (note: {c["note"]})' if c["note"] else "")
-            + (f' — {c["description"]}' if c["description"] else "")
-            for c in roster_snapshot
-        ]
+        speaker_block = build_mapping_speaker_block(unresolved_snapshot)
         user_message = (
             f"## Series\n{project_name}\n\n"
-            "## Speakers\n" + "\n".join(speaker_lines) + "\n\n"
-            "## Roster\n" + "\n".join(roster_lines)
+            "## Speakers\n" + speaker_block + "\n\n"
+            "## Roster\n" + roster_block
         )
 
         try:
+            requested_speaker_names = [speaker["name"] for speaker in unresolved_snapshot]
             response, _stats = llm_client.complete(
                 task="analyze",
                 model=model,
@@ -354,6 +380,8 @@ def infer_character_mapping(
                 options=ctx.options,
                 max_completion_tokens=mapping_completion_budget(
                     len(unresolved_snapshot), ctx.options.llm_max_completion_tokens),
+                response_validator=lambda candidate: mapping_response_error(
+                    candidate, requested_speaker_names),
                 project_id=project_id,
             )
         except llm_client.LlmError as exc:
@@ -374,6 +402,21 @@ def infer_character_mapping(
             )
 
         if response is not None:
+            coverage_error = mapping_response_error(
+                response, requested_speaker_names)
+            if coverage_error:
+                logger.warning("Incomplete mapping response for project %d: %s",
+                               project_id, coverage_error)
+                return JobResult(
+                    status="failed",
+                    result={
+                        "speakers_total": len(speakers),
+                        "fuzzy_matched": fuzzy_matched,
+                        "extras_detected": extras,
+                    },
+                    error_code="RESPONSE_PARSE_ERROR",
+                    error_message=f"Mapping response coverage invalid: {coverage_error}",
+                )
             by_external = {c["external_id"]: c for c in roster_snapshot}
             speaker_ids = {s["name"]: s["id"] for s in unresolved_snapshot}
             with SyncSessionLocal() as session:

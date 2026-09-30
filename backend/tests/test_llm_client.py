@@ -15,7 +15,8 @@ from app.core.database import Base
 from app.db.models import LlmCall
 from app.db.options import AppOptions
 from app.llm import client as llm_client
-from app.llm.schemas import TranslateResponse, strict_json_schema
+from app.jobs.handlers.infer_character_mapping import mapping_response_error
+from app.llm.schemas import MappingResponse, TranslateResponse, strict_json_schema
 
 
 # ---------------------------------------------------------------------------
@@ -221,6 +222,81 @@ def test_parse_error_after_corrective_retry_raises(sync_db, monkeypatch):
         _complete()
 
     assert exc_info.value.code == "RESPONSE_PARSE_ERROR"
+
+
+def _mapping_json(*speakers: str) -> str:
+    return json.dumps({"matches": [
+        {
+            "speaker": speaker,
+            "character_external_id": None,
+            "confidence": 0.2,
+            "inferred_gender": None,
+            "rationale": "uncertain",
+        }
+        for speaker in speakers
+    ]})
+
+
+def _mapping_complete(requested: list[str], **overrides):
+    return _complete(
+        task="analyze",
+        schema=MappingResponse,
+        response_validator=lambda response: mapping_response_error(response, requested),
+        **overrides,
+    )
+
+
+def test_response_validator_missing_speaker_gets_corrective_retry(sync_db, monkeypatch):
+    completions = _install_fake(monkeypatch, [
+        _response(_mapping_json("One")),
+        _response(_mapping_json("One", "Two")),
+    ])
+
+    result, stats = _mapping_complete(["One", "Two"])
+
+    assert [match.speaker for match in result.matches] == ["One", "Two"]
+    assert stats.attempts == 2
+    correction = completions.calls[1]["messages"][-1]["content"]
+    assert "exactly one result for every requested speaker" in correction
+    assert "preserve each speaker label exactly" in correction
+
+
+def test_response_validator_duplicate_and_unexpected_gets_corrective_retry(sync_db, monkeypatch):
+    completions = _install_fake(monkeypatch, [
+        _response(_mapping_json("One", "One", "Other")),
+        _response(_mapping_json("One", "Two")),
+    ])
+
+    result, stats = _mapping_complete(["One", "Two"])
+
+    assert [match.speaker for match in result.matches] == ["One", "Two"]
+    assert stats.attempts == 2
+    correction = completions.calls[1]["messages"][-1]["content"]
+    assert "duplicate speakers" in correction
+    assert "unexpected speakers" in correction
+
+
+def test_response_validator_second_invalid_response_fails(sync_db, monkeypatch):
+    _install_fake(monkeypatch, [
+        _response(_mapping_json("One")),
+        _response(_mapping_json("One", "One")),
+    ])
+
+    with pytest.raises(llm_client.LlmError) as exc_info:
+        _mapping_complete(["One", "Two"])
+
+    assert exc_info.value.code == "RESPONSE_PARSE_ERROR"
+    assert "Mapping response must contain exactly one result" in exc_info.value.message
+
+
+def test_response_validator_valid_first_response_uses_one_call(sync_db, monkeypatch):
+    completions = _install_fake(monkeypatch, [_response(_mapping_json("One", "Two"))])
+
+    result, stats = _mapping_complete(["One", "Two"])
+
+    assert len(result.matches) == 2
+    assert stats.attempts == 1
+    assert len(completions.calls) == 1
 
 
 def test_llm_calls_rows_written(sync_db, monkeypatch):
