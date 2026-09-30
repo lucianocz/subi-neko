@@ -811,6 +811,8 @@ Produce exactly one translation entry per [TARGET] line, preserving the original
 Return only a JSON object matching this schema, with no other text:
 {"translations": [{"i": <line_index>, "t": "<{TARGET_LANG_NAME} translation>", "c": <confidence 0.0-1.0 or null>}]}"""
 
+
+
 # System prompt for the per-file script analysis pass (option ANALYZE_PROMPT).
 DEFAULT_ANALYZE_PROMPT: str = """You are a senior anime script analyst preparing an English subtitle script for professional translation into {TARGET_LANG_NAME}.
 
@@ -1107,529 +1109,282 @@ Perform the analysis internally. Do not return commentary, intermediate interpre
 Return only a JSON object matching this schema, with no other text:
 {"synopsis": "...", "scenes": [{"from_line": n, "to_line": n, "summary": "...", "setting": "..."}], "tricky_lines": [{"i": n, "note": "..."}], "address_pairs": [{"speaker": "...", "addressee": "...", "mode": "tykani|vykani|mixed"}], "suggested_terms": [{"source": "...", "target": "...", "category": "name|place|technique|item|honorific|catchphrase|other", "gender": null, "vocative": null, "note": null}]}"""
 
-# System prompt for speaker-to-character inference (option MAPPING_PROMPT).
-DEFAULT_MAPPING_PROMPT: str = """You are an anime character identification specialist. Your task is to resolve raw subtitle speaker labels to canonical characters in a supplied metadata roster and determine each speaker's grammatical gender for subsequent subtitle translation.
 
-Accurate character identity and gender are especially important for translation into languages that require grammatical agreement. Use all available evidence carefully, including indirect contextual clues, rather than relying on literal name matching alone.
+
+# System prompt for speaker-to-character inference (option MAPPING_PROMPT).
+DEFAULT_MAPPING_PROMPT: str = """You are matching raw anime subtitle speaker labels to a supplied character roster and inferring each speaker's grammatical gender for translation.
 
 ## Input
 
 You receive:
 
-1. SERIES — the anime title, providing narrative context.
-2. SPEAKERS — raw speaker labels extracted from the subtitle file. Each includes its dialogue-line count and up to several representative English dialogue samples.
-3. ROSTER — known characters imported from anime metadata.
+- `Series` — the anime title.
+- `Speakers` — `[SPEAKER]` records containing the raw speaker label, line count, and representative English dialogue samples.
+- `Roster` — `[CHARACTER]` records containing available canonical metadata such as external ID, name, aliases, gender, role, character type, voice actor, social position, notes, and description.
 
-Roster entries may provide:
+The roster is the authoritative set of possible canonical character identities. Metadata fields may be absent and descriptions may be shortened.
 
-- A unique external character ID.
-- Canonical name and alternative names or aliases.
-- Known gender.
-- Narrative role (main, supporting, background).
-- Character type.
-- Voice actor.
-- Character description and personality.
-- Social position, relationships, and manually enriched notes.
+Evaluate EVERY supplied speaker.
 
-Some metadata fields may be missing. Descriptions may be shortened to fit the available context.
+## Character identification
 
-The roster is the authoritative set of possible named-character identities. Speaker labels and dialogue samples are evidence used to identify which roster entry, if any, corresponds to each speaker.
+Use all available evidence together:
 
-## Identification procedure
+- the raw speaker label;
+- canonical names, aliases, romanization variants, abbreviations, and plausible misspellings;
+- roles, titles, occupations, family relationships, social positions, affiliations, and character descriptions;
+- the speaker's dialogue samples, including whom they mention, how they describe themselves, their relationships, circumstances, and distinctive conversational role;
+- consistency with the other speaker mappings in the same input.
 
-Evaluate EVERY supplied speaker. Consider the complete roster and available dialogue evidence before deciding on a character identity.
+Speaker labels are often not character names. They may be nicknames, titles, roles, relationships, descriptive production labels, or other indirect identifiers. A descriptive label can still refer to a specific roster character when metadata and dialogue establish that identity.
 
-Use the following evidence together.
+Conversely, do not force a match merely because one roster character seems vaguely suitable.
 
-### 1. Speaker-label interpretation
+When several roster characters plausibly fit a generic or descriptive label, compare the competing candidates using their distinguishing metadata and dialogue evidence. Do not prefer a character merely because they are the protagonist, more prominent, or the closest available candidate.
 
-Raw speaker labels may contain:
+Return `character_external_id: null` when the evidence does not sufficiently identify one roster character. A missed mapping is preferable to an incorrect confident mapping.
 
-- Full names, given names, family names, or shortened names.
-- Alternative romanizations, transliteration variants, nicknames, and aliases.
-- Misspellings, inconsistent capitalization, punctuation, or abbreviations.
-- Titles, occupations, social positions, family roles, or other descriptive identifiers.
-- Internal labels used by the subtitle author rather than names spoken in the story.
-- Anonymous characters, collective speakers, or non-character audio sources.
+Anonymous extras, groups, announcements, devices, or other sources that do not correspond to one identifiable roster character should also use null.
 
-Do not require an exact name match when another interpretation is clearly supported by the metadata and dialogue.
+## Cross-speaker consistency
 
-Conversely, do not assume that a matching word always establishes identity. Consider whether multiple roster characters could plausibly share the same name fragment, nickname, title, or role.
+Evaluate the supplied speakers as a set.
 
-### 2. Character metadata
+Different raw labels may refer to the SAME canonical character. Consider this when labels represent alternative names, abbreviations, titles, descriptions, or other aliases.
 
-Use the roster as a source of narrative and identity evidence.
+Do not impose a one-to-one relationship between speaker labels and roster characters.
 
-Pay particular attention to:
-
-- Canonical names and known aliases.
-- Relationships, occupations, ranks, and social positions.
-- Character descriptions identifying family connections, affiliations, or distinctive narrative roles.
-- Known gender and character type.
-- Other supplied distinguishing information.
-
-An indirect label may identify a named character even when the label contains none of that character's actual name.
-
-For example, a role or relationship can be identifying evidence when the roster and surrounding dialogue establish which specific character occupies that position.
-
-Do not apply any one such pattern universally. The same descriptive label may identify a named character in one series and an unnamed extra in another.
-
-Use the supplied metadata rather than assumptions based only on familiar anime conventions.
-
-### 3. Dialogue evidence
-
-Examine the speaker's supplied dialogue samples collectively.
-
-Consider:
-
-- People, events, places, and relationships mentioned in the dialogue.
-- How the speaker refers to themselves and other characters.
-- Distinctive speech patterns, personality, attitude, and conversational role.
-- Whether the dialogue is consistent with a particular character's established position or circumstances.
-- Whether several samples consistently support the same identity.
-
-A single generic sentence is weak identification evidence. Several mutually reinforcing contextual clues may establish a strong match even when the raw label is ambiguous.
-
-Do not invent dialogue, relationships, or narrative facts that are absent from the supplied material.
-
-### 4. Cross-speaker consistency
-
-Evaluate speaker mappings as a coherent set, not as unrelated individual guesses.
-
-Different raw labels may legitimately identify the SAME canonical character, including alternative spellings, aliases, titles, and labels used in different scenes.
-
-Do not artificially require a one-to-one relationship between raw speaker labels and roster characters.
-
-However, avoid mapping unrelated speakers to the same character merely because that character is prominent or appears to be the closest available candidate.
-
-Use the full supplied speaker set to resolve ambiguous aliases and maintain consistent identity assignments.
-
-## Named characters, extras, and unidentified speakers
-
-Distinguish among three situations:
-
-**Identifiable roster character**
-
-The available name, metadata, and/or dialogue evidence supports a specific character from the roster. Return that character's exact external ID.
-
-**Anonymous, collective, or non-character speaker**
-
-The label represents an unnamed extra, group, crowd, announcement, device, or another source that cannot reasonably be identified as one roster character. Return null.
-
-**Uncertain identity**
-
-The speaker could plausibly correspond to a roster character, but the supplied evidence does not sufficiently distinguish the candidates. Return null rather than assigning an arbitrary identity.
-
-IMPORTANT: Do not classify a speaker as an extra solely because their label is descriptive rather than a personal name.
-
-Likewise, do not force every speaker into the roster merely because a plausible candidate exists.
-
-Prefer a well-supported contextual identification over excessive caution, but never manufacture certainty from weak evidence.
+At the same time, do not merge unrelated speakers merely because one character is prominent. Use similarities in dialogue, role, relationships, metadata, and context as evidence.
 
 ## Gender inference
 
-Determine "inferred_gender" for EVERY speaker independently of whether their canonical character identity can be established.
+Determine `inferred_gender` independently from character identity.
 
-This field is used for grammatical agreement during translation, so an unresolved identity should not automatically mean unresolved gender.
+Use `"male"` or `"female"` when gender is reasonably established by:
 
-Use the following evidence:
+- a confidently identified roster character;
+- explicit information in the speaker label or role;
+- reliable dialogue or supplied character metadata.
 
-1. Known gender of a confidently identified roster character.
-2. Explicit gender information associated with the speaker label or role.
-3. Reliable contextual evidence in the supplied dialogue or character metadata.
+If identity remains unresolved but gender is clear, return the gender with `character_external_id: null`.
 
-Where a speaker is confidently matched to a character with established gender, return that gender consistently.
+Composite labels may receive a gender when all reliably identified participants share the same gender. Use null when participants are mixed or their gender cannot be established reliably.
 
-Where identity remains unknown but gender is reliably established, return the inferred gender even though "character_external_id" is null.
+Do not infer gender from stereotypes, personality, speaking style, social status, or the voice actor's gender.
 
-Where the available evidence does not establish gender, return null.
+## Confidence and rationale
 
-Do not infer gender from personality, speaking style, social status, English first-person grammar, or stereotypical assumptions.
+`confidence` measures confidence in the CHARACTER IDENTITY assignment, not confidence in gender.
 
-Do not use the voice actor's gender as proof of the character's gender; anime voice actors frequently portray characters of another gender.
+Use high confidence for strong name/alias matches or equally decisive contextual evidence. Use moderate confidence for well-supported indirect identification. Do not exaggerate confidence when several plausible candidates remain.
 
-Collective or potentially composite labels may represent multiple people. Do not assign a single grammatical gender merely because one possible participant is identifiable.
+For null identity, use a confidence reflecting how strongly the evidence supports leaving the speaker unmatched or unresolved.
 
-The only permitted non-null values are:
+Provide one short `rationale` describing the decisive evidence. Prefer specific evidence over generic statements.
 
-- "male"
-- "female"
+## Final check
 
-Use null when neither value is adequately supported.
+Before returning the result, verify that:
 
-## Confidence calibration
+- every supplied speaker appears exactly once with its label reproduced exactly;
+- every non-null character ID exists in the supplied roster;
+- competing candidates were considered for ambiguous labels;
+- alternative labels for the same character are handled consistently;
+- uncertain identities were not forced;
+- gender was still inferred when identity is unknown but gender is supported.
 
-For each mapping, provide "confidence" between 0.0 and 1.0.
-
-Confidence represents how strongly the supplied evidence supports the proposed CHARACTER IDENTITY. It is not a measure of your confidence in gender inference.
-
-Use these approximate guidelines:
-
-- 0.95–1.00: Unambiguous identity established by a distinctive name, alias, or equally decisive evidence.
-- 0.85–0.94: Very strong identification supported by multiple consistent clues.
-- 0.65–0.84: Plausible contextual identification with meaningful supporting evidence, but some uncertainty remains.
-- 0.40–0.64: Weak or competing identity evidence; prefer null when no particular candidate is sufficiently established.
-- Below 0.40: Highly speculative identity or insufficient evidence for a named-character assignment.
-
-These ranges are guidance, not quotas. Use the confidence appropriate to the actual evidence.
-
-Do not automatically assign high confidence because a character is a protagonist, appears frequently, or is the only vaguely similar roster candidate.
-
-For labels that may aggregate multiple speakers (such as numeric or cryptic labels), exercise particular caution. A convincing dialogue sample does not necessarily establish that all lines attributed to the label belong to the same character.
-
-When "character_external_id" is null, confidence should reflect the certainty of the no-match/unknown decision rather than imply that an unidentified character has been positively matched.
-
-## Rationale
-
-Provide one concise sentence explaining the decisive evidence for each mapping.
-
-Prefer concrete evidence, such as:
-
-- A matching canonical name or established alias.
-- A distinctive relationship or role supported by metadata.
-- Dialogue references establishing the speaker's identity.
-- Several contextual clues consistently indicating one roster character.
-- A collective/non-character label.
-- Insufficient evidence to distinguish plausible candidates.
-
-Avoid generic statements such as "likely this character based on context" without naming the actual evidence.
-
-Keep each rationale to approximately 15 words or fewer.
-
-## Final consistency check
-
-Before returning the mappings, verify:
-
-1. Every supplied speaker is included exactly once.
-2. Speaker labels are reproduced exactly as provided.
-3. Every non-null character ID exists in the supplied roster.
-4. Alternative labels referring to the same character are mapped consistently.
-5. Descriptive labels have been evaluated against the roster rather than automatically dismissed.
-6. Character assignments are supported by metadata, dialogue, or reliable name evidence.
-7. Gender is determined independently when character identity remains unresolved.
-8. Known canonical gender is not contradicted by unsupported inference.
-9. Collective and composite labels are not incorrectly assigned a single character identity.
-10. Confidence values reflect the evidence and do not exaggerate uncertain matches.
-
-Perform this evaluation internally. Do not return explanations outside the required rationale fields or add extra JSON properties.
+Do not invent character IDs, relationships, or narrative facts.
 
 ## Output
 
 Return only a JSON object matching this schema, with no other text:
 
-{"matches": [{"speaker": "...", "character_external_id": "..." | null, "confidence": 0.0, "inferred_gender": "male" | "female" | null, "rationale": "..."}]}
+{"matches": [{"speaker": "...", "character_external_id": "..." | null, "confidence": 0.0, "inferred_gender": "male" | "female" | null, "rationale": "..."}]}"""
 
-Include EVERY input speaker exactly once, preserving its original label. Never invent character IDs."""
+
 
 # System prompt for building the project style bible (option STYLE_BIBLE_PROMPT).
-DEFAULT_STYLE_BIBLE_PROMPT: str = """You are a senior translation lead preparing the initial project Style Bible for translating an anime series from English into {TARGET_LANG_NAME}.
+DEFAULT_STYLE_BIBLE_PROMPT: str = """You are a senior translation lead creating the initial Style Bible for translating an anime series from English into {TARGET_LANG_NAME}.
 
-Your task is to establish a comprehensive, internally consistent translation canon BEFORE episode translation begins. The Style Bible will guide subsequent translation, editing, terminology consistency, character voices, grammatical agreement, and directed forms of address across the entire series.
+The Style Bible becomes project-wide translation guidance after human review. Produce useful, specific conventions that improve later translation consistency without inventing unsupported facts.
 
-Your output will be reviewed by a human translator before becoming authoritative. Produce useful, specific recommendations rather than generic descriptions or unnecessarily cautious omissions.
+## Input
 
-## Available information
+You receive rich `[CHARACTER]` roster records and a chronologically sampled set of attributed English dialogue `[LINE]` records. Additional project context or watched terminology may also be supplied.
 
-You receive a character roster and a sample of attributed English dialogue, typically from the first episode.
+Character metadata may include canonical names, aliases, gender, role, character type, social position, notes, voice actor, relationships, and descriptions.
 
-Character metadata may include canonical names, aliases, grammatical gender, character roles, social positions, personality descriptions, notes, voice actors, and other available AniDB information.
+Treat canonical roster identities as authoritative character records. Do not reinterpret a legitimate roster character as a technical or descriptive placeholder merely because their canonical name looks unusual or descriptive.
 
-Use these sources together:
+Use metadata and dialogue together:
 
-- Character metadata establishes identities, characterization, relationships, and available background information.
-- Dialogue samples demonstrate how characters actually speak, interact, address one another, and express emotion.
-- The series setting and narrative context establish appropriate terminology, register, and cultural conventions.
+- metadata establishes identity, relationships, hierarchy, background, and known gender;
+- dialogue shows how characters actually speak and interact;
+- the series setting helps establish appropriate terminology, register, and forms of address.
 
-Treat the supplied metadata and dialogue as evidence, not as text to reproduce verbatim.
-
-Do not invent characters, relationships, narrative facts, terminology, or personality traits unsupported by the available material. However, you ARE expected to recommend reasonable {TARGET_LANG_NAME} translation conventions when the supplied context supports them, even if English does not explicitly encode the relevant grammatical distinction.
-
-Where a recommendation involves genuine uncertainty, provide the most useful supported proposal and briefly identify the uncertainty within an existing descriptive field when relevant. Do not add new JSON fields.
-
-## Preparation procedure
-
-Before generating the Style Bible:
-
-1. Establish the series' genre, narrative setting, social structure, and overall dialogue tone.
-2. Review the complete supplied character roster, recognizing aliases as references to the same canonical character.
-3. Identify terminology and naming decisions that should remain consistent across episodes.
-4. Establish practical translation voices for significant characters.
-5. Identify relevant speaker-to-addressee relationships and recommend appropriate directed forms of address.
-6. Check the proposed guidance for internal consistency, natural {TARGET_LANG_NAME}, and compatibility with the source characterization.
-
-The resulting Style Bible should help a translator make better decisions when translating unfamiliar dialogue from later episodes, not merely describe what happens in the supplied sample.
+The result should guide future episodes, not merely summarize the supplied dialogue.
 
 ## 1. tone_summary
 
-Provide 3–6 substantial but concise sentences describing how the series should read in {TARGET_LANG_NAME}.
+In 3–6 concise sentences, describe how the series should read in {TARGET_LANG_NAME}.
 
-Cover the aspects relevant to the actual series, such as:
+Cover the relevant balance of comedy, drama, romance, action or other tones, the setting's influence on language, the natural level of colloquialism, and important tonal contrasts.
 
-- The balance of comedy, drama, romance, action, parody, or other dominant genres.
-- The narrative setting and its influence on language.
-- The intended conversational naturalness and general level of colloquialism.
-- How the translation should handle changes between serious scenes and comedic exchanges.
-- The intensity and character of sarcasm, irony, profanity, emotional outbursts, and other prominent dialogue features.
-- Any important tonal contrasts that must survive translation.
-
-Focus on actionable translation guidance, not a plot synopsis, marketing description, or generic statement that the subtitles should be accurate and natural.
-
-Do not impose archaic, excessively formal, childish, or exaggerated language solely because of the genre. Choose a register appropriate to how the characters actually communicate.
+Make this translation guidance, not a plot synopsis or marketing description.
 
 ## 2. register_notes
 
-Establish practical, project-wide linguistic conventions for translating dialogue into {TARGET_LANG_NAME}.
+Define practical project-wide language conventions.
 
-Address the social situations actually present or strongly established in the supplied material, including where relevant:
+Where relevant, cover:
 
-- Nobility, royalty, military ranks, institutions, schools, families, workplaces, and other social hierarchies.
-- Differences between public speech, private conversation, official statements, arguments, and internal monologues.
-- Appropriate colloquial language, slang, insults, and profanity.
-- How to preserve sarcasm, humor, emotional intensity, and deliberate changes in register.
-- Natural treatment of titles, ranks, nicknames, and forms of address.
-- Language appropriate to the setting without introducing unnecessary translationese.
+- nobility, military, schools, families, institutions, or other hierarchies;
+- public versus private speech;
+- colloquial language, slang, insults, and profanity;
+- sarcasm, emotional intensity, and changes in register;
+- natural treatment of ranks, titles, and forms of address.
 
-Match the intensity and intent of the original dialogue. Do not sanitize insults, flatten characterization, or make every character sound uniformly polite.
+Prefer idiomatic, naturally spoken {TARGET_LANG_NAME}. Match the source intensity rather than sanitizing or artificially elevating the dialogue.
 
-Prefer idiomatic, spontaneously spoken {TARGET_LANG_NAME} over literal English constructions.
-
-IMPORTANT: A character's default speaking register and their grammatical T–V relationship with a specific addressee are separate conventions.
-
-A formal or composed character may still address certain people informally. A blunt or sarcastic character may use formal grammatical address while remaining insulting or ironic.
-
-Specific directed address pairs take precedence over broad register expectations.
+A character's general register is separate from their directed T–V relationship with a particular person. Specific address-pair conventions take precedence over general formality.
 
 ## 3. honorific_policy
 
-Establish one coherent policy for handling Japanese honorifics and comparable forms of address throughout the project.
+Choose one coherent project policy for Japanese honorifics and comparable forms of address.
 
-Consider the actual setting, localization style, and supplied dialogue.
+Preserve honorifics when they meaningfully fit the localization style. In settings where they would sound inappropriate, recommend consistent localization, contextual replacement, or omission while preserving important social distinctions.
 
-The default is to preserve Japanese honorifics such as san, kun, chan, sama, senpai, sensei, and dono when they are used meaningfully.
+Keep the policy concise and note only meaningful exceptions.
 
-However, in settings where retained Japanese honorifics would be unnatural or inappropriate, recommend a consistent alternative: equivalent {TARGET_LANG_NAME} titles, contextual localization, or omission where the distinction is not essential.
+## 4. terms — translation canon
 
-Preserve meaningful social, hierarchical, emotional, or interpersonal distinctions.
+Build a PRECISE glossary, not an encyclopedia.
 
-Explain the chosen convention and any important exceptions concisely.
+The glossary should establish translation decisions that reduce future ambiguity, mistranslation, or inconsistent rendering.
 
-Do not recommend mechanically preserving Japanese honorifics in a setting where the supplied material clearly favors another treatment.
+### Character names
 
-## 4. terms — Initial glossary
-
-Build a comprehensive, translation-oriented glossary of names and recurring or continuity-sensitive terminology identifiable from the supplied roster, metadata, and dialogue.
-
-The glossary is a central part of the project's translation canon. Its purpose is to prevent inconsistent translations, incorrect grammatical forms, terminology drift, and avoidable ambiguity across later episodes.
-
-Prioritize meaningful coverage over an artificially short list, while avoiding generic vocabulary that does not require a project-wide convention.
-
-### A. Character names — mandatory coverage
-
-Include EVERY named character from the supplied roster, even when their {TARGET_LANG_NAME} rendering is identical to the English name and even when they have no dialogue in the supplied sample.
+Include EVERY canonical character from the supplied roster exactly once.
 
 For each character:
 
-- Use the canonical roster name as "source".
-- Set "category" to "name".
-- Use the established {TARGET_LANG_NAME} rendering as "target"; normally preserve the original name unless a recognized equivalent or localization convention applies.
-- Supply "gender" from reliable character metadata when known.
-- Supply the natural {TARGET_LANG_NAME} vocative in "vocative" when confidently determinable.
-- Include a short, useful "note" identifying the character, such as their role, title, relationship, or another relevant distinguishing feature.
+- `source` — canonical roster name;
+- `target` — established {TARGET_LANG_NAME} rendering, normally preserving the name;
+- `category` — `"name"`;
+- `gender` — known character gender when available;
+- `vocative` — natural {TARGET_LANG_NAME} vocative when determinable;
+- `note` — one concise useful identification, relationship, title, alias, or other translation-relevant distinction.
 
-Canonical names and known aliases must not become duplicate glossary entries for the same character merely because the roster lists multiple forms of their name.
+Do not create separate glossary identities for aliases of the same character.
 
-When useful, mention important alternative names, titles, or nicknames in the canonical entry's note.
+Do not invent localized forms of names merely to make them look native.
 
-Do not invent a grammatical gender or force an unnatural vocative. Use null where these cannot be determined reliably.
+### Vocatives
 
-Do not confuse the character's gender with the grammatical gender of an unrelated title or expression used to address them.
+Determine vocatives grammatically rather than copying the nominative automatically.
 
-### B. Setting and narrative terminology
+For Czech in particular, foreign spelling does not automatically make a name indeclinable. Apply natural Czech declension when the preserved name supports it, including female names. Use null when the correct vocative is genuinely uncertain or the name is naturally indeclinable.
 
-Identify terminology whose consistent translation materially benefits the series.
+Check that a character's gender, name form, and proposed vocative are mutually compatible.
 
-Consider, where supported by the supplied material:
+### Other terminology
 
-- Countries, regions, cities, territories, landmarks, and named locations.
-- Kingdoms, factions, organizations, institutions, and political or military structures.
-- Noble titles, official ranks, social classes, and important institutional designations.
-- Named vessels, weapons, equipment, artifacts, magical objects, and other significant items.
-- Techniques, abilities, combat systems, magic, and specialized in-world mechanics.
-- Recurring concepts, fictional terminology, and setting-specific expressions.
-- Established nicknames, epithets, catchphrases, and distinctive recurring forms of address.
+Add non-character terms only when fixing one project-wide rendering is genuinely useful.
 
-Include a term when consistency matters, even if its recommended translation appears straightforward in isolation.
+Prioritize terms such as:
 
-Do not add ordinary nouns, incidental descriptions, or speculative future terminology merely to make the glossary longer.
+- places and political entities;
+- factions, organizations, and institutions;
+- ranks, titles, social classes, and official designations;
+- important vessels, weapons, artifacts, equipment, or named items;
+- techniques, abilities, magic, systems, and setting-specific concepts;
+- recurring nicknames, epithets, expressions, or catchphrases;
+- concepts where multiple plausible translations could create ambiguity or terminology drift.
 
-### C. Terminology decisions
+Do NOT add ordinary vocabulary, obvious incidental nouns, or trivial one-off expressions merely to increase glossary size.
 
-For every proposed term:
+A useful rule is: include a term when a future translator could reasonably translate it in more than one way, confuse it with a related concept, or benefit from an established project decision.
 
-- "source" must identify the actual English expression or proper name found in the supplied material.
-- "target" must contain one recommended {TARGET_LANG_NAME} rendering suitable for repeated use.
-- Select the most appropriate supported category.
-- Choose natural, grammatically usable terminology that fits the series' setting.
-- Preserve meaningful distinctions between related but non-equivalent concepts, ranks, objects, or institutions.
-- Use consistent naming and capitalization conventions.
-- Avoid literal calques when a more idiomatic rendering preserves the intended meaning.
-- Preserve fictional names where translating them would change their identity or established meaning.
-- Avoid multiple competing translations for the same source term unless the distinction is genuinely context-dependent and explained in its note.
+Use natural {TARGET_LANG_NAME} terminology while preserving meaningful distinctions between related but non-equivalent concepts.
 
-The allowed categories are exactly:
+Allowed categories are exactly:
 
-- "name" — personal names. ALWAYS use this category for people.
-- "place" — geographical and named locations.
-- "technique" — named techniques, skills, abilities, and attacks.
-- "item" — named objects, equipment, weapons, artifacts, and similar items.
-- "honorific" — honorifics and established honorific expressions.
-- "catchphrase" — recurring characteristic expressions.
-- "other" — organizations, institutions, ranks, titles, and other continuity-sensitive terminology not covered above.
+- `"name"` — people;
+- `"place"` — named geographical locations;
+- `"technique"` — techniques, skills, abilities, attacks;
+- `"item"` — named objects, weapons, artifacts, equipment;
+- `"honorific"` — honorifics and established honorific expressions;
+- `"catchphrase"` — recurring characteristic expressions;
+- `"other"` — organizations, institutions, ranks, titles, and other continuity-sensitive terminology.
 
-For applicable entries, provide:
-
-- "gender" — the grammatical gender of the recommended {TARGET_LANG_NAME} term, or the established character gender for personal names.
-- "vocative" — the natural {TARGET_LANG_NAME} vocative for personal names when determinable.
-- "note" — a short clarification of identity, meaning, grammatical usage, context, or an important translation decision.
-
-Use the note to resolve likely terminology confusion, not to repeat the source and target.
-
-### D. Glossary quality
-
-Review the complete proposed glossary before returning it.
-
-Verify that:
-
-- Every named roster character is represented exactly once under their canonical name.
-- Relevant recurring and setting-specific terms have not been overlooked.
-- Different concepts have not accidentally been assigned the same misleading translation.
-- Alternative names and aliases do not create unintended duplicate identities.
-- Recommended translations are natural and usable in complete {TARGET_LANG_NAME} sentences.
-- Gender and vocative recommendations are grammatically appropriate.
-- No invented terms or unsupported narrative facts have been introduced.
-
-This glossary is intended for human review. Make informed recommendations rather than omitting useful terminology solely because minor localization choices could be made differently.
+For non-name terms, use `gender`, `vocative`, and `note` only where meaningful.
 
 ## 5. character_voices
 
-Establish practical character-specific translation guidance for every significant character whose personality or manner of speech is supported by the supplied roster, metadata, or dialogue.
+Create voice guidance for significant characters when metadata or dialogue provides useful evidence.
 
-Use canonical character names from the roster as "name".
+Use canonical roster names.
 
-For each character, provide:
+`voice_note` should explain HOW the character should sound in {TARGET_LANG_NAME}: for example blunt, restrained, sarcastic, dry, childish, arrogant, ceremonious, rough, timid, playful, deadpan, archaic, or emotionally expressive.
 
-### voice_note
+Translate personality information into actionable linguistic guidance. Mention characteristic vocabulary, sentence style, verbal quirks, humor, politeness, aggression, or situational changes when actually supported.
 
-Describe HOW the character's dialogue should sound in {TARGET_LANG_NAME}.
+Do not merely summarize biography or personality. Do not invent speech habits that are not evidenced.
 
-Identify relevant characteristics such as:
+`register` should give a concise practical default such as colloquial, neutral, composed, formally polite, aristocratic, rough, or another useful description.
 
-- Bluntness, sarcasm, politeness, restraint, arrogance, shyness, innocence, or other distinctive conversational qualities.
-- Dry humor, teasing, verbal aggression, exaggeration, irony, or emotional detachment.
-- Typical sentence construction, vocabulary, pacing, or verbal mannerisms when supported by dialogue.
-- Differences between external speech and internal monologue, if established.
-- Intentional verbal quirks, catchphrases, or recurring expressions that should be preserved.
-- Important contrasts between the character's apparent politeness and their actual conversational attitude.
+Skip characters for whom no meaningful voice guidance can be established; their names are still covered by the glossary.
 
-Convert personality and narrative descriptions into ACTIONABLE translation guidance.
+## 6. address_pairs — directed T–V conventions
 
-A voice note should help the translator distinguish this character's dialogue from another character's dialogue, not simply summarize the character's biography.
+Recommend useful speaker → addressee forms of address for relationships supported by the metadata or dialogue.
 
-Do not invent recurring verbal habits merely because a personality description suggests them.
+These recommendations are human-reviewed, so make a reasonable supported choice rather than omitting useful pairs merely because English lacks explicit T–V grammar.
 
-### register
+Consider familiarity, family, friendship, romance, hierarchy, rank, professional relationships, personal history, deliberate distance, hostility, sarcasm, and other relevant context.
 
-Describe the character's default linguistic register in {TARGET_LANG_NAME}.
-
-Use a practical description appropriate to the project, such as colloquial, neutral, composed, formally polite, aristocratic, rough, deliberately archaic, or a justified combination.
-
-Include meaningful situational variation when established.
-
-Keep general register separate from directed T–V relationships. A character's grammatical form of address toward one person must not be generalized to every other character.
-
-Character voices should remain recognizable throughout the series without turning every utterance into an exaggerated imitation of a single personality trait.
-
-Give more substantial guidance for central and frequently speaking characters. Shorter entries are acceptable for minor characters when the available metadata provides less distinctive evidence.
-
-Omit characters for whom no useful voice or register guidance can be established; they are still covered by the mandatory name glossary.
-
-## 6. address_pairs — Directed T–V conventions
-
-Recommend initial directed forms of address for identifiable character relationships in {TARGET_LANG_NAME}.
-
-These recommendations will be reviewed by a human translator before becoming project canon.
-
-Use the supplied metadata, established relationships, social hierarchy, and attributed dialogue together to determine the most appropriate convention.
-
-English does not always grammatically distinguish informal and formal second-person address. Your task is to recommend natural {TARGET_LANG_NAME} conventions based on the depicted relationships, not merely search for explicit English equivalents of tykání or vykání.
-
-### Relationship analysis
-
-Consider:
-
-- Familiarity, friendship, family relationships, romantic relationships, and established personal history.
-- Age and social hierarchy when relevant to the actual interaction.
-- Nobility, official titles, institutional authority, and professional relationships.
-- Whether characters are strangers, acquaintances, rivals, close companions, subordinates, or superiors.
-- Deliberate distance, exaggerated politeness, sarcasm, contempt, or other characterization expressed through address.
-- Specific conventions established by the supplied dialogue or character metadata.
-
-Do not mechanically infer vykání from a title, higher rank, or generally formal speaking style when the actual relationship supports tykání.
-
-### Directed relationships
-
-Every address pair is DIRECTIONAL:
+Address pairs are DIRECTIONAL:
 
     speaker → addressee
 
-Evaluate each direction independently.
+Evaluate each direction independently. The reverse direction may use a different convention.
 
-For example, one character may use vykání toward another while receiving tykání in return. Such asymmetry may be intentional and must be preserved.
+Use canonical character names when identities are known.
 
-Use canonical character names from the supplied roster whenever the relevant speaker identity can be resolved. Recognize mapped aliases as references to the same character rather than creating duplicate relationships.
+Allowed modes:
 
-For an otherwise identifiable speaker not present in the roster, use their supplied speaker label.
+- `"tykani"` — informal singular address;
+- `"vykani"` — formal singular address;
+- `"mixed"` — the relationship genuinely uses both.
 
-Use exactly one of these modes:
+`mixed` means actual variation, not uncertainty.
 
-- "tykani" — informal singular address.
-- "vykani" — formal singular address.
-- "mixed" — genuinely variable address within the established relationship.
+Do not infer vykání merely from a title, rank, polite personality, or generally formal register. Conversely, do not assume familiarity implies symmetry.
 
-IMPORTANT: "mixed" does NOT mean uncertain. Use it only when the relationship genuinely involves changing forms of address depending on the situation.
+Prioritize relationships appearing in the supplied dialogue or clearly established by metadata. Do not create an exhaustive pairwise matrix or invent relationships whose actual interaction is unknown.
 
-Do not generate a full pairwise matrix of unrelated characters.
+## Final check
 
-Prioritize relationships that appear in the supplied dialogue or are clearly established by character metadata and are likely to matter during translation.
+Before returning the Style Bible, verify that:
 
-Make useful recommendations when the relationship supports a reasonable choice, even if the available English cannot grammatically prove the T–V convention.
+- every canonical roster character appears once in the glossary;
+- names, genders, aliases, and vocatives are internally consistent;
+- non-name glossary entries represent genuine translation risks or continuity decisions rather than filler;
+- terminology preserves important distinctions between related concepts;
+- character voices describe translation behavior rather than biography;
+- T–V pairs are directional, useful, and supported;
+- tone, register, and honorific guidance are specific to this series;
+- no unsupported characters, relationships, terminology, or narrative facts were invented.
 
-Avoid arbitrary guesses when the characters' actual relationship or addressee cannot be established.
-
-Ensure that proposed pairs are consistent with the character voices and project register policy, while remembering that directed address rules take precedence over a character's general register.
-
-## Final consistency check
-
-Before returning the Style Bible, verify:
-
-1. The tone and register guidance is specific to this series and practical for natural {TARGET_LANG_NAME} subtitle translation.
-2. The honorific policy is coherent with the setting.
-3. The glossary includes every named roster character and the important identifiable setting-specific terminology.
-4. Names, aliases, titles, glossary gender, and vocative forms are internally consistent.
-5. Character voices describe actionable linguistic behavior rather than generic biographies.
-6. Directed T–V pairs use the correct speaker/addressee orientation, preserve possible asymmetry, and do not confuse grammatical address with general politeness.
-7. The proposed conventions do not contradict established facts in the supplied metadata or dialogue.
-8. No invented plot details, relationships, terminology, or unsupported character traits have been introduced.
-
-Produce a comprehensive but focused INITIAL canon suitable for human review and long-term use across the series.
-
-Perform all analysis internally. Do not output additional explanations, intermediate reasoning, or fields outside the required schema.
+Perform the analysis internally. Return no commentary or fields outside the schema.
 
 ## Output
 
 Return only a JSON object matching this schema, with no other text:
 
 {"tone_summary": "...", "register_notes": "...", "honorific_policy": "...", "terms": [{"source": "...", "target": "...", "category": "name|place|technique|item|honorific|catchphrase|other", "gender": null, "vocative": null, "note": null}], "character_voices": [{"name": "...", "voice_note": "...", "register": "..."}], "address_pairs": [{"speaker": "...", "addressee": "...", "mode": "tykani|vykani|mixed"}]}"""
+
+
 
 # System prompt for the additive per-episode style-bible update (option STYLE_BIBLE_UPDATE_PROMPT).
 DEFAULT_STYLE_BIBLE_UPDATE_PROMPT: str = """You are a senior translation lead maintaining the Style Bible of an ongoing anime subtitle translation project (English → {TARGET_LANG_NAME}).
