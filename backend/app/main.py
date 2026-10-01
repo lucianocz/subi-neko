@@ -7,6 +7,7 @@ from fastapi.responses import FileResponse
 
 from app.core.config import settings
 from app.core.database import verify_connection, close_db, run_migrations
+from app.core.logging_config import apply_log_level, configure_logging
 from app.db import options as options_store
 from app.jobs.manager import job_manager
 from app.scheduler.manager import scheduler_manager
@@ -41,26 +42,16 @@ APP_NAME = "subi-neko"
 
 
 def _configure_logging(level: str) -> None:
-    import sys
-    log_level = level.upper()
-    root = logging.getLogger()
-    root.handlers.clear()
-    handler = logging.StreamHandler(sys.stderr)
-    handler.setLevel(log_level)
-    handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
-    root.addHandler(handler)
-    root.setLevel(log_level)
-    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
-        logging.getLogger(name).setLevel(log_level)
+    configure_logging(level, settings.config_root)
 
 
 async def _on_option_change(name: str, value: str | None) -> None:
     if name == "JOB_WORKER_COUNT" and value is not None:
         from app.db.options import _validated_worker_count
         await job_manager.resize(_validated_worker_count(value))
-    elif name == "LOG_LEVEL" and value is not None:
+    elif name == "LOG_LEVEL":
         from app.db.options import _validated_log_level
-        logging.getLogger().setLevel(_validated_log_level(value))
+        apply_log_level(_validated_log_level(value))
 
 
 @asynccontextmanager

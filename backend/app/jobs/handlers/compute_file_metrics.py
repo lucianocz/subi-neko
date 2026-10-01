@@ -53,6 +53,7 @@ def compute_file_metrics(
                              error_code="FILE_NOT_FOUND",
                              error_message=f"File id={file_id} not found")
         project_id = file.project_id
+        translation_attempt = file.translation_requested_at
 
         events = list(session.scalars(
             select(SubtitleEvent)
@@ -123,6 +124,15 @@ def compute_file_metrics(
     progress(0.7, "Writing metrics")
 
     with SyncSessionLocal() as session:
+        current_file = session.get(File, file_id)
+        if (current_file is None
+                or current_file.translation_requested_at != translation_attempt):
+            return JobResult(
+                status="succeeded",
+                result={"skipped": "stale translation attempt"},
+                error_code=None,
+                error_message=None,
+            )
         session.execute(delete(FileQualityMetric).where(FileQualityMetric.file_id == file_id))
         session.add(FileQualityMetric(
             file_id=file_id,

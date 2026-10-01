@@ -15,6 +15,7 @@ from app.core.database import AsyncSessionLocal
 from app.db import options as options_store
 from app.db.models import (
     File,
+    FileAnalysis,
     FileBlockingReason,
     FileQualityMetric,
     FileStatus,
@@ -565,6 +566,7 @@ async def retranslate_file(project_id: int, file_id: int):
         # The READY orchestrator sees zero chunks and reruns
         # plan_translation_chunks before any translation job is scheduled.
         await session.execute(delete(SubtitleChunk).where(SubtitleChunk.file_id == file_id))
+        await session.execute(delete(FileAnalysis).where(FileAnalysis.file_id == file_id))
         await session.execute(delete(QaItem).where(QaItem.file_id == file_id))
         await session.execute(delete(FileQualityMetric).where(FileQualityMetric.file_id == file_id))
         await session.execute(
@@ -578,9 +580,11 @@ async def retranslate_file(project_id: int, file_id: int):
         # Marking them cancelled lets the manager reuse their canonical keys.
         invalidated_keys = {
             f"plan_translation_chunks:{file_id}",
+            f"analyze_script:{file_id}",
             f"render_output_ass:{file_id}",
             f"mux_output_mkv:{file_id}",
             f"compute_file_metrics:{file_id}",
+            f"update_style_bible:{project_id}:{file_id}",
         }
         records = list((await session.scalars(
             select(JobRecord).where(

@@ -21,6 +21,7 @@ from sqlalchemy import create_engine
 from app.core.database import Base
 from app.db.models import (
     File,
+    FileAnalysis,
     FileBlockingReason,
     FileQualityMetric,
     FileStatus,
@@ -2394,6 +2395,8 @@ class TestFileActions:
         chunk = await _create_chunk(db_session, file.id, 0, status="complete")
         chunk.model = "old-model"
         chunk.prompt_version = "old-prompt"
+        await _create_analysis(db_session, file.id)
+        style_bible = await _create_style_bible(db_session, project.id)
         await _create_qa_item(db_session, file.id, subtitle_event_id=event.id)
         db_session.add(FileQualityMetric(file_id=file.id, project_id=project.id))
         db_session.add(LlmCall(
@@ -2418,16 +2421,19 @@ class TestFileActions:
         await db_session.commit()
         for job_type in (
             "plan_translation_chunks",
+            "analyze_script",
             "translate_chunk",
             "render_output_ass",
             "mux_output_mkv",
             "compute_file_metrics",
+            "update_style_bible",
         ):
-            dedupe_key = (
-                f"translate_chunk:{file.id}:0"
-                if job_type == "translate_chunk"
-                else f"{job_type}:{file.id}"
-            )
+            if job_type == "translate_chunk":
+                dedupe_key = f"translate_chunk:{file.id}:0"
+            elif job_type == "update_style_bible":
+                dedupe_key = f"update_style_bible:{project.id}:{file.id}"
+            else:
+                dedupe_key = f"{job_type}:{file.id}"
             await _create_job(
                 db_session,
                 project.id,
@@ -2458,6 +2464,9 @@ class TestFileActions:
         assert await db_session.scalar(
             select(func.count()).select_from(SubtitleChunk).where(SubtitleChunk.file_id == file.id)
         ) == 0
+        assert await db_session.scalar(
+            select(func.count()).select_from(FileAnalysis).where(FileAnalysis.file_id == file.id)
+        ) == 0
 
         assert await db_session.scalar(
             select(func.count()).select_from(QaItem).where(QaItem.file_id == file.id)
@@ -2472,6 +2481,9 @@ class TestFileActions:
         assert await db_session.scalar(
             select(func.count()).select_from(LlmCall).where(LlmCall.file_id == file.id)
         ) == 1
+        # Project-level context remains intact; only the file-derived update
+        # job is reset so acceptance can run it again for the new translation.
+        assert await db_session.get(type(style_bible), style_bible.id) is not None
 
         jobs = list((await db_session.scalars(
             select(JobRecord).where(JobRecord.file_id == file.id)

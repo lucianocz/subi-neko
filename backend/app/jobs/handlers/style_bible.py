@@ -347,6 +347,7 @@ def update_style_bible(
             return JobResult(status="failed", result=None,
                              error_code="FILE_NOT_FOUND",
                              error_message=f"File id={file_id} not found in project {project_id}")
+        translation_attempt = file.translation_requested_at
 
         terms = list(session.scalars(
             select(ProjectGlossaryTerm)
@@ -446,6 +447,15 @@ def update_style_bible(
     progress(0.8, "Writing additions")
 
     with SyncSessionLocal() as session:
+        current_file = session.get(File, file_id)
+        if (current_file is None
+                or current_file.translation_requested_at != translation_attempt):
+            return JobResult(
+                status="succeeded",
+                result={"skipped": "stale translation attempt"},
+                error_code=None,
+                error_message=None,
+            )
         new_terms = insert_new_glossary_terms(session, project_id, response.terms, "llm", now)
         new_voices = upsert_character_voices(session, project_id, response.character_voices, "llm", now)
         new_pairs = upsert_address_pairs(

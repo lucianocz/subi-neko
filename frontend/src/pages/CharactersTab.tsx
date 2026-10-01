@@ -368,6 +368,12 @@ function bySuspicion(a: ProjectSpeaker, b: ProjectSpeaker): number {
   return diff !== 0 ? diff : b.line_count - a.line_count;
 }
 
+function byLineCountThenName(a: ProjectSpeaker, b: ProjectSpeaker): number {
+  const countDiff = b.line_count - a.line_count;
+  const nameDiff = a.name.localeCompare(b.name);
+  return countDiff !== 0 ? countDiff : nameDiff !== 0 ? nameDiff : a.id - b.id;
+}
+
 export function CharactersTab({ projectId }: { projectId: number }) {
   const { data: characters = [], isLoading: charsLoading } = useProjectCharacters(projectId);
   const { data: speakers = [], isLoading: speakersLoading } = useProjectSpeakers(projectId);
@@ -405,7 +411,7 @@ export function CharactersTab({ projectId }: { projectId: number }) {
   }, [styleGuide]);
 
   const unmapped = useMemo(
-    () => speakers.filter((s) => !s.is_extra && s.character_id === null).sort(bySuspicion),
+    () => speakers.filter((s) => !s.is_extra && s.character_id === null).sort(byLineCountThenName),
     [speakers],
   );
   const extras = useMemo(
@@ -426,16 +432,11 @@ export function CharactersTab({ projectId }: { projectId: number }) {
   }, [speakers]);
 
   const sortedCharacters = useMemo(() => {
-    const lineTotal = (c: ProjectCharacterWithSpeakers) =>
-      (speakersByCharacter.get(c.id) ?? []).reduce((s, sp) => s + sp.line_count, 0);
-    // Characters with mapped speakers first (by dialogue volume), roster-only ones after.
     return [...characters].sort((a, b) => {
-      const la = lineTotal(a);
-      const lb = lineTotal(b);
-      if (la !== lb) return lb - la;
-      return a.name.localeCompare(b.name);
+      const nameDiff = a.name.localeCompare(b.name);
+      return nameDiff !== 0 ? nameDiff : a.id - b.id;
     });
-  }, [characters, speakersByCharacter]);
+  }, [characters]);
 
   const isLoading = charsLoading || speakersLoading;
 
