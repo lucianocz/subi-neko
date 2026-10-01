@@ -9,6 +9,7 @@ import pytest
 
 from app.core.logging_config import apply_log_level, configure_logging
 from app.db.options import AppOptions
+from app.llm import client as llm_client
 
 
 @pytest.fixture
@@ -101,6 +102,35 @@ def test_runtime_level_change_immediately_updates_console_and_file(
     assert isolated_root_logging.level == logging.DEBUG
     assert all(handler.level == logging.DEBUG
                for handler in _owned_handlers(isolated_root_logging))
+
+
+def test_runtime_level_change_immediately_enables_raw_llm_response_logging(
+    tmp_path, monkeypatch, isolated_root_logging,
+):
+    stderr = io.StringIO()
+    monkeypatch.setattr("sys.stderr", stderr)
+    configure_logging("INFO", tmp_path)
+    response = type("Response", (), {"id": "req-live"})()
+    kwargs = dict(
+        model="test-model",
+        mode="json_schema",
+        response=response,
+        raw_content='{"value":"raw"}',
+        finish_reason="stop",
+        prompt_tokens=3,
+        completion_tokens=4,
+    )
+
+    llm_client._debug_log_response(**kwargs)
+    assert "LLM response" not in stderr.getvalue()
+
+    apply_log_level("DEBUG")
+    llm_client._debug_log_response(**kwargs)
+    for handler in _owned_handlers(isolated_root_logging):
+        handler.flush()
+
+    assert "LLM response model=test-model mode=json_schema" in stderr.getvalue()
+    assert 'content={"value":"raw"}' in stderr.getvalue()
 
 
 def test_runtime_option_listener_uses_live_level_helper():

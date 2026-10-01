@@ -143,6 +143,28 @@ def _log_call(
         logger.exception("Failed to log llm_call row (task=%s model=%s)", task, model)
 
 
+def _debug_log_response(
+    *, model: str, mode: str, response: object, raw_content: object,
+    finish_reason: object, prompt_tokens: int, completion_tokens: int,
+) -> None:
+    """Best-effort raw response logging, kept outside parsing semantics."""
+    if not logger.isEnabledFor(logging.DEBUG):
+        return
+    try:
+        response_id = getattr(response, "id", None)
+        request_id = getattr(response, "_request_id", None)
+        content = "<null>" if raw_content is None else raw_content
+        logger.debug(
+            "LLM response model=%s mode=%s response_id=%s request_id=%s finish_reason=%s "
+            "prompt_tokens=%s completion_tokens=%s content=%s",
+            model, mode, response_id, request_id, finish_reason,
+            prompt_tokens, completion_tokens, content,
+        )
+    except Exception:
+        # Diagnostics must never change the outcome of a completed LLM call.
+        pass
+
+
 def _is_transient(exc: Exception) -> bool:
     if isinstance(exc, (openai.APIConnectionError, openai.APITimeoutError, openai.RateLimitError)):
         return True
@@ -302,13 +324,23 @@ def complete(
         if cost is not None:
             stats.cost_usd = (stats.cost_usd or 0.0) + cost
 
-        raw_content = response.choices[0].message.content or ""
+        raw_response_content = response.choices[0].message.content
+        raw_content = raw_response_content or ""
 
         # Hard token-limit truncation: the JSON is cut mid-string and no
         # corrective retry can fix it at the same budget — escalate the
         # budget instead, and fail with a distinct (non-retryable) code
         # when the configured ceiling is reached.
         finish_reason = getattr(response.choices[0], "finish_reason", None)
+        _debug_log_response(
+            model=model,
+            mode=mode,
+            response=response,
+            raw_content=raw_response_content,
+            finish_reason=finish_reason,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
         if finish_reason == "length":
             if (send_max_tokens and max_completion_tokens
                     and max_completion_tokens < limit

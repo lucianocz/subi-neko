@@ -3,6 +3,7 @@ transient retries, corrective schema retry, and llm_calls accounting."""
 from __future__ import annotations
 
 import json
+import logging
 from types import SimpleNamespace
 
 import httpx
@@ -42,14 +43,17 @@ def _fast_and_clean(monkeypatch):
 
 
 def _response(content: str, prompt_tokens: int = 100, completion_tokens: int = 50,
-              finish_reason: str = "stop"):
-    return SimpleNamespace(
+              finish_reason: str = "stop", response_id: str = "req-test-123"):
+    response = SimpleNamespace(
+        id=response_id,
         choices=[SimpleNamespace(
             message=SimpleNamespace(content=content),
             finish_reason=finish_reason,
         )],
         usage=SimpleNamespace(prompt_tokens=prompt_tokens, completion_tokens=completion_tokens),
     )
+    response._request_id = "http-request-456"
+    return response
 
 
 def _bad_request(message: str) -> openai.BadRequestError:
@@ -129,6 +133,59 @@ def test_json_schema_success_first_try(sync_db, monkeypatch):
     assert call["response_format"]["json_schema"]["strict"] is True
     assert call["temperature"] == 0.4  # translate task default
     assert call["max_completion_tokens"] == 1000
+
+
+def test_debug_logs_raw_json_schema_response_without_modifying_result(
+    sync_db, monkeypatch, caplog,
+):
+    raw = '{"translations":[{"i":0,"t":"Ahoj","c":0.9}]}'
+    _install_fake(monkeypatch, [_response(raw)])
+
+    with caplog.at_level(logging.DEBUG, logger="app.llm.client"):
+        result, stats = _complete()
+
+    records = [record for record in caplog.records
+               if record.getMessage().startswith("LLM response ")]
+    assert len(records) == 1
+    message = records[0].getMessage()
+    assert "model=test-model" in message
+    assert "mode=json_schema" in message
+    assert "response_id=req-test-123" in message
+    assert "request_id=http-request-456" in message
+    assert "finish_reason=stop" in message
+    assert "prompt_tokens=100 completion_tokens=50" in message
+    assert f"content={raw}" in message
+    assert result.translations[0].t == "Ahoj"
+    assert stats.response_mode == "json_schema"
+
+
+def test_debug_logs_raw_text_mode_response_without_modifying_result(
+    sync_db, monkeypatch, caplog,
+):
+    raw = f"```json\n{VALID_JSON}\n```"
+    _install_fake(monkeypatch, [_response(raw)])
+    options = AppOptions(llm_structured_outputs="text")
+
+    with caplog.at_level(logging.DEBUG, logger="app.llm.client"):
+        result, stats = _complete(options=options)
+
+    messages = [record.getMessage() for record in caplog.records
+                if record.getMessage().startswith("LLM response ")]
+    assert len(messages) == 1
+    assert "mode=text" in messages[0]
+    assert f"content={raw}" in messages[0]
+    assert result.translations[0].t == "Ahoj"
+    assert stats.response_mode == "text"
+
+
+def test_raw_response_not_logged_when_debug_disabled(sync_db, monkeypatch, caplog):
+    _install_fake(monkeypatch, [_response(VALID_JSON)])
+
+    with caplog.at_level(logging.INFO, logger="app.llm.client"):
+        _complete()
+
+    assert not any(record.getMessage().startswith("LLM response ")
+                   for record in caplog.records)
 
 
 def test_downgrade_to_json_object_on_schema_rejection(sync_db, monkeypatch):
