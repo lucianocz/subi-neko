@@ -20,10 +20,16 @@ from app.db.models import File, FileAnalysis, SubtitleEvent
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.handlers.prompt_context import (
     build_character_block,
+    build_glossary_block,
     load_episode_context,
+    load_glossary_terms,
     load_prompt_characters,
 )
-from app.jobs.handlers.style_store import insert_new_glossary_terms, upsert_address_pairs
+from app.jobs.handlers.style_store import (
+    canonical_address_pairs,
+    insert_new_glossary_terms,
+    upsert_address_pairs,
+)
 from app.jobs.registry import register_job_handler
 from app.llm import client as llm_client
 from app.llm.schemas import AnalyzeResponse
@@ -88,17 +94,26 @@ def analyze_script(
         ).all())
 
         script_lines = []
+        script_texts = []
         for e in events:
             text = plain_text(e.source_text)
             if not text:
                 continue
             speaker = f" ({e.name})" if e.name else ""
             script_lines.append(f"{e.line_index}{speaker}: {text}")
+            script_texts.append(text)
 
         characters = load_prompt_characters(session, project_id)
         char_block = build_character_block(characters)
         prev_synopsis = _previous_synopsis(session, file)
         episode_line = load_episode_context(session, file)
+        glossary_block = build_glossary_block(
+            load_glossary_terms(session, project_id), script_texts,
+        )
+        pair_block = "\n".join(
+            f"- {speaker} addresses {addressee}: {mode}"
+            for speaker, addressee, mode in canonical_address_pairs(session, project_id)
+        )
 
     if not script_lines:
         return JobResult(status="failed", result=None,
@@ -116,6 +131,10 @@ def analyze_script(
         user_parts.append(f"## Characters\n{char_block}")
     if prev_synopsis:
         user_parts.append(f"## Previous Episode\n{prev_synopsis}")
+    if glossary_block:
+        user_parts.append(f"## Current Glossary\n{glossary_block}")
+    if pair_block:
+        user_parts.append(f"## Current Address Pairs\n{pair_block}")
     user_parts.append("## Script\n" + "\n".join(script_lines))
     user_message = "\n\n".join(user_parts)
 

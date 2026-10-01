@@ -272,6 +272,79 @@ def test_episode_analysis_preserves_canonical_pair_and_adds_new_direction(
         }
 
 
+def test_analyze_user_message_includes_current_glossary_and_address_pairs(
+    session_factory, monkeypatch
+):
+    project_id, file_id, _ = _seed(session_factory)
+    with session_factory() as session:
+        session.add_all([
+            ProjectGlossaryTerm(
+                project_id=project_id, source_term="Sky Blade", target_term="Nebeský meč",
+                category="technique", origin="manual", locked=1, is_active=1,
+            ),
+            ProjectAddressPair(
+                project_id=project_id, speaker_name="Luxion",
+                addressee_name="Leon", mode="vykani", origin="llm", locked=0,
+            ),
+        ])
+        _event(session, file_id, 1, "Use the Sky Blade!")
+        session.commit()
+
+    captured = {}
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return AnalyzeResponse(
+            synopsis="S", scenes=[], tricky_lines=[], address_pairs=[], suggested_terms=[],
+        ), _stats()
+
+    monkeypatch.setattr(analyze_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(analyze_module.llm_client, "complete", complete)
+    result = analyze_module.analyze_script({"file_id": file_id}, _ctx(), _progress)
+
+    assert result["status"] == "succeeded"
+    user = captured["user"]
+    assert '## Current Glossary\n- "Sky Blade" => "Nebeský meč"' in user
+    assert "## Current Address Pairs\n- Luxion addresses Leon: vykani" in user
+    assert user.index("## Current Address Pairs") < user.index("## Script")
+    assert captured["schema"] is AnalyzeResponse
+
+
+def test_analyze_user_message_omits_empty_style_sections(session_factory, monkeypatch):
+    _, file_id, _ = _seed(session_factory)
+    with session_factory() as session:
+        _event(session, file_id, 1, "Hello")
+        session.commit()
+    captured = {}
+
+    def complete(**kwargs):
+        captured.update(kwargs)
+        return AnalyzeResponse(
+            synopsis="S", scenes=[], tricky_lines=[], address_pairs=[], suggested_terms=[],
+        ), _stats()
+
+    monkeypatch.setattr(analyze_module, "SyncSessionLocal", session_factory)
+    monkeypatch.setattr(analyze_module.llm_client, "complete", complete)
+    analyze_module.analyze_script({"file_id": file_id}, _ctx(), _progress)
+    assert "## Current Glossary" not in captured["user"]
+    assert "## Current Address Pairs" not in captured["user"]
+
+
+def test_default_analyze_prompt_is_additive_and_flags_preview_narration():
+    from app.db.default_prompts import DEFAULT_ANALYZE_PROMPT as prompt
+
+    assert "Return only NEW terms" in prompt
+    assert '"Current Glossary"' in prompt and "authoritative" in prompt
+    assert "Return only NEW pairs" in prompt
+    assert '"Current Address Pairs"' in prompt
+    assert "do not propose a different mode" in prompt
+    assert "next-episode preview" in prompt
+    assert "teaser" in prompt
+    # Output contract unchanged.
+    assert '"suggested_terms": [{"source"' in prompt
+    assert '"address_pairs": [{"speaker"' in prompt
+
+
 def test_targeted_polish_cleans_only_processed_events_and_keeps_audit(
     session_factory, monkeypatch
 ):
