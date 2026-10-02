@@ -46,7 +46,7 @@ from app.orchestrator.project_orchestrator import (
     orchestrate_project,
     pick_style_bible_sample_file_id,
 )
-from app.subs.ass_rendering import build_ass
+from app.subs.ass_rendering import HEADER_NOTICE, build_ass
 from app.ws.connection_manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -511,7 +511,7 @@ async def download_file_subtitles(
     download_name = f"{Path(file.filename).stem}.{suffix}.ass"
     encoded_name = quote(download_name)
     return Response(
-        content=subs.to_string("ass").encode("utf-8"),
+        content=subs.to_string("ass", header_notice=HEADER_NOTICE).encode("utf-8"),
         media_type="text/x-ssa",
         headers={
             "Content-Disposition": (
