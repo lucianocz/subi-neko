@@ -475,7 +475,9 @@ def polish_chunk(
         e = editable_by_line.get(edit.i)
         if e is None:
             continue
-        final_text, errors = unmask_line(edit.t, masked[edit.i])
+        # Line-break counts are not enforced: rows are re-flowed by the
+        # auto line-breaker later in the pipeline.
+        final_text, errors = unmask_line(edit.t, masked[edit.i], check_line_breaks=False)
         if errors:
             # A polish edit that corrupts markup is dropped — the validated
             # draft stays in place.
@@ -495,7 +497,8 @@ def polish_chunk(
         edit_map[edit.i] = (final_text, edit.reason)
         # Propagate the representative's edit to its identical-sign group.
         for member in group_members.get(edit.i, []):
-            member_text, member_errors = unmask_line(edit.t, masked[member])
+            member_text, member_errors = unmask_line(
+                edit.t, masked[member], check_line_breaks=False)
             if member_errors:
                 continue
             if member_text != all_editable_by_line[member]["translated_text"]:

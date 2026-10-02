@@ -70,12 +70,15 @@ def mask_line(source_text: str) -> MaskedLine:
     return MaskedLine(text=rest, prefix=prefix, tokens=tokens, escape_counts=escape_counts)
 
 
-def unmask_line(llm_text: str, masked: MaskedLine) -> tuple[str | None, list[str]]:
+def unmask_line(
+    llm_text: str, masked: MaskedLine, *, check_line_breaks: bool = True,
+) -> tuple[str | None, list[str]]:
     """Verify marker/escape integrity and reassemble the original markup.
 
     Returns (final_text, []) on success or (None, errors) when the model
     corrupted markers/escapes — the caller should retry or fall back to
-    force_unmask().
+    force_unmask(). With check_line_breaks=False the ⏎/␤ counts are not
+    verified (for callers whose line breaks are re-flowed later anyway).
     """
     errors: list[str] = []
 
@@ -100,7 +103,7 @@ def unmask_line(llm_text: str, masked: MaskedLine) -> tuple[str | None, list[str
         # ␣ (\h) is presentation padding — its count legitimately changes
         # with translated word widths (e.g. column alignment), so it is not
         # verified. ⏎/␤ (line breaks) must be preserved exactly.
-        if char == "␣":
+        if char == "␣" or not check_line_breaks:
             continue
         actual = llm_text.count(char)
         if actual != expected:

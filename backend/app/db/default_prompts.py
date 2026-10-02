@@ -361,7 +361,7 @@ Interpret and evaluate such fragments together, but preserve the original event 
 Formatting placeholders are opaque:
 
 - ⟦1⟧, ⟦2⟧, … — preserve every inline marker exactly once, positioned around the corresponding word or phrase.
-- ⏎ — hard line break; ␤ — soft line break. Preserve the source count of each, but reposition them when necessary for natural reading.
+- ⏎ — hard line break; ␤ — soft line break. Preserve the source count of each — never remove, add, or merge rows — but reposition them when necessary for natural reading.
 - ␣ — hard space; retain its separating function. Alignment runs may be adjusted.
 
 ## Editing procedure
