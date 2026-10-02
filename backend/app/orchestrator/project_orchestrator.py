@@ -20,6 +20,7 @@ from app.db.models import (
 )
 from app.db import options as options_store
 from app.db.models import ProjectStyleBible
+from app.jobs.handlers.compute_file_metrics import fingerprint_of, metrics_fingerprint_stmt
 from app.orchestrator.context_status import compute_context_status
 from app.orchestrator.file_orchestrator import _job_failed_permanently, orchestrate_file
 
@@ -333,20 +334,34 @@ async def _handle_review_required(
 async def _ensure_file_metrics(
     project_id: int, files: list[File], enqueue_fn: EnqueueFn,
 ) -> None:
-    """Completed files get a one-time quality-metrics snapshot. A permanently
+    """Keep each file's quality snapshot current with the pipeline output.
+
+    Independent of file status (muxing included): any file whose translation
+    was requested and that has translated dialogue gets a snapshot, refreshed
+    whenever the fingerprint of its metric inputs differs from the stored one.
+    Runs after every job completion, i.e. at chunk-stage checkpoints, and the
+    fingerprint makes it a no-op when nothing relevant changed. A permanently
     failed compute job is skipped so it can't loop through the sweep."""
-    completed = [f for f in files if f.status == FileStatus.COMPLETED.value]
-    if not completed:
+    candidates = [f for f in files if f.translation_requested_at is not None]
+    if not candidates:
         return
 
     async with AsyncSessionLocal() as session:
-        have_metrics = set((await session.scalars(
-            select(FileQualityMetric.file_id)
+        stored = dict((await session.execute(
+            select(FileQualityMetric.file_id, FileQualityMetric.source_fingerprint)
             .where(FileQualityMetric.project_id == project_id)
         )).all())
+        current: dict[int, tuple] = {}
+        for f in candidates:
+            row = (await session.execute(metrics_fingerprint_stmt(f.id))).one()
+            if row[0]:  # no translated dialogue yet -> metrics stay unavailable
+                current[f.id] = row
 
-    for f in completed:
-        if f.id in have_metrics:
+    for f in candidates:
+        row = current.get(f.id)
+        if row is None:
+            continue
+        if f.id in stored and stored[f.id] == fingerprint_of(row):
             continue
         dedupe_key = f"compute_file_metrics:{f.id}"
         if await _job_failed_permanently(dedupe_key):

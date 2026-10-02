@@ -557,7 +557,8 @@ class TranslationMemoryEntry(Base):
 
 
 class FileQualityMetric(Base):
-    """Per-file quality snapshot computed after completion — the long-term
+    """Per-file quality snapshot, refreshed progressively as the pipeline
+    changes the file (never gated on mux/completion) — the long-term
     signal for whether the pipeline (glossary/TM/style bible/prompts) is
     getting better: falling human-edit distance across episodes means yes."""
     __tablename__ = "file_quality_metrics"
@@ -589,6 +590,9 @@ class FileQualityMetric(Base):
     llm_cost_usd: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     prompt_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     completion_tokens: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Fingerprint of the inputs this snapshot was computed from
+    # (compute_file_metrics.metrics_fingerprint_stmt); a mismatch = stale.
+    source_fingerprint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
 
 

@@ -32,5 +32,7 @@ export function useProjectMetrics(projectId: number, enabled: boolean) {
     },
     enabled,
     staleTime: 30_000,
+    // Metrics refresh while files are still processing, so poll while open.
+    refetchInterval: enabled ? 15_000 : false,
   });
 }

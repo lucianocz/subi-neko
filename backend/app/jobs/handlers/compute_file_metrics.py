@@ -1,6 +1,8 @@
-"""Post-completion quality snapshot for a file.
+"""Quality snapshot for a file, refreshed progressively during the pipeline.
 
-Pure aggregation — no LLM. Two complementary distances:
+Pure aggregation — no LLM. Independent of file status (mux/completion): it
+reflects the latest state of whatever data exists; metrics with no source data
+yet stay NULL rather than becoming 0. Two complementary distances:
 
 - edit_distance_norm: mean normalized Levenshtein between the AI pipeline's
   final output (original_ai_translated_text, which polish keeps in sync
@@ -31,6 +33,32 @@ from app.subs.tag_masking import plain_text
 logger = logging.getLogger(__name__)
 
 
+def metrics_fingerprint_stmt(file_id: int):
+    """One cheap SELECT summarising every input the metrics read. Shared by the
+    handler (stored on the snapshot) and the orchestrator (staleness check)."""
+    ev = (
+        select(
+            func.count(SubtitleEvent.translated_text),
+            func.coalesce(func.sum(func.length(SubtitleEvent.translated_text)), 0),
+            func.coalesce(func.sum(func.length(SubtitleEvent.original_ai_translated_text)), 0),
+            func.coalesce(func.sum(SubtitleEvent.is_user_edited), 0),
+            func.coalesce(func.sum(SubtitleEvent.is_approved), 0),
+        )
+        .where(SubtitleEvent.file_id == file_id, SubtitleEvent.event_type == "dialogue")
+        .subquery()
+    )
+    qa = (
+        select(func.count(QaItem.id), func.coalesce(func.max(QaItem.id), 0))
+        .where(QaItem.file_id == file_id).subquery()
+    )
+    llm = select(func.count(LlmCall.id)).where(LlmCall.file_id == file_id).scalar_subquery()
+    return select(*ev.c, *qa.c, llm)
+
+
+def fingerprint_of(row) -> str:
+    return ":".join(str(v) for v in tuple(row))
+
+
 def _mean(values: list[float]) -> float | None:
     return sum(values) / len(values) if values else None
 
@@ -54,6 +82,9 @@ def compute_file_metrics(
                              error_message=f"File id={file_id} not found")
         project_id = file.project_id
         translation_attempt = file.translation_requested_at
+        # Taken before the data reads: a concurrent change then only causes an
+        # extra refresh, never a missed one.
+        fingerprint = fingerprint_of(session.execute(metrics_fingerprint_stmt(file_id)).one())
 
         events = list(session.scalars(
             select(SubtitleEvent)
@@ -152,6 +183,7 @@ def compute_file_metrics(
             llm_cost_usd=float(cost_row[0]) if cost_row[0] is not None else None,
             prompt_tokens=int(cost_row[1] or 0),
             completion_tokens=int(cost_row[2] or 0),
+            source_fingerprint=fingerprint,
             created_at=now,
         ))
         session.commit()

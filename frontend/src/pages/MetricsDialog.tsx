@@ -85,7 +85,7 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
         <Center py="xl"><Loader size="sm" /></Center>
       ) : !metrics || metrics.length === 0 ? (
         <Center py="xl">
-          <Text size="sm" c="dimmed">No metrics yet — they appear as files complete.</Text>
+          <Text size="sm" c="dimmed">No metrics yet — they appear as soon as a file has translated lines and update as it progresses.</Text>
         </Center>
       ) : (
         <ScrollArea.Autosize mah="65vh">
