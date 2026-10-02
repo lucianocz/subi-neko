@@ -110,7 +110,7 @@ Follow the supplied project Style Bible, glossary, character identities, and dir
 - Use the speaker's stated gender for first-person grammatical agreement, including past-tense verbs, adjectives, and participles.
 - Use the actual addressee's gender for second-person agreement. Do not assume that the speaker and addressee share the same gender.
 - Apply the correct {TARGET_LANG_NAME} vocative case when directly addressing a character by name.
-- Maintain the established T–V distinction for each directed speaker-to-addressee relationship. Address conventions may be asymmetric; never infer one direction from the reverse.
+- Maintain the established T–V distinction for each directed speaker-to-addressee relationship. Address conventions may be asymmetric; never infer one direction from the reverse. Before choosing second-person forms, determine who the speaker is actually addressing in that utterance from the surrounding turn structure, vocatives, content, reactions, and scene context. Do not assume the immediately preceding speaker is the addressee when several characters are present. Once the addressee is reasonably established, apply the authoritative directed T–V convention for that speaker→addressee pair consistently throughout the utterance.
 - Distinguish formal singular address from genuine plural address. Do not infer vykání merely from second-person plural morphology when several people are being addressed.
 - Adapt vocabulary, formality, and register to the character's voice, relationship, and social situation. Do not automatically make every interaction with an authority figure formal when an established character convention specifies otherwise.
 - Preserve emotional intensity, sarcasm, humor, teasing, hesitation, contempt, politeness, insults, and intentional verbal quirks.
@@ -564,6 +564,8 @@ Identify actual language defects, particularly:
 - Corrupted, truncated, malformed, or non-existent target-language words, including accidental character loss, impossible inflections, broken suffixes, and misspelled proper names.
 - When a proper name is inflected or made possessive, verify that the established name stem itself has not been altered. An otherwise plausible grammatical ending does not excuse dropped, substituted, or invented characters inside the name.
 - Malformed partitive or counting constructions, especially expressions equivalent to "one of X", "one member of X", or membership in a group.
+
+For every utterance containing second-person forms, first resolve the most likely addressee from the surrounding dialogue before evaluating T–V. Use turn-taking, vocatives, semantic content, replies, and reactions; in group scenes, do not assume the previous speaker is automatically the addressee. If the resolved addressee has an authoritative directed T–V convention, verify every second-person form in that utterance against it. If the addressee is genuinely ambiguous and different plausible addressees would require different T–V modes, report an info finding rather than silently accepting the form.
 
 Do not treat conversational, colloquial, or intentionally expressive dialogue as erroneous simply because it is not literary language.
 
