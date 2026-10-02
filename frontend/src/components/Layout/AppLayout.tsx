@@ -45,6 +45,7 @@ import {
   DotsThreeVertical,
   SpinnerGap,
   Stop,
+  TextAa,
   Trash,
   Warning,
   XCircle,
@@ -55,6 +56,7 @@ import { useRefreshMetadata } from '../../hooks/useCharacterMapping';
 import { OptionsDrawer } from '../../pages/OptionsDrawer';
 import { ImportDialog } from '../../pages/ImportDialog';
 import { MetricsDialog } from '../../pages/MetricsDialog';
+import { ProjectStylesDialog } from '../../pages/ProjectStylesDialog';
 import { ReviewQueueDialog } from '../../pages/ReviewQueueDialog';
 import { StyleGuideDialog } from '../../pages/StyleGuideDialog';
 import { SubtitleEditorDialog } from '../../pages/SubtitleEditorDialog';
@@ -874,6 +876,7 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   const retranslateMutation = useRetranslateFile(project.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [watchedWordsOpen, setWatchedWordsOpen] = useState(false);
+  const [stylesOpen, setStylesOpen] = useState(false);
   const [styleGuideOpen, setStyleGuideOpen] = useState(false);
   const [styleGuideTab, setStyleGuideTab] = useState<'glossary' | 'characters' | 'bible' | 'tm'>('glossary');
   const [reviewQueueOpen, setReviewQueueOpen] = useState(false);
@@ -999,6 +1002,12 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
         onClose={() => setWatchedWordsOpen(false)}
       />
 
+      <ProjectStylesDialog
+        projectId={project.id}
+        opened={stylesOpen}
+        onClose={() => setStylesOpen(false)}
+      />
+
       <StyleGuideDialog
         projectId={project.id}
         opened={styleGuideOpen}
@@ -1100,6 +1109,15 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
                 onClick={() => setWatchedWordsOpen(true)}
               >
                 Watched words
+              </Button>
+              <Button
+                variant="subtle"
+                color="teal"
+                size="xs"
+                leftSection={<TextAa size={14} />}
+                onClick={() => setStylesOpen(true)}
+              >
+                Styles &amp; fonts
               </Button>
               <Tooltip label={`Re-fetch characters and episode titles from ${project.anime_provider}`} withArrow>
                 <Button

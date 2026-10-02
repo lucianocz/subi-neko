@@ -7,7 +7,7 @@ from typing import Any
 from sqlalchemy import select
 
 from app.core.database import SyncSessionLocal
-from app.db.models import File, SubtitleStyle
+from app.db.models import File, SubtitleStyle, file_subtitle_styles
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
 
@@ -243,7 +243,14 @@ def resolve_style_fonts(
                              error_message=f"File id={file_id} not found")
 
         styles = list(session.scalars(
-            select(SubtitleStyle).where(SubtitleStyle.file_id == file_id)
+            select(SubtitleStyle)
+            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
+            .where(
+                file_subtitle_styles.c.file_id == file_id,
+                # Shared styles that were already resolved (or hand-tuned in the
+                # style editor) must not be overwritten by another file's run.
+                SubtitleStyle.font_check_status == "unchecked",
+            )
         ).all())
         style_data = [
             {"id": s.id, "font_name": s.font_name, "font_size": s.font_size}

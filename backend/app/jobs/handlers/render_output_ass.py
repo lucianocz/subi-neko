@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SyncSessionLocal
-from app.db.models import File, Subtitle, SubtitleEvent, SubtitleStyle
+from app.db.models import File, Subtitle, SubtitleEvent, SubtitleStyle, file_subtitle_styles
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
 from app.subs.ass_rendering import build_ass, save_ass
@@ -52,7 +52,10 @@ def render_output_ass(
                              error_message="No subtitle record - run extract_subtitles first")
 
         styles = session.scalars(
-            select(SubtitleStyle).where(SubtitleStyle.file_id == file_id)
+            select(SubtitleStyle)
+            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
+            .where(file_subtitle_styles.c.file_id == file_id)
+            .order_by(SubtitleStyle.id)
         ).all()
 
         events = session.scalars(

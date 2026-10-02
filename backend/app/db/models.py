@@ -3,7 +3,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, Text, UniqueConstraint, func
+from sqlalchemy import Column, Float, ForeignKey, Index, Integer, Table, Text, UniqueConstraint, func
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -224,7 +224,11 @@ class File(Base):
     project: Mapped["Project"] = relationship(back_populates="files")
     subtitle: Mapped[Optional["Subtitle"]] = relationship(back_populates="file", cascade="all, delete-orphan", uselist=False)
     subtitle_events: Mapped[list["SubtitleEvent"]] = relationship(back_populates="file", cascade="all, delete-orphan")
-    subtitle_styles: Mapped[list["SubtitleStyle"]] = relationship(back_populates="file", cascade="all, delete-orphan")
+    # M:N — styles are project-level canonical records shared between files.
+    # Deleting a file only removes its ``file_subtitle_styles`` rows.
+    subtitle_styles: Mapped[list["SubtitleStyle"]] = relationship(
+        secondary=lambda: file_subtitle_styles, back_populates="files",
+    )
     subtitle_chunks: Mapped[list["SubtitleChunk"]] = relationship(back_populates="file", cascade="all, delete-orphan")
     qa_items: Mapped[list["QaItem"]] = relationship(back_populates="file", cascade="all, delete-orphan")
     jobs: Mapped[list["JobRecord"]] = relationship(back_populates="file", cascade="all, delete-orphan")
@@ -295,15 +299,34 @@ class SubtitleEvent(Base):
     qa_items: Mapped[list["QaItem"]] = relationship(back_populates="subtitle_event", cascade="all, delete-orphan")
 
 
+# Pure join table: which canonical styles a file's script defines.
+file_subtitle_styles = Table(
+    "file_subtitle_styles",
+    Base.metadata,
+    Column("file_id", Integer, ForeignKey("files.id", ondelete="CASCADE"), primary_key=True),
+    Column("subtitle_style_id", Integer, ForeignKey("subtitle_styles.id", ondelete="CASCADE"), primary_key=True),
+    Index("idx_file_subtitle_styles_style", "subtitle_style_id"),
+)
+
+
 class SubtitleStyle(Base):
+    """Project-level canonical ASS style shared by every file that defines it.
+
+    ``source_style_hash`` fingerprints the ORIGINAL normalized definition
+    (name + source properties, see ``app.subs.style_canonical``) and is immutable:
+    later edits to the replacement font never touch it, so re-importing the
+    original style still resolves to this record.
+    """
+
     __tablename__ = "subtitle_styles"
     __table_args__ = (
-        UniqueConstraint("file_id", "style_name"),
-        Index("idx_subtitle_styles_file_font_check_status", "file_id", "font_check_status"),
+        UniqueConstraint("project_id", "source_style_hash"),
+        Index("idx_subtitle_styles_project_font_check_status", "project_id", "font_check_status"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    file_id: Mapped[int] = mapped_column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+    project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    source_style_hash: Mapped[str] = mapped_column(Text, nullable=False)
     style_name: Mapped[str] = mapped_column(Text, nullable=False)
     font_name: Mapped[str] = mapped_column(Text, nullable=False)
     font_size: Mapped[float] = mapped_column(Float, nullable=False)
@@ -333,7 +356,7 @@ class SubtitleStyle(Base):
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 
-    file: Mapped["File"] = relationship(back_populates="subtitle_styles")
+    files: Mapped[list["File"]] = relationship(secondary=file_subtitle_styles, back_populates="subtitle_styles")
 
 
 class QaItem(Base):

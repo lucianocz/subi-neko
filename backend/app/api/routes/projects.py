@@ -37,6 +37,7 @@ from app.db.models import (
     SubtitleStyle,
     TranslationMemoryEntry,
     WatchedWordType,
+    file_subtitle_styles,
 )
 from app.jobs.manager import job_manager
 from app.metadata.base import CharacterGender
@@ -488,7 +489,10 @@ async def download_file_subtitles(
         if subtitle is None:
             raise HTTPException(status_code=409, detail="Subtitles have not been extracted yet")
         styles = list((await session.scalars(
-            select(SubtitleStyle).where(SubtitleStyle.file_id == file_id)
+            select(SubtitleStyle)
+            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
+            .where(file_subtitle_styles.c.file_id == file_id)
+            .order_by(SubtitleStyle.id)
         )).all())
         events = list((await session.scalars(
             select(SubtitleEvent)
@@ -638,6 +642,73 @@ async def delete_project(project_id: int):
         if project is not None:
             await session.delete(project)
             await session.commit()
+
+
+class SubtitleStyleOut(BaseModel):
+    id: int
+    project_id: int
+    style_name: str
+    font_name: str
+    font_size: float
+    replacement_font_name: str | None
+    replacement_font_size: float | None
+    font_check_status: str
+    file_count: int
+
+
+class SubtitleStyleUpdateIn(BaseModel):
+    """v1 editor surface: only the translated-output font override (null = use source)."""
+
+    replacement_font_name: str | None = Field(default=None, max_length=200)
+    replacement_font_size: float | None = Field(default=None, gt=0, le=1000)
+
+
+def _style_out(style: SubtitleStyle, file_count: int) -> SubtitleStyleOut:
+    return SubtitleStyleOut(
+        id=style.id,
+        project_id=style.project_id,
+        style_name=style.style_name,
+        font_name=style.font_name,
+        font_size=style.font_size,
+        replacement_font_name=style.replacement_font_name,
+        replacement_font_size=style.replacement_font_size,
+        font_check_status=style.font_check_status,
+        file_count=file_count,
+    )
+
+
+@router.get("/{project_id}/styles", response_model=list[SubtitleStyleOut])
+async def list_project_styles(project_id: int):
+    async with AsyncSessionLocal() as session:
+        if await session.get(Project, project_id) is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        rows = (await session.execute(
+            select(SubtitleStyle, func.count(file_subtitle_styles.c.file_id))
+            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
+            .where(SubtitleStyle.project_id == project_id)
+            .group_by(SubtitleStyle.id)
+            .order_by(func.lower(SubtitleStyle.style_name), SubtitleStyle.id)
+        )).all()
+        return [_style_out(style, count) for style, count in rows]
+
+
+@router.put("/{project_id}/styles/{style_id}", response_model=SubtitleStyleOut)
+async def update_project_style(project_id: int, style_id: int, body: SubtitleStyleUpdateIn):
+    async with AsyncSessionLocal() as session:
+        style = await session.get(SubtitleStyle, style_id)
+        if style is None or style.project_id != project_id:
+            raise HTTPException(status_code=404, detail="Style not found")
+        # One canonical record: the change applies to every file sharing it.
+        # source_style_hash and the source font/size are deliberately untouched.
+        style.replacement_font_name = (body.replacement_font_name or "").strip() or None
+        style.replacement_font_size = body.replacement_font_size
+        style.updated_at = datetime.utcnow().isoformat()
+        await session.commit()
+        file_count = await session.scalar(
+            select(func.count()).select_from(file_subtitle_styles)
+            .where(file_subtitle_styles.c.subtitle_style_id == style_id)
+        )
+        return _style_out(style, file_count or 0)
 
 
 @router.get("/{project_id}/watched-words", response_model=list[WatchedWordOut])

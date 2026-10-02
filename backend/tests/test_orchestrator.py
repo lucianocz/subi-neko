@@ -35,6 +35,7 @@ from app.db.models import (
     SubtitleChunk,
     SubtitleEvent,
     SubtitleStyle,
+    file_subtitle_styles,
     TranslationMemoryEntry,
 )
 
@@ -196,8 +197,10 @@ async def _create_style(
     file_id: int,
     font_check_status: str = "unchecked",
 ) -> SubtitleStyle:
+    file = await session.get(File, file_id)
     s = SubtitleStyle(
-        file_id=file_id,
+        project_id=file.project_id,
+        source_style_hash=f"test-{file_id}",
         style_name="Default",
         font_name="Arial",
         font_size=20.0,
@@ -206,6 +209,10 @@ async def _create_style(
         updated_at=datetime.utcnow().isoformat(),
     )
     session.add(s)
+    await session.flush()
+    await session.execute(
+        file_subtitle_styles.insert().values(file_id=file_id, subtitle_style_id=s.id)
+    )
     await session.commit()
     return s
 
@@ -2534,3 +2541,58 @@ class TestListFileChunksQaAttribution:
         assert dialogue_chunk.qa_warnings == 0
         assert sign_chunk.qa_errors == 0
         assert sign_chunk.qa_warnings == 1
+
+
+class TestProjectStylesApi:
+    @pytest.mark.asyncio
+    async def test_list_and_update_shared_style(self, db_session):
+        from app.api.routes.projects import (
+            SubtitleStyleUpdateIn, list_project_styles, update_project_style,
+        )
+        project = await _create_project(db_session)
+        f1 = await _create_file(db_session, project.id, relative_path="e1.mkv")
+        f2 = await _create_file(db_session, project.id, relative_path="e2.mkv")
+        style = await _create_style(db_session, f1.id)
+        await db_session.execute(
+            file_subtitle_styles.insert().values(file_id=f2.id, subtitle_style_id=style.id)
+        )
+        await db_session.commit()
+        source_hash = style.source_style_hash
+
+        listed = await list_project_styles(project.id)
+        assert [(s.id, s.file_count) for s in listed] == [(style.id, 2)]
+
+        out = await update_project_style(
+            project.id, style.id,
+            SubtitleStyleUpdateIn(replacement_font_name="  Noto Sans ", replacement_font_size=38),
+        )
+        assert (out.replacement_font_name, out.replacement_font_size, out.file_count) == ("Noto Sans", 38.0, 2)
+        await db_session.refresh(style)
+        assert style.source_style_hash == source_hash
+
+        cleared = await update_project_style(
+            project.id, style.id, SubtitleStyleUpdateIn(replacement_font_name="", replacement_font_size=None),
+        )
+        assert (cleared.replacement_font_name, cleared.replacement_font_size) == (None, None)
+
+    @pytest.mark.asyncio
+    async def test_update_rejects_style_from_another_project(self, db_session):
+        from fastapi import HTTPException
+        from app.api.routes.projects import SubtitleStyleUpdateIn, update_project_style
+        p1 = await _create_project(db_session, source_directory="a")
+        p2 = await _create_project(db_session, source_directory="b")
+        f1 = await _create_file(db_session, p1.id, relative_path="e1.mkv")
+        style = await _create_style(db_session, f1.id)
+        with pytest.raises(HTTPException) as exc:
+            await update_project_style(p2.id, style.id, SubtitleStyleUpdateIn(replacement_font_name="X"))
+        assert exc.value.status_code == 404
+
+    @pytest.mark.asyncio
+    async def test_unreferenced_styles_are_not_listed(self, db_session):
+        from app.api.routes.projects import list_project_styles
+        project = await _create_project(db_session)
+        f1 = await _create_file(db_session, project.id, relative_path="e1.mkv")
+        style = await _create_style(db_session, f1.id)
+        await db_session.execute(file_subtitle_styles.delete())
+        await db_session.commit()
+        assert await list_project_styles(project.id) == []

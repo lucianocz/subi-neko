@@ -14,7 +14,8 @@ import pysubs2
 from sqlalchemy import delete, insert
 
 from app.core.database import SyncSessionLocal
-from app.db.models import File, Subtitle, SubtitleEvent, SubtitleStyle
+from app.db.models import File, Subtitle, SubtitleEvent
+from app.subs.style_canonical import link_file_styles, prune_orphan_styles
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
 from app.subs.content_classification import classify_content_type
@@ -106,6 +107,7 @@ def extract_subtitles(
         track_id = file.subtitle_track_index
         subtitle_format = file.detected_subtitle_format or "ass"
         source_directory = file.project.source_directory
+        project_id = file.project_id
         relative_path = file.relative_path
 
     if subtitle_format not in {"ass", "srt"}:
@@ -190,7 +192,6 @@ def extract_subtitles(
 
     style_rows = [
         dict(
-            file_id=file_id,
             style_name=name,
             font_name=s.fontname,
             font_size=float(s.fontsize),
@@ -252,12 +253,14 @@ def extract_subtitles(
 
     with SyncSessionLocal() as session:
         session.execute(delete(SubtitleEvent).where(SubtitleEvent.file_id == file_id))
-        session.execute(delete(SubtitleStyle).where(SubtitleStyle.file_id == file_id))
         session.execute(delete(Subtitle).where(Subtitle.file_id == file_id))
 
         session.execute(insert(Subtitle), [subtitle_row])
-        if style_rows:
-            session.execute(insert(SubtitleStyle), style_rows)
+        # Styles are project-level canonical records: reuse an identical one if
+        # any file in the project already defined it, then drop whatever this
+        # re-extraction left unreferenced.
+        link_file_styles(session, file_id, project_id, style_rows)
+        prune_orphan_styles(session, project_id)
         if event_rows:
             session.execute(insert(SubtitleEvent), event_rows)
 

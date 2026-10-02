@@ -24,6 +24,7 @@ from app.db.models import (
     SubtitleChunk,
     SubtitleEvent,
     SubtitleStyle,
+    file_subtitle_styles,
 )
 from app.orchestrator.chunk_orchestrator import CHUNK_TERMINAL_STATUSES, orchestrate_chunks
 
@@ -153,8 +154,9 @@ async def _handle_ready(file_id: int, project_id: int, enqueue_fn: EnqueueFn) ->
         unchecked_fonts = await session.scalar(
             select(func.count())
             .select_from(SubtitleStyle)
+            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
             .where(
-                SubtitleStyle.file_id == file_id,
+                file_subtitle_styles.c.file_id == file_id,
                 SubtitleStyle.font_check_status == "unchecked",
             )
         )
