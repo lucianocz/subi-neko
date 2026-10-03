@@ -71,6 +71,7 @@ def render_output_ass(
             events,
             text_variant="translated",
             title=ctx.options.target_lang_name or "",
+            use_font_replacements=ctx.options.replace_incompatible_fonts,
         )
 
         try:

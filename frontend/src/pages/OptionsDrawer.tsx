@@ -331,6 +331,12 @@ function OptionsForm({ options }: { options: OptionsMap }) {
           description="Off (recommended): karaoke lines with per-syllable \\k timing are kept in the original language so the timing survives. On: they are translated and the syllable timing is lost."
           defaultValue={options['TRANSLATE_KARAOKE'] ?? '0'}
         />
+        <SaveOnChangeSwitch
+          optionKey="REPLACE_INCOMPATIBLE_FONTS"
+          label="Replace incompatible fonts"
+          description="On (default): translated subtitles use each style's replacement font and size from Styles & fonts where set. Off: translated subtitles keep the source font and size; stored replacements are kept and apply again when re-enabled."
+          defaultValue={options['REPLACE_INCOMPATIBLE_FONTS'] ?? '1'}
+        />
         <SaveOnBlurNumber
           optionKey="CPS_LIMIT"
           label="Reading speed limit (CPS)"

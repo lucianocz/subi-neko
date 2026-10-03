@@ -27,6 +27,33 @@ def _str_to_color(value: str | None) -> pysubs2.Color:
     return pysubs2.Color(r, g, b, a)
 
 
+def effective_font(
+    style: SubtitleStyle,
+    *,
+    text_variant: TextVariant,
+    use_font_replacements: bool = True,
+) -> tuple[str, float]:
+    """Font name/size a style renders with.
+
+    Only translated output with replacements enabled prefers the stored
+    ``replacement_*`` values (each falling back to the source value
+    independently); source output and the disabled case use ``font_*``.
+    The stored replacement values are never modified here.
+    """
+    use_replacement = text_variant == "translated" and use_font_replacements
+    font_name = (
+        style.replacement_font_name
+        if use_replacement and style.replacement_font_name
+        else style.font_name
+    )
+    font_size = (
+        style.replacement_font_size
+        if use_replacement and style.replacement_font_size is not None
+        else style.font_size
+    )
+    return font_name, font_size
+
+
 def build_ass(
     subtitle: Subtitle,
     styles: Iterable[SubtitleStyle],
@@ -34,11 +61,13 @@ def build_ass(
     *,
     text_variant: TextVariant,
     title: str | None = None,
+    use_font_replacements: bool = True,
 ) -> pysubs2.SSAFile:
     """Rebuild an ASS document from the normalized subtitle records.
 
     This is shared by the output job and the download endpoints so exported
     files cannot drift from the subtitle that is ultimately muxed.
+    ``use_font_replacements`` mirrors the REPLACE_INCOMPATIBLE_FONTS option.
     """
     subs = pysubs2.SSAFile()
     subs.info.clear()
@@ -64,17 +93,8 @@ def build_ass(
 
     subs.styles.clear()
     for style in styles:
-        use_replacement = text_variant == "translated"
-        font_name = (
-            style.replacement_font_name
-            if use_replacement and style.replacement_font_name
-            else style.font_name
-        )
-        font_size = (
-            style.replacement_font_size
-            if use_replacement and style.replacement_font_size is not None
-            else style.font_size
-        )
+        font_name, font_size = effective_font(
+            style, text_variant=text_variant, use_font_replacements=use_font_replacements)
         subs.styles[style.style_name] = pysubs2.SSAStyle(
             fontname=font_name,
             fontsize=float(font_size),

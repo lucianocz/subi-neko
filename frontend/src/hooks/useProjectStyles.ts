@@ -11,6 +11,7 @@ export interface ProjectStyle {
   replacement_font_size: number | null;
   font_check_status: string;
   file_count: number;
+  event_count: number;
 }
 
 export interface ProjectStyleUpdate {

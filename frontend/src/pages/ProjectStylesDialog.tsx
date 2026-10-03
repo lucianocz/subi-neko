@@ -206,9 +206,14 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
                     >
                       <Group justify="space-between" wrap="nowrap" gap="xs">
                         <Text size="sm" fw={600} truncate title={style.style_name} style={{ minWidth: 0 }}>{style.style_name}</Text>
-                        <Badge size="xs" variant="light" color="gray" title="Files using this style">
-                          {style.file_count}
-                        </Badge>
+                        <Group gap={4} wrap="nowrap">
+                          <Badge size="xs" variant="light" color="gray" title="Files using this style">
+                            {style.file_count} {style.file_count === 1 ? 'file' : 'files'}
+                          </Badge>
+                          <Badge size="xs" variant="light" color="gray" title="Subtitle events using this style across those files">
+                            {style.event_count} {style.event_count === 1 ? 'event' : 'events'}
+                          </Badge>
+                        </Group>
                       </Group>
                       <Text size="xs" c="dimmed" truncate title={fontSummary(style)}>{fontSummary(style)}</Text>
                     </UnstyledButton>

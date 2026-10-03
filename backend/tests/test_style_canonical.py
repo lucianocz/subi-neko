@@ -191,6 +191,76 @@ def test_translated_ass_uses_replacement_with_fallback():  # I
     assert (st.fontname, st.fontsize) == ("Arial", 30.0)
 
 
+# --- REPLACE_INCOMPATIBLE_FONTS option ----------------------------------------
+
+def _opts(**d):
+    from app.db.options import AppOptions
+    return AppOptions.from_dict(d)
+
+
+def _repl_style(**over) -> SubtitleStyle:
+    row = {k: v for k, v in _style(**over).items() if k not in ("created_at", "updated_at")}
+    return SubtitleStyle(project_id=1, source_style_hash="h", **row)
+
+
+def _render(style, variant, enabled):
+    subtitle = Subtitle(file_id=1)
+    ev = SubtitleEvent(file_id=1, line_index=0, event_type="dialogue", layer=0, start_ms=0,
+                       end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj")
+    st = build_ass(subtitle, [style], [ev], text_variant=variant,
+                   use_font_replacements=enabled).styles["Default"]
+    return st.fontname, st.fontsize
+
+
+def test_option_defaults_to_enabled_when_missing():  # A
+    assert _opts().replace_incompatible_fonts is True
+    assert _opts(REPLACE_INCOMPATIBLE_FONTS="0").replace_incompatible_fonts is False
+    assert _opts(REPLACE_INCOMPATIBLE_FONTS="1").replace_incompatible_fonts is True
+    # build_ass itself defaults to the legacy (enabled) behavior
+    style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
+    ev = SubtitleEvent(file_id=1, line_index=0, event_type="dialogue", layer=0, start_ms=0,
+                       end_ms=1000, style="Default", source_text="Hi")
+    st = build_ass(Subtitle(file_id=1), [style], [ev], text_variant="translated").styles["Default"]
+    assert (st.fontname, st.fontsize) == ("Noto Sans", 30.0)
+
+
+def test_enabled_uses_replacement_name_and_size():  # B
+    style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
+    assert _render(style, "translated", True) == ("Noto Sans", 30.0)
+
+
+def test_enabled_fallback_is_independent_per_field():  # C
+    assert _render(_repl_style(replacement_font_name="Noto Sans"), "translated", True) == ("Noto Sans", 42.0)
+    assert _render(_repl_style(replacement_font_size=30.0), "translated", True) == ("Arial", 30.0)
+
+
+def test_disabled_uses_source_font():  # D
+    style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
+    assert _render(style, "translated", False) == ("Arial", 42.0)
+
+
+def test_disabling_keeps_replacements_and_reenabling_restores_them():  # E, F
+    style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
+    assert _render(style, "translated", False) == ("Arial", 42.0)
+    assert (style.replacement_font_name, style.replacement_font_size) == ("Noto Sans", 30.0)  # E
+    assert _render(style, "translated", True) == ("Noto Sans", 30.0)  # F
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+def test_source_ass_ignores_option(enabled):  # G
+    style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
+    assert _render(style, "original", enabled) == ("Arial", 42.0)
+
+
+def test_both_translated_paths_pass_the_option():
+    """Download route and render job must both forward the option to build_ass."""
+    import inspect
+    from app.api.routes import projects
+    from app.jobs.handlers import render_output_ass
+    for mod in (projects, render_output_ass):
+        assert "use_font_replacements=" in inspect.getsource(mod)
+
+
 # --- J: event -> style references -------------------------------------------
 
 def test_event_style_references_are_unchanged_by_sharing(session_factory):  # J

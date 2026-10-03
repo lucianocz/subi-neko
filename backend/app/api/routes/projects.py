@@ -500,15 +500,15 @@ async def download_file_subtitles(
             .order_by(SubtitleEvent.line_index)
         )).all())
 
-        title = None
-        if variant == "translated":
-            title = (await options_store.asnapshot()).target_lang_name or ""
+        opts = await options_store.asnapshot()
+        title = (opts.target_lang_name or "") if variant == "translated" else None
         subs = build_ass(
             subtitle,
             styles,
             events,
             text_variant=variant,
             title=title,
+            use_font_replacements=opts.replace_incompatible_fonts,
         )
 
     suffix = "original" if variant == "original" else "translated"
@@ -654,6 +654,7 @@ class SubtitleStyleOut(BaseModel):
     replacement_font_size: float | None
     font_check_status: str
     file_count: int
+    event_count: int
 
 
 class SubtitleStyleUpdateIn(BaseModel):
@@ -663,7 +664,22 @@ class SubtitleStyleUpdateIn(BaseModel):
     replacement_font_size: float | None = Field(default=None, gt=0, le=1000)
 
 
-def _style_out(style: SubtitleStyle, file_count: int) -> SubtitleStyleOut:
+def _style_event_count_subquery():
+    """Events using this canonical style: scoped to the files linked to *it* and
+    to its style_name, since events reference styles by name only and a project
+    may hold several canonical styles sharing one name."""
+    return (
+        select(func.count(SubtitleEvent.id))
+        .select_from(SubtitleEvent)
+        .join(file_subtitle_styles, file_subtitle_styles.c.file_id == SubtitleEvent.file_id)
+        .where(file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
+        .where(SubtitleEvent.style == SubtitleStyle.style_name)
+        .correlate(SubtitleStyle)
+        .scalar_subquery()
+    )
+
+
+def _style_out(style: SubtitleStyle, file_count: int, event_count: int) -> SubtitleStyleOut:
     return SubtitleStyleOut(
         id=style.id,
         project_id=style.project_id,
@@ -674,6 +690,7 @@ def _style_out(style: SubtitleStyle, file_count: int) -> SubtitleStyleOut:
         replacement_font_size=style.replacement_font_size,
         font_check_status=style.font_check_status,
         file_count=file_count,
+        event_count=event_count,
     )
 
 
@@ -683,13 +700,17 @@ async def list_project_styles(project_id: int):
         if await session.get(Project, project_id) is None:
             raise HTTPException(status_code=404, detail="Project not found")
         rows = (await session.execute(
-            select(SubtitleStyle, func.count(file_subtitle_styles.c.file_id))
+            select(
+                SubtitleStyle,
+                func.count(file_subtitle_styles.c.file_id),
+                _style_event_count_subquery(),
+            )
             .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
             .where(SubtitleStyle.project_id == project_id)
             .group_by(SubtitleStyle.id)
             .order_by(func.lower(SubtitleStyle.style_name), SubtitleStyle.id)
         )).all()
-        return [_style_out(style, count) for style, count in rows]
+        return [_style_out(style, files, events) for style, files, events in rows]
 
 
 @router.put("/{project_id}/styles/{style_id}", response_model=SubtitleStyleOut)
@@ -708,7 +729,10 @@ async def update_project_style(project_id: int, style_id: int, body: SubtitleSty
             select(func.count()).select_from(file_subtitle_styles)
             .where(file_subtitle_styles.c.subtitle_style_id == style_id)
         )
-        return _style_out(style, file_count or 0)
+        event_count = await session.scalar(
+            select(_style_event_count_subquery()).where(SubtitleStyle.id == style_id)
+        )
+        return _style_out(style, file_count or 0, event_count or 0)
 
 
 @router.get("/{project_id}/watched-words", response_model=list[WatchedWordOut])

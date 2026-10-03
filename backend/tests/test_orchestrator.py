@@ -2576,6 +2576,35 @@ class TestProjectStylesApi:
         assert (cleared.replacement_font_name, cleared.replacement_font_size) == (None, None)
 
     @pytest.mark.asyncio
+    async def test_event_count_scoped_to_linked_files_and_style_name(self, db_session):
+        from app.api.routes.projects import list_project_styles, update_project_style, SubtitleStyleUpdateIn
+        project = await _create_project(db_session)
+        f1 = await _create_file(db_session, project.id, relative_path="e1.mkv")
+        f2 = await _create_file(db_session, project.id, relative_path="e2.mkv")
+        f3 = await _create_file(db_session, project.id, relative_path="e3.mkv")
+        # Two canonical styles with the same name but different source hashes.
+        shared = await _create_style(db_session, f1.id)
+        await db_session.execute(
+            file_subtitle_styles.insert().values(file_id=f2.id, subtitle_style_id=shared.id)
+        )
+        other = await _create_style(db_session, f3.id)
+        await db_session.commit()
+
+        for fid, n in ((f1.id, 2), (f2.id, 1), (f3.id, 4)):
+            for i in range(n):
+                await _create_event(db_session, fid, line_index=i)
+        odd = await _create_event(db_session, f1.id, line_index=9)
+        odd.style = "Other"
+        await db_session.commit()
+
+        listed = {s.id: s for s in await list_project_styles(project.id)}
+        assert (listed[shared.id].file_count, listed[shared.id].event_count) == (2, 3)
+        assert (listed[other.id].file_count, listed[other.id].event_count) == (1, 4)
+
+        out = await update_project_style(project.id, shared.id, SubtitleStyleUpdateIn(replacement_font_name="X"))
+        assert (out.file_count, out.event_count) == (2, 3)
+
+    @pytest.mark.asyncio
     async def test_update_rejects_style_from_another_project(self, db_session):
         from fastapi import HTTPException
         from app.api.routes.projects import SubtitleStyleUpdateIn, update_project_style

@@ -67,6 +67,9 @@ class AppOptions:
     llm_prices_json: str | None = None
     llm_max_completion_tokens: int = 32768
     translate_karaoke: bool = False
+    # Translated ASS uses a style's replacement_font_* (when set) instead of
+    # the source font. Off ignores them without clearing the stored values.
+    replace_incompatible_fonts: bool = True
     require_style_bible: bool = True
     cps_limit: float = 20.0
     max_row_chars: int = 42
@@ -113,6 +116,8 @@ class AppOptions:
             llm_max_completion_tokens=_validated_positive_int(
                 d.get("LLM_MAX_COMPLETION_TOKENS"), "LLM_MAX_COMPLETION_TOKENS", 32768),
             translate_karaoke=_validated_bool(d.get("TRANSLATE_KARAOKE")),
+            replace_incompatible_fonts=_validated_bool_default_true(
+                d.get("REPLACE_INCOMPATIBLE_FONTS")),
             require_style_bible=_validated_bool_default_true(d.get("REQUIRE_STYLE_BIBLE")),
             cps_limit=_validated_positive_float(d.get("CPS_LIMIT"), "CPS_LIMIT", 20.0),
             max_row_chars=_validated_positive_int(d.get("MAX_ROW_CHARS"), "MAX_ROW_CHARS", 42),

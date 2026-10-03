@@ -36,6 +36,7 @@ async def get_options() -> dict[str, str | None]:
         "LLM_PRICES_JSON": opts.llm_prices_json,
         "LLM_MAX_COMPLETION_TOKENS": str(opts.llm_max_completion_tokens),
         "TRANSLATE_KARAOKE": "1" if opts.translate_karaoke else "0",
+        "REPLACE_INCOMPATIBLE_FONTS": "1" if opts.replace_incompatible_fonts else "0",
         "REQUIRE_STYLE_BIBLE": "1" if opts.require_style_bible else "0",
         "CPS_LIMIT": str(opts.cps_limit),
         "MAX_ROW_CHARS": str(opts.max_row_chars),
