@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 from difflib import SequenceMatcher
 
+from app.subs.readability import char_budget, compute_cps, visible_len, visible_rows
 from app.subs.tag_masking import plain_text
 
 # Findings: (qa_type, message, details)
@@ -315,14 +316,6 @@ def check_vocative(translated: str, vocatives: dict[str, str]) -> list[Finding]:
 # Readability — CPS, row length, row count
 # ---------------------------------------------------------------------------
 
-# Mirrors prompt_context.SOURCE_FLOOR_RATIO: a line isn't flagged (and
-# doesn't get routed into another forced re-polish) for running over the raw
-# CPS budget if it isn't actually longer than the English source needed in
-# the same slot — that's a timing quirk (often a sentence split across
-# several short events), not translated text that still has fat to cut.
-_SOURCE_FLOOR_RATIO = 0.9
-
-
 def check_readability(
     translated: str,
     duration_ms: int,
@@ -331,24 +324,18 @@ def check_readability(
     source_text: str | None = None,
 ) -> list[Finding]:
     findings: list[Finding] = []
-    rows = [plain_text(part) for part in re.split(r"\\N", translated or "")]
-    visible = " ".join(row for row in rows if row)
+    rows = visible_rows(translated)
 
-    if duration_ms > 0 and visible:
-        cps = len(visible) / (duration_ms / 1000.0)
-        if cps > cps_limit:
-            budget = int(cps_limit * duration_ms / 1000.0)
-            protected_budget = budget
-            if source_text:
-                source_floor = int(len(plain_text(source_text)) * _SOURCE_FLOOR_RATIO)
-                protected_budget = max(budget, source_floor)
-            if len(visible) > protected_budget:
-                findings.append((
-                    "high_cps",
-                    f"Reading speed {cps:.1f} CPS exceeds limit {cps_limit:.0f} "
-                    f"(fits in ~{protected_budget} chars).",
-                    {"cps": round(cps, 1), "limit": cps_limit, "char_budget": protected_budget},
-                ))
+    cps = compute_cps(translated, 0, duration_ms)
+    if cps is not None and cps > cps_limit:
+        budget = char_budget(0, duration_ms, cps_limit, source_text)
+        if budget is not None and visible_len(translated) > budget:
+            findings.append((
+                "high_cps",
+                f"Reading speed {cps:.1f} CPS exceeds limit {cps_limit:.0f} "
+                f"(fits in ~{budget} chars).",
+                {"cps": round(cps, 1), "limit": cps_limit, "char_budget": budget},
+            ))
 
     long_rows = [row for row in rows if len(row) > max_row_chars]
     if long_rows:

@@ -6,9 +6,9 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, Field
-from sqlalchemy import case, delete, func, select
+from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.orm import selectinload
 
 from app.core.database import AsyncSessionLocal
@@ -48,6 +48,8 @@ from app.orchestrator.project_orchestrator import (
     pick_style_bible_sample_file_id,
 )
 from app.subs.ass_rendering import HEADER_NOTICE, build_ass
+from app.subs.readability import compute_cps
+from app.subs.watched_words import count_watched_matches
 from app.ws.connection_manager import connection_manager
 
 logger = logging.getLogger(__name__)
@@ -202,9 +204,37 @@ class SubtitleEventEditorOut(BaseModel):
     is_user_edited: bool
     is_locked: bool
     is_approved: bool
+    # Raw reading speed of the current translation (readability.compute_cps);
+    # None when duration <= 0 or the visible text is empty. Not rounded.
+    cps: float | None
     issues: list[QaIssueOut]
 
     model_config = {"from_attributes": True}
+
+
+class SubtitleEventsSummaryOut(BaseModel):
+    """Whole-file numbers for the editor header (never page-local)."""
+    total_events: int
+    unresolved_issue_count: int
+    # Counts per (severity, qa_type) under the request's show_info /
+    # show_resolved flags — the same visibility rule the editor applies to rows.
+    issue_counts: list[QaIssueSummaryOut]
+    # Number of (event, watched-word definition) matches; see
+    # app.subs.watched_words for the exact matching semantics.
+    watched_occurrences: int
+    cps_limit: float
+
+
+class SubtitleEventPageOut(BaseModel):
+    items: list[SubtitleEventEditorOut]
+    page: int
+    page_size: int
+    # Events matching the filters (what is paginated); total_pages derives from it.
+    filtered_events: int
+    # Events in the whole file, regardless of filters.
+    total_events: int
+    total_pages: int
+    summary: SubtitleEventsSummaryOut
 
 
 class SubtitleEventUpdateIn(BaseModel):
@@ -1642,6 +1672,7 @@ def _subtitle_event_editor_out(
         is_user_edited=bool(event.is_user_edited),
         is_locked=bool(event.is_locked),
         is_approved=bool(event.is_approved),
+        cps=compute_cps(event.translated_text, event.start_ms, event.end_ms),
         issues=[QaIssueOut.model_validate(item) for item in issues],
     )
 
@@ -1663,22 +1694,129 @@ async def _speaker_character_map(session, project_id: int) -> dict[str, tuple[st
     return result
 
 
-@router.get("/{project_id}/files/{file_id}/subtitle-events", response_model=list[SubtitleEventEditorOut])
-async def list_file_subtitle_events(project_id: int, file_id: int):
+# Severities the editor always shows; everything else (warning/info/unknown)
+# is hidden when "Info" is off. Mirrors the frontend's SEVERITY_RANK === 0.
+_BLOCKER_SEVERITIES = ("blocker", "critical", "error", "high")
+
+SUBTITLE_EVENTS_DEFAULT_PAGE_SIZE = 1000
+SUBTITLE_EVENTS_MAX_PAGE_SIZE = 5000
+
+
+def _visible_issue_conditions(show_info: bool, show_resolved: bool) -> list:
+    """QaItem predicates for "issue is visible under the editor filters"."""
+    conditions = []
+    if not show_resolved:
+        conditions.append(QaItem.is_resolved == 0)
+    if not show_info:
+        conditions.append(func.lower(QaItem.severity).in_(_BLOCKER_SEVERITIES))
+    return conditions
+
+
+async def _subtitle_events_summary(
+    session,
+    project_id: int,
+    file_id: int,
+    show_info: bool,
+    show_resolved: bool,
+) -> SubtitleEventsSummaryOut:
+    total_events = await session.scalar(
+        select(func.count()).select_from(SubtitleEvent).where(SubtitleEvent.file_id == file_id)
+    ) or 0
+    # Only issues attached to an event ever show up in the editor.
+    attached = (QaItem.file_id == file_id, QaItem.subtitle_event_id.is_not(None))
+    unresolved = await session.scalar(
+        select(func.count()).select_from(QaItem).where(*attached, QaItem.is_resolved == 0)
+    ) or 0
+    count_rows = (await session.execute(
+        select(QaItem.severity, QaItem.qa_type, func.count())
+        .where(*attached, *_visible_issue_conditions(show_info, show_resolved))
+        .group_by(QaItem.severity, QaItem.qa_type)
+    )).all()
+
+    watched = (await session.execute(
+        select(ProjectWatchedWord.word, ProjectWatchedWord.word_type)
+        .where(ProjectWatchedWord.project_id == project_id)
+    )).all()
+    watched_occurrences = 0
+    if watched:
+        original_words = [w for w, t in watched if t == WatchedWordType.ORIGINAL.value]
+        translated_words = [w for w, t in watched if t == WatchedWordType.TRANSLATED.value]
+        texts = (await session.execute(
+            select(SubtitleEvent.source_text, SubtitleEvent.translated_text)
+            .where(SubtitleEvent.file_id == file_id)
+        )).all()
+        watched_occurrences = count_watched_matches(texts, original_words, translated_words)
+
+    return SubtitleEventsSummaryOut(
+        total_events=total_events,
+        unresolved_issue_count=unresolved,
+        issue_counts=[
+            QaIssueSummaryOut(severity=severity, qa_type=qa_type, count=count)
+            for severity, qa_type, count in count_rows
+        ],
+        watched_occurrences=watched_occurrences,
+        cps_limit=(await options_store.asnapshot()).cps_limit,
+    )
+
+
+@router.get("/{project_id}/files/{file_id}/subtitle-events", response_model=SubtitleEventPageOut)
+async def list_file_subtitle_events(
+    project_id: int,
+    file_id: int,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(
+        SUBTITLE_EVENTS_DEFAULT_PAGE_SIZE, ge=1, le=SUBTITLE_EVENTS_MAX_PAGE_SIZE),
+    show_info: bool = True,
+    show_resolved: bool = False,
+    issues_only: bool = False,
+):
+    """One page of the file's events (all event types), ordered by line_index.
+
+    Filters apply to the whole file BEFORE pagination: ``issues_only`` keeps
+    events with at least one issue visible under ``show_info`` /
+    ``show_resolved`` (the editor's existing semantics). A page past the end
+    is clamped to the last page.
+    """
     async with AsyncSessionLocal() as session:
         file = await session.get(File, file_id)
         if file is None or file.project_id != project_id:
             raise HTTPException(status_code=404, detail="File not found")
 
+        summary = await _subtitle_events_summary(
+            session, project_id, file_id, show_info, show_resolved)
+
+        conditions = [SubtitleEvent.file_id == file_id]
+        if issues_only:
+            visible = _visible_issue_conditions(show_info, show_resolved)
+            conditions.append(
+                SubtitleEvent.qa_items.any(and_(*visible) if visible else None))
+            filtered_events = await session.scalar(
+                select(func.count()).select_from(SubtitleEvent).where(*conditions)) or 0
+        else:
+            filtered_events = summary.total_events
+
+        total_pages = max(1, -(-filtered_events // page_size))
+        page = min(page, total_pages)
+
         events = list((await session.scalars(
             select(SubtitleEvent)
-            .where(SubtitleEvent.file_id == file_id)
+            .where(*conditions)
             .options(selectinload(SubtitleEvent.qa_items))
             .order_by(SubtitleEvent.line_index)
+            .offset((page - 1) * page_size)
+            .limit(page_size)
         )).all())
         speaker_map = await _speaker_character_map(session, project_id)
 
-        return [_subtitle_event_editor_out(event, speaker_map) for event in events]
+        return SubtitleEventPageOut(
+            items=[_subtitle_event_editor_out(event, speaker_map) for event in events],
+            page=page,
+            page_size=page_size,
+            filtered_events=filtered_events,
+            total_events=summary.total_events,
+            total_pages=total_pages,
+            summary=summary,
+        )
 
 
 async def _sync_tm_after_edit(project_id: int, event_id: int, file_status: str) -> None:

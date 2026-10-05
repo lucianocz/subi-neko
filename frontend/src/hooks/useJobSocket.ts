@@ -103,7 +103,10 @@ export function useJobSocket() {
         }
 
         if (msg.event === 'project_updated') {
-          // Fired after orchestration completes — project/file state is now settled in DB
+          // Fired after orchestration completes — project/file state is now settled in DB.
+          // The Subtitle Editor's pages live under ['subtitle-events', ...] (see
+          // useSubtitleEditor.subtitleEventsKey), so this ['projects'] prefix
+          // invalidation never refetches/rebuilds an open editor.
           queryClient.invalidateQueries({ queryKey: ['projects'] });
           // Invalidate all project stats (QA counts may have changed)
           queryClient.invalidateQueries({ queryKey: ['projects'], predicate: (q) => q.queryKey.includes('stats') });

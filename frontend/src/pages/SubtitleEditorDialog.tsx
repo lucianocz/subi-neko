@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -9,6 +9,7 @@ import {
   Group,
   Loader,
   Modal,
+  Pagination,
   ScrollArea,
   Stack,
   Table,
@@ -16,18 +17,19 @@ import {
   Textarea,
   Tooltip,
 } from '@mantine/core';
+import { useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
 import { ArrowCounterClockwise, CheckCircle, NotePencil, WarningCircle } from '@phosphor-icons/react';
 import type { ProjectWatchedWord, QaIssue, SubtitleEventEditorRow, VideoFile } from '../types';
-import { useResolveQaIssue, useRevertSubtitleEvent, useSubtitleEvents, useUpdateSubtitleEvent } from '../hooks/useSubtitleEditor';
+import {
+  adjustWatchedOccurrences,
+  subtitleEventsKey,
+  useResolveQaIssue,
+  useRevertSubtitleEvent,
+  useSubtitleEvents,
+  useUpdateSubtitleEvent,
+} from '../hooks/useSubtitleEditor';
 import { useProjectWatchedWords } from '../hooks/useProjects';
-
-interface SubtitleDraft {
-  translated_text: string;
-  dirty: boolean;
-}
-
-type DraftMap = Record<number, SubtitleDraft>;
 
 // One severity scale: blocker | warning | info (legacy names tolerated).
 const SEVERITY_COLORS: Record<string, string> = {
@@ -84,11 +86,6 @@ function filterIssues(issues: QaIssue[], showWarnings: boolean, showResolved: bo
   });
 }
 
-interface WatchedWordMatches {
-  original: ProjectWatchedWord[];
-  translated: ProjectWatchedWord[];
-}
-
 function matchingWatchedWords(text: string | null | undefined, words: ProjectWatchedWord[]) {
   const haystack = (text ?? '').toLocaleLowerCase();
   if (!haystack) return [];
@@ -143,7 +140,7 @@ function IssueRow({
   resolving,
 }: {
   issue: QaIssue;
-  onResolve: (issueId: number) => void;
+  onResolve: (issueId: number) => void | Promise<void>;
   resolving: boolean;
 }) {
   const color = SEVERITY_COLORS[issue.severity.toLowerCase()] ?? 'gray';
@@ -204,58 +201,119 @@ function IssueRow({
   );
 }
 
-const SubtitleRow = memo(function SubtitleRow({
-  row,
-  draft,
-  resolvingIssueId,
-  saving,
-  reverting,
-  showInfo,
-  showResolved,
-  onChange,
-  onBlurSave,
-  onRevert,
-  onResolve,
-  originalWatchedWords,
-  translatedWatchedWords,
-}: {
+interface SubtitleRowProps {
   row: SubtitleEventEditorRow;
-  draft: SubtitleDraft;
+  cpsLimit: number;
   originalWatchedWords: ProjectWatchedWord[];
   translatedWatchedWords: ProjectWatchedWord[];
-  resolvingIssueId: number | null;
-  saving: boolean;
-  reverting: boolean;
   showInfo: boolean;
   showResolved: boolean;
-  onChange: (eventId: number, translatedText: string) => void;
-  onBlurSave: (row: SubtitleEventEditorRow) => void;
-  onRevert: (row: SubtitleEventEditorRow) => void;
-  onResolve: (issueId: number) => void;
-}) {
-  const issues = sortIssues(filterIssues(row.issues, showInfo, showResolved));
+  /** Persist an edit; resolves to the authoritative row, or null on failure. */
+  onSave: (row: SubtitleEventEditorRow, text: string) => Promise<SubtitleEventEditorRow | null>;
+  onRevert: (row: SubtitleEventEditorRow) => Promise<SubtitleEventEditorRow | null>;
+  onResolve: (issueId: number) => Promise<void>;
+  onDirtyChange: (eventId: number, dirty: boolean) => void;
+}
+
+// Every prop is referentially stable between unrelated renders (callbacks are
+// useCallback'd in the dialog, word lists are memoized, `row` only changes
+// when the server row does), so plain shallow memo is enough: typing in one
+// row re-renders that row only.
+const SubtitleRow = memo(function SubtitleRow({
+  row,
+  cpsLimit,
+  originalWatchedWords,
+  translatedWatchedWords,
+  showInfo,
+  showResolved,
+  onSave,
+  onRevert,
+  onResolve,
+  onDirtyChange,
+}: SubtitleRowProps) {
+  const serverText = row.translated_text ?? '';
+  // The draft lives here, not in the dialog: keystrokes touch this row only.
+  const [text, setText] = useState(serverText);
+  const [seenServerText, setSeenServerText] = useState(serverText);
+  const [saving, setSaving] = useState(false);
+  const [reverting, setReverting] = useState(false);
+  const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
+
+  // Server row changed (save echo, revert, refetch): follow it unless the
+  // user has an unsaved draft on top of the previous server text.
+  if (serverText !== seenServerText) {
+    setSeenServerText(serverText);
+    if (text === seenServerText) setText(serverText);
+  }
+
+  const dirty = text !== serverText;
+  useEffect(() => {
+    onDirtyChange(row.id, dirty);
+  }, [dirty, onDirtyChange, row.id]);
+  useEffect(() => () => onDirtyChange(row.id, false), [onDirtyChange, row.id]);
+
+  const issues = useMemo(
+    () => sortIssues(filterIssues(row.issues, showInfo, showResolved)),
+    [row.issues, showInfo, showResolved],
+  );
   const canRevert = row.original_ai_translated_text !== null
-    && draft.translated_text !== row.original_ai_translated_text;
-  const watchedMatches = useMemo<WatchedWordMatches>(() => ({
-    original: matchingWatchedWords(row.source_text, originalWatchedWords),
-    translated: matchingWatchedWords(draft.translated_text, translatedWatchedWords),
-  }), [draft.translated_text, originalWatchedWords, row.source_text, translatedWatchedWords]);
-  const hasWatchedMatch = watchedMatches.original.length > 0 || watchedMatches.translated.length > 0;
+    && text !== row.original_ai_translated_text;
+  const originalMatches = useMemo(
+    () => matchingWatchedWords(row.source_text, originalWatchedWords),
+    [row.source_text, originalWatchedWords],
+  );
+  const translatedMatches = useMemo(
+    () => matchingWatchedWords(text, translatedWatchedWords),
+    [text, translatedWatchedWords],
+  );
+  const hasWatchedMatch = originalMatches.length > 0 || translatedMatches.length > 0;
   const identityName = row.character_name ?? row.speaker_name;
   const identityGender = row.character_name ? row.character_gender : row.speaker_gender;
+
+  const handleBlur = async () => {
+    if (saving || text === serverText) return;
+    setSaving(true);
+    try {
+      const saved = await onSave(row, text);
+      if (saved) setText(saved.translated_text ?? '');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleRevert = async () => {
+    setReverting(true);
+    try {
+      const reverted = await onRevert(row);
+      if (reverted) setText(reverted.translated_text ?? '');
+    } finally {
+      setReverting(false);
+    }
+  };
+
+  const handleResolve = async (issueId: number) => {
+    setResolvingIssueId(issueId);
+    try {
+      await onResolve(issueId);
+    } finally {
+      setResolvingIssueId(null);
+    }
+  };
+
+  const cpsOver = row.cps !== null && row.cps > cpsLimit;
 
   return (
     <Table.Tr
       style={{
         backgroundColor: hasWatchedMatch
           ? 'rgba(250, 176, 5, 0.08)'
-          : draft.dirty ? 'var(--mantine-color-dark-6)' : undefined,
+          : dirty ? 'var(--mantine-color-dark-6)' : undefined,
       }}
     >
       <Table.Td style={{ width: 160, verticalAlign: 'top' }}>
         <Group gap={6} wrap="nowrap" align="center">
           <Text size="sm" fw={700}>{row.line_index + 1}</Text>
-          {draft.dirty && (
+          {dirty && (
             <Tooltip label="Unsaved changes" withArrow>
               <Box style={{ width: 7, height: 7, borderRadius: '50%', backgroundColor: 'var(--mantine-color-orange-5)', flexShrink: 0 }} />
             </Tooltip>
@@ -265,7 +323,7 @@ const SubtitleRow = memo(function SubtitleRow({
           <IdentityBadges name={identityName} gender={identityGender} />
         )}
       </Table.Td>
-      <Table.Td style={{ width: '30%', verticalAlign: 'top' }}>
+      <Table.Td style={{ width: '28%', verticalAlign: 'top' }}>
         <Textarea
           autosize
           minRows={2}
@@ -274,18 +332,20 @@ const SubtitleRow = memo(function SubtitleRow({
           readOnly
           styles={{ input: { fontSize: 13, lineHeight: 1.35 } }}
         />
-        <WatchedWordBadges words={watchedMatches.original} />
+        <WatchedWordBadges words={originalMatches} />
       </Table.Td>
-      <Table.Td style={{ width: '30%', verticalAlign: 'top' }}>
+      <Table.Td style={{ width: '28%', verticalAlign: 'top' }}>
         <Group gap={6} align="flex-start" wrap="nowrap">
           <Textarea
             autosize
             minRows={2}
             maxRows={8}
-            value={draft.translated_text}
-            onChange={(e) => onChange(row.id, e.currentTarget.value)}
-            onBlur={() => onBlurSave(row)}
-            disabled={saving || reverting}
+            value={text}
+            onChange={(e) => setText(e.currentTarget.value)}
+            onBlur={handleBlur}
+            // readOnly (not disabled) while saving: a disabled textarea drops
+            // focus, which moved the caret away mid-save.
+            readOnly={saving || reverting}
             styles={{ root: { flex: 1 }, input: { fontSize: 13, lineHeight: 1.35 } }}
           />
           <Tooltip label="Revert to AI translation" withArrow>
@@ -297,14 +357,33 @@ const SubtitleRow = memo(function SubtitleRow({
               disabled={!canRevert || saving || reverting}
               loading={reverting}
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => onRevert(row)}
+              onClick={handleRevert}
             >
               <ArrowCounterClockwise size={15} />
             </ActionIcon>
           </Tooltip>
         </Group>
-        <WatchedWordBadges words={watchedMatches.translated} />
+        <WatchedWordBadges words={translatedMatches} />
         {saving && <Text size="xs" c="dimmed" mt={4}>Saving…</Text>}
+      </Table.Td>
+      <Table.Td style={{ width: 64, verticalAlign: 'top', textAlign: 'center' }}>
+        <Tooltip
+          label="Raw reading speed; QA may allow longer translations based on source length."
+          withArrow
+          multiline
+          w={220}
+        >
+          <Text
+            size="sm"
+            fw={cpsOver ? 700 : 400}
+            c={cpsOver ? 'red' : 'dimmed'}
+            data-testid="cps-cell"
+            data-cps-over={cpsOver ? 'true' : 'false'}
+            style={{ paddingTop: 8 }}
+          >
+            {row.cps === null ? '—' : Math.round(row.cps)}
+          </Text>
+        </Tooltip>
       </Table.Td>
       <Table.Td style={{ verticalAlign: 'top' }}>
         {issues.length === 0 ? (
@@ -316,7 +395,7 @@ const SubtitleRow = memo(function SubtitleRow({
                 key={issue.id}
                 issue={issue}
                 resolving={resolvingIssueId === issue.id}
-                onResolve={onResolve}
+                onResolve={handleResolve}
               />
             ))}
           </Stack>
@@ -324,17 +403,7 @@ const SubtitleRow = memo(function SubtitleRow({
       </Table.Td>
     </Table.Tr>
   );
-}, (prev, next) => (
-  prev.row === next.row
-  && prev.draft === next.draft
-  && prev.originalWatchedWords === next.originalWatchedWords
-  && prev.translatedWatchedWords === next.translatedWatchedWords
-  && prev.saving === next.saving
-  && prev.reverting === next.reverting
-  && prev.showInfo === next.showInfo
-  && prev.showResolved === next.showResolved
-  && !prev.row.issues.some((issue) => issue.id === prev.resolvingIssueId || issue.id === next.resolvingIssueId)
-));
+});
 
 interface SubtitleEditorDialogProps {
   projectId: number;
@@ -345,167 +414,190 @@ interface SubtitleEditorDialogProps {
 
 export function SubtitleEditorDialog({ projectId, file, opened, onClose }: SubtitleEditorDialogProps) {
   const fileId = file?.id ?? null;
-  const { data: rows = [], isLoading } = useSubtitleEvents(projectId, fileId, opened);
-  const { data: watchedWords = [] } = useProjectWatchedWords(projectId, opened);
-  const updateSubtitleEvent = useUpdateSubtitleEvent();
-  const revertSubtitleEvent = useRevertSubtitleEvent();
-  const resolveQaIssue = useResolveQaIssue();
-  const [drafts, setDrafts] = useState<DraftMap>({});
-  const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
-  const [savingEventId, setSavingEventId] = useState<number | null>(null);
-  const [revertingEventId, setRevertingEventId] = useState<number | null>(null);
+  const queryClient = useQueryClient();
+  const [page, setPage] = useState(1);
   const [issuesOnly, setIssuesOnly] = useState(false);
   const [showInfo, setShowInfo] = useState(true);
   const [showResolved, setShowResolved] = useState(false);
+  const filters = useMemo(
+    () => ({ showInfo, showResolved, issuesOnly }),
+    [showInfo, showResolved, issuesOnly],
+  );
+  const { data, isLoading, isPlaceholderData } = useSubtitleEvents(
+    projectId, fileId, opened, page, filters);
+  const { data: watchedWords = [] } = useProjectWatchedWords(projectId, opened);
+  const { mutateAsync: updateEvent, isPending: isUpdating } = useUpdateSubtitleEvent();
+  const { mutateAsync: revertEvent, isPending: isReverting } = useRevertSubtitleEvent();
+  const { mutateAsync: resolveIssue, isPending: isResolving } = useResolveQaIssue();
+  const scrollViewport = useRef<HTMLDivElement>(null);
 
+  // Dirty rows register themselves; the Set lives in a ref (no re-render per
+  // keystroke) and only the count — which changes on dirty flips — is state.
+  const dirtyIdsRef = useRef<Set<number>>(new Set());
+  const [dirtyCount, setDirtyCount] = useState(0);
+  const pendingSavesRef = useRef<Set<Promise<unknown>>>(new Set());
+  const discardArmedRef = useRef(false);
+
+  const items = data?.items;
+  const summary = data?.summary;
+  const rows = items ?? [];
+
+  // The server clamps an out-of-range page; follow it.
+  if (data && !isPlaceholderData && data.page !== page) setPage(data.page);
+
+  // Back to the top of the list on every page/filter change.
   useEffect(() => {
-    if (!opened) return;
-    setDrafts((prev) => {
-      const next: DraftMap = { ...prev };
-      for (const row of rows) {
-        if (!next[row.id] || !next[row.id].dirty) {
-          next[row.id] = {
-            translated_text: row.translated_text ?? '',
-            dirty: false,
-          };
-        }
-      }
-      return next;
-    });
-  }, [opened, rows]);
+    scrollViewport.current?.scrollTo({ top: 0 });
+  }, [page, issuesOnly, showInfo, showResolved]);
 
-  const dirtyCount = useMemo(
-    () => Object.values(drafts).filter((draft) => draft.dirty).length,
-    [drafts],
-  );
-  const issueSummary = useMemo(() => {
-    const counts = new Map<string, { qa_type: string; severity: string; count: number }>();
-    for (const row of rows) {
-      for (const issue of filterIssues(row.issues, showInfo, showResolved)) {
-        const key = `${issue.severity}:${issue.qa_type}`;
-        const existing = counts.get(key);
-        if (existing) {
-          existing.count += 1;
-        } else {
-          counts.set(key, { qa_type: issue.qa_type, severity: issue.severity, count: 1 });
-        }
-      }
-    }
-    return [...counts.values()].sort((a, b) => {
-      const ar = SEVERITY_RANK[a.severity.toLowerCase()] ?? 99;
-      const br = SEVERITY_RANK[b.severity.toLowerCase()] ?? 99;
-      if (ar !== br) return ar - br;
-      return b.count - a.count;
-    });
-  }, [rows, showInfo, showResolved]);
-  const unresolvedCount = useMemo(
-    () => rows.reduce((sum, row) => sum + row.issues.filter((issue) => !issue.is_resolved).length, 0),
-    [rows],
-  );
-  const visibleRows = useMemo(
-    () => (issuesOnly
-      ? rows.filter((row) => filterIssues(row.issues, showInfo, showResolved).length > 0)
-      : rows),
-    [issuesOnly, rows, showInfo, showResolved],
-  );
   const watchedWordsByType = useMemo(() => ({
     original: watchedWords.filter((word) => word.word_type === 'original'),
     translated: watchedWords.filter((word) => word.word_type === 'translated'),
   }), [watchedWords]);
-  const isBusy = updateSubtitleEvent.isPending || revertSubtitleEvent.isPending || resolveQaIssue.isPending;
+  const watchedRef = useRef(watchedWordsByType);
+  useEffect(() => {
+    watchedRef.current = watchedWordsByType;
+  }, [watchedWordsByType]);
 
-  const handleDraftChange = useCallback((eventId: number, translatedText: string) => {
-    setDrafts((prev) => ({
-      ...prev,
-      [eventId]: {
-        ...prev[eventId],
-        translated_text: translatedText,
-        dirty: true,
-      },
-    }));
+  const issueSummary = useMemo(
+    () => [...(summary?.issue_counts ?? [])].sort((a, b) => {
+      const ar = SEVERITY_RANK[a.severity.toLowerCase()] ?? 99;
+      const br = SEVERITY_RANK[b.severity.toLowerCase()] ?? 99;
+      if (ar !== br) return ar - br;
+      return b.count - a.count;
+    }),
+    [summary?.issue_counts],
+  );
+  const isBusy = isUpdating || isReverting || isResolving;
+
+  const handleDirtyChange = useCallback((eventId: number, dirty: boolean) => {
+    const ids = dirtyIdsRef.current;
+    if (dirty === ids.has(eventId)) return;
+    if (dirty) ids.add(eventId); else ids.delete(eventId);
+    setDirtyCount(ids.size);
   }, []);
 
-  const handleBlurSave = useCallback(async (row: SubtitleEventEditorRow) => {
-    if (!file) return;
-    const draft = drafts[row.id];
-    if (!draft || !draft.dirty) return;
-    if (draft.translated_text === (row.translated_text ?? '')) {
-      setDrafts((prev) => ({
-        ...prev,
-        [row.id]: { ...draft, dirty: false },
-      }));
-      return;
-    }
+  // Same matcher the rows use for their badges, applied to the change in one
+  // event's saved text, keeps the header total in step without a refetch.
+  const adjustWatched = useCallback((before: string | null, after: string | null) => {
+    if (fileId === null) return;
+    const words = watchedRef.current.translated;
+    const delta = matchingWatchedWords(after, words).length - matchingWatchedWords(before, words).length;
+    adjustWatchedOccurrences(queryClient, projectId, fileId, delta);
+  }, [fileId, projectId, queryClient]);
 
-    setSavingEventId(row.id);
-    try {
-      const saved = await updateSubtitleEvent.mutateAsync({
-        projectId,
-        fileId: file.id,
-        eventId: row.id,
-        translated_text: draft.translated_text || null,
-      });
-      setDrafts((prev) => {
-        const current = prev[row.id];
-        if (!current) return prev;
-        return {
-          ...prev,
-          [row.id]: {
-            translated_text: saved.translated_text ?? '',
-            dirty: false,
-          },
-        };
-      });
-    } catch {
-      notifications.show({ color: 'red', title: 'Save failed', message: 'Could not save subtitle edits.' });
-    } finally {
-      setSavingEventId(null);
-    }
-  }, [drafts, file, projectId, updateSubtitleEvent]);
+  const handleSave = useCallback((row: SubtitleEventEditorRow, text: string) => {
+    if (fileId === null) return Promise.resolve(null);
+    const task = (async () => {
+      try {
+        const saved = await updateEvent({
+          projectId,
+          fileId,
+          eventId: row.id,
+          translated_text: text || null,
+        });
+        adjustWatched(row.translated_text, saved.translated_text);
+        handleDirtyChange(row.id, false);
+        return saved;
+      } catch {
+        notifications.show({ color: 'red', title: 'Save failed', message: 'Could not save subtitle edits.' });
+        return null;
+      }
+    })();
+    pendingSavesRef.current.add(task);
+    void task.finally(() => pendingSavesRef.current.delete(task));
+    return task;
+  }, [adjustWatched, fileId, handleDirtyChange, projectId, updateEvent]);
 
   const handleRevert = useCallback(async (row: SubtitleEventEditorRow) => {
-    if (!file) return;
-    setRevertingEventId(row.id);
+    if (fileId === null) return null;
     try {
-      const reverted = await revertSubtitleEvent.mutateAsync({ projectId, fileId: file.id, eventId: row.id });
-      setDrafts((prev) => ({
-        ...prev,
-        [row.id]: {
-          translated_text: reverted.translated_text ?? '',
-          dirty: false,
-        },
-      }));
+      const reverted = await revertEvent({ projectId, fileId, eventId: row.id });
+      adjustWatched(row.translated_text, reverted.translated_text);
+      handleDirtyChange(row.id, false);
+      return reverted;
     } catch {
       notifications.show({ color: 'red', title: 'Revert failed', message: 'Could not restore the original AI translation.' });
-    } finally {
-      setRevertingEventId(null);
+      return null;
     }
-  }, [file, projectId, revertSubtitleEvent]);
+  }, [adjustWatched, fileId, handleDirtyChange, projectId, revertEvent]);
 
   const handleResolve = useCallback(async (issueId: number) => {
-    if (!file) return;
-    setResolvingIssueId(issueId);
+    if (fileId === null) return;
     try {
-      await resolveQaIssue.mutateAsync({ projectId, fileId: file.id, issueId });
+      await resolveIssue({ projectId, fileId, issueId });
     } catch {
       notifications.show({ color: 'red', title: 'Resolve failed', message: 'Could not resolve the QA issue.' });
-    } finally {
-      setResolvingIssueId(null);
     }
-  }, [file, projectId, resolveQaIssue]);
+  }, [fileId, projectId, resolveIssue]);
 
-  function handleClose() {
-    setDrafts({});
+  // Blur whatever is focused (its onBlur starts the save), wait for every
+  // save in flight, and report whether any edit is still unsaved.
+  const flushEdits = useCallback(async () => {
+    (document.activeElement as HTMLElement | null)?.blur?.();
+    await Promise.allSettled([...pendingSavesRef.current]);
+    return dirtyIdsRef.current.size === 0;
+  }, []);
+
+  // Anything that remounts the rows (page, filters) must not drop an edit.
+  const guarded = useCallback(async (action: () => void) => {
+    if (await flushEdits()) {
+      action();
+    } else {
+      notifications.show({
+        color: 'orange',
+        title: 'Unsaved edits',
+        message: 'Some edits could not be saved yet — fix or retry before changing the view.',
+      });
+    }
+  }, [flushEdits]);
+
+  const goToPage = (next: number) => { void guarded(() => setPage(next)); };
+  const changeFilter = (apply: () => void) => {
+    void guarded(() => {
+      apply();
+      setPage(1);
+    });
+  };
+
+  async function handleClose() {
+    const clean = await flushEdits();
+    if (!clean && !discardArmedRef.current) {
+      // Keep the modal open once so a failed save isn't silently lost.
+      discardArmedRef.current = true;
+      notifications.show({
+        color: 'orange',
+        title: 'Unsaved edits',
+        message: 'Some edits could not be saved. Close again to discard them.',
+      });
+      return;
+    }
+    discardArmedRef.current = false;
+    dirtyIdsRef.current.clear();
+    setDirtyCount(0);
+    setPage(1);
     setIssuesOnly(false);
     setShowInfo(true);
     setShowResolved(false);
+    if (fileId !== null) {
+      // Pages are only a snapshot; reopening must start from the server.
+      queryClient.removeQueries({ queryKey: subtitleEventsKey(projectId, fileId) });
+    }
     onClose();
   }
+
+  const totalEvents = summary?.total_events ?? 0;
+  const filteredEvents = data?.filtered_events ?? 0;
+  const totalPages = data?.total_pages ?? 1;
+  const rangeStart = rows.length > 0 && data ? (data.page - 1) * data.page_size + 1 : 0;
+  const rangeEnd = rows.length > 0 ? rangeStart + rows.length - 1 : 0;
+  const unresolvedCount = summary?.unresolved_issue_count ?? 0;
+  const cpsLimit = summary?.cps_limit ?? Number.POSITIVE_INFINITY;
 
   return (
     <Modal
       opened={opened}
-      onClose={handleClose}
+      onClose={() => { void handleClose(); }}
       title={
         <Group gap="xs">
           <NotePencil size={18} />
@@ -513,6 +605,16 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
           {file && <Text size="sm" c="dimmed">{file.filename}</Text>}
           {dirtyCount > 0 && <Badge size="sm" color="orange" variant="light">{dirtyCount} unsaved</Badge>}
           {unresolvedCount > 0 && <Badge size="sm" color="red" variant="light">{unresolvedCount} issues</Badge>}
+          {watchedWords.length > 0 && summary && (
+            <Badge
+              size="sm"
+              color="yellow"
+              variant="light"
+              title="Watched-word matches across the whole file"
+            >
+              Watched {summary.watched_occurrences}
+            </Badge>
+          )}
         </Group>
       }
       size="95%"
@@ -522,9 +624,9 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
         inner: { padding: '2vh 2vw' },
       }}
     >
-      {isLoading ? (
+      {isLoading || !data || !summary ? (
         <Center py="xl"><Loader size="sm" /></Center>
-      ) : rows.length === 0 ? (
+      ) : totalEvents === 0 ? (
         <Center py="xl">
           <Group gap="xs">
             <WarningCircle size={16} />
@@ -536,7 +638,10 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
           <Group justify="space-between" gap="sm">
             <Group gap="xs" wrap="nowrap" style={{ minWidth: 0, flex: 1 }}>
               <Text size="xs" c="dimmed" style={{ flexShrink: 0 }}>
-                Showing {visibleRows.length} of {rows.length} events
+                {filteredEvents === 0
+                  ? `No matching events (of ${totalEvents})`
+                  : `Showing ${rangeStart}–${rangeEnd} of ${filteredEvents} events`
+                    + (filteredEvents !== totalEvents ? ` (${totalEvents} in file)` : '')}
               </Text>
               {issueSummary.length > 0 && (
                 <Group gap={4} wrap="nowrap" style={{ minWidth: 0, overflow: 'hidden' }}>
@@ -560,62 +665,85 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
                 size="xs"
                 checked={showInfo}
                 label="Info"
-                onChange={(e) => setShowInfo(e.currentTarget.checked)}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  changeFilter(() => setShowInfo(checked));
+                }}
               />
               <Checkbox
                 size="xs"
                 checked={showResolved}
                 label="Resolved issues"
-                onChange={(e) => setShowResolved(e.currentTarget.checked)}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  changeFilter(() => setShowResolved(checked));
+                }}
               />
               <Checkbox
                 size="xs"
                 checked={issuesOnly}
                 label="Show only events with issues"
-                onChange={(e) => setIssuesOnly(e.currentTarget.checked)}
+                onChange={(e) => {
+                  const checked = e.currentTarget.checked;
+                  changeFilter(() => setIssuesOnly(checked));
+                }}
               />
             </Group>
           </Group>
 
-          {visibleRows.length === 0 ? (
+          {rows.length === 0 ? (
             <Center h="70vh">
               <Text size="sm" c="dimmed">No events with unresolved issues.</Text>
             </Center>
           ) : (
-            <ScrollArea h="70vh" type="auto">
-              <Table striped highlightOnHover withColumnBorders style={{ tableLayout: 'fixed' }}>
+            <ScrollArea h="70vh" type="auto" viewportRef={scrollViewport}>
+              <Table
+                striped
+                highlightOnHover
+                withColumnBorders
+                style={{ tableLayout: 'fixed', opacity: isPlaceholderData ? 0.6 : 1 }}
+              >
                 <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'var(--mantine-color-dark-7)' }}>
                   <Table.Tr>
                     <Table.Th style={{ width: 160 }}>Event</Table.Th>
                     <Table.Th style={{ width: '28%' }}>English text</Table.Th>
                     <Table.Th style={{ width: '28%' }}>Translation</Table.Th>
+                    <Table.Th style={{ width: 64, textAlign: 'center' }}>CPS</Table.Th>
                     <Table.Th>Issues</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
-                  {visibleRows.map((row) => (
-                    drafts[row.id] ? (
-                      <SubtitleRow
-                        key={row.id}
-                        row={row}
-                        draft={drafts[row.id]}
-                        originalWatchedWords={watchedWordsByType.original}
-                        translatedWatchedWords={watchedWordsByType.translated}
-                        resolvingIssueId={resolvingIssueId}
-                        saving={savingEventId === row.id}
-                        reverting={revertingEventId === row.id}
-                        showInfo={showInfo}
-                        showResolved={showResolved}
-                        onChange={handleDraftChange}
-                        onBlurSave={handleBlurSave}
-                        onRevert={handleRevert}
-                        onResolve={handleResolve}
-                      />
-                    ) : null
+                  {rows.map((row) => (
+                    <SubtitleRow
+                      key={row.id}
+                      row={row}
+                      cpsLimit={cpsLimit}
+                      originalWatchedWords={watchedWordsByType.original}
+                      translatedWatchedWords={watchedWordsByType.translated}
+                      showInfo={showInfo}
+                      showResolved={showResolved}
+                      onSave={handleSave}
+                      onRevert={handleRevert}
+                      onResolve={handleResolve}
+                      onDirtyChange={handleDirtyChange}
+                    />
                   ))}
                 </Table.Tbody>
               </Table>
             </ScrollArea>
+          )}
+
+          {totalPages > 1 && (
+            <Group justify="space-between" gap="sm">
+              <Text size="xs" c="dimmed">Page {data.page} of {totalPages}</Text>
+              <Pagination
+                size="xs"
+                total={totalPages}
+                value={data.page}
+                onChange={goToPage}
+                withEdges
+              />
+            </Group>
           )}
         </Stack>
       )}

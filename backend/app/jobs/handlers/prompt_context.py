@@ -19,6 +19,7 @@ from app.db.models import (
     SubtitleEvent,
 )
 from app.jobs.handlers.style_store import canonical_address_pairs
+from app.subs.readability import char_budget as _char_budget
 from app.subs.tag_masking import plain_text
 
 # AniDB character_type values that denote non-speaking "characters"
@@ -110,14 +111,14 @@ def build_lookahead_lines(events: list[SubtitleEvent]) -> list[str]:
 # readability check flag real CPS problems after the fact.
 MIN_CHAR_BUDGET = 10
 
-# The budget floors at the source's own length (times this ratio) rather
-# than the raw CPS number, so a line never gets instructed to shrink below
-# what the English original already carried in the same slot. If the source
-# itself was timed at or above the CPS limit, that's a timing quirk of this
-# event (often a sentence split across several short events), not evidence
-# the content needs cutting — Czech shouldn't be forced shorter than English
-# was. Kept under 1.0 so it never mandates expansion on its own.
-SOURCE_FLOOR_RATIO = 0.9
+# The budget floors at the source's own length (see
+# readability.SOURCE_FLOOR_RATIO) rather than the raw CPS number, so a line
+# never gets instructed to shrink below what the English original already
+# carried in the same slot. If the source itself was timed at or above the
+# CPS limit, that's a timing quirk of this event (often a sentence split
+# across several short events), not evidence the content needs cutting —
+# Czech shouldn't be forced shorter than English was. Kept under 1.0 so it
+# never mandates expansion on its own.
 
 
 def char_budget(
@@ -127,15 +128,11 @@ def char_budget(
     or None when the duration makes the number meaningless.
 
     When source_text is given, the result is never stricter than the
-    source's own length (see SOURCE_FLOOR_RATIO) — see module note above.
+    source's own length — see module note above.
     """
-    duration_ms = end_ms - start_ms
-    if duration_ms <= 0:
+    budget = _char_budget(start_ms, end_ms, cps_limit, source_text)
+    if budget is None:
         return None
-    budget = int(cps_limit * duration_ms / 1000.0)
-    if source_text:
-        source_floor = int(len(plain_text(source_text)) * SOURCE_FLOOR_RATIO)
-        budget = max(budget, source_floor)
     return budget if budget >= MIN_CHAR_BUDGET else None
 
 

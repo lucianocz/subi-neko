@@ -204,7 +204,33 @@ export interface SubtitleEventEditorRow {
   is_user_edited: boolean;
   is_locked: boolean;
   is_approved: boolean;
+  /** Raw (unrounded) reading speed from the backend; null when unavailable. */
+  cps: number | null;
   issues: QaIssue[];
+}
+
+export interface SubtitleEventsIssueCount {
+  qa_type: string;
+  severity: string;
+  count: number;
+}
+
+export interface SubtitleEventsSummary {
+  total_events: number;
+  unresolved_issue_count: number;
+  issue_counts: SubtitleEventsIssueCount[];
+  watched_occurrences: number;
+  cps_limit: number;
+}
+
+export interface SubtitleEventPage {
+  items: SubtitleEventEditorRow[];
+  page: number;
+  page_size: number;
+  filtered_events: number;
+  total_events: number;
+  total_pages: number;
+  summary: SubtitleEventsSummary;
 }
 
 // ─── Characters & Speakers ───────────────────────────────────────────────────
