@@ -10,8 +10,10 @@ from sqlalchemy import select
 from app.core.database import AsyncSessionLocal
 from app.db.models import JobRecord, Project, ProjectStatus
 
+from app.ws.connection_manager import connection_manager
 from app.orchestrator.project_orchestrator import orchestrate_project
 from app.orchestrator.file_orchestrator import orchestrate_file
+from app.orchestrator.publish import PUBLISH_JOB_TYPE, reconcile_publish_state
 
 logger = logging.getLogger(__name__)
 
@@ -67,9 +69,26 @@ async def orchestrate_on_job_complete(
             job_id, project_id, file_id,
         )
 
+    if job_type == PUBLISH_JOB_TYPE:
+        # The handler records its own outcome; this only catches a run that
+        # died without doing so (never retries — the user clicks Publish again).
+        try:
+            await reconcile_publish_state()
+        except Exception:
+            logger.exception("Publish reconciliation failed after job id=%d", job_id)
+
 
 async def sweep_all_projects(enqueue_fn: EnqueueFn) -> None:
-    """Periodic safety sweep — find all active projects and orchestrate them."""
+    """Periodic safety sweep — find all active projects and orchestrate them.
+
+    Publishing is never started here: the sweep only reconciles a publish run
+    that died without recording its outcome (output is explicit-only)."""
+    try:
+        for pid in await reconcile_publish_state():
+            await connection_manager.broadcast("project_updated", {"project_id": pid})
+    except Exception:
+        logger.exception("Sweep: publish reconciliation failed")
+
     async with AsyncSessionLocal() as session:
         project_ids = (await session.scalars(
             select(Project.id).where(

@@ -44,7 +44,7 @@ def _add_event(session, file_id: int, line_index: int, source: str,
                user_edited: bool = False, approved: bool = False) -> SubtitleEvent:
     e = SubtitleEvent(
         file_id=file_id, line_index=line_index, event_type="dialogue",
-        content_type=content_type, layer=0, start_ms=0, end_ms=2000,
+        content_type=content_type, layer=0, start_ms=0, end_ms=2000, original_start_ms=0, original_end_ms=2000,
         style="Default", source_text=source, translated_text=translated,
         translation_status="translated",
         is_user_edited=1 if user_edited else 0,

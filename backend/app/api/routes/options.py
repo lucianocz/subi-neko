@@ -3,6 +3,7 @@ from typing import Annotated
 from fastapi import APIRouter, Body
 
 from app.db import options as options_store
+from app.ws.connection_manager import connection_manager
 
 router = APIRouter(prefix="/options", tags=["options"])
 
@@ -73,3 +74,6 @@ async def patch_options(
             if value == _mask_secret(current):
                 continue  # round-tripped mask — not a new secret
         await options_store.aset(key, value or None)
+    # Output-affecting options (fonts, target language) invalidate every
+    # project's published output; let open clients refetch the OUTPUT card.
+    await connection_manager.broadcast("project_updated", {})

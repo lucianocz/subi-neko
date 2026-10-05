@@ -1,0 +1,300 @@
+.qc-root {
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--mantine-color-body);
+  color: var(--mantine-color-text);
+  overflow: hidden;
+}
+
+.qc-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  min-height: 44px;
+}
+
+.qc-body {
+  flex: 1 1 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: row;
+}
+
+.qc-left {
+  display: flex;
+  flex-direction: column;
+  min-width: 420px;
+  min-height: 0;
+  position: relative;
+}
+
+.qc-right {
+  flex: 1 1 0;
+  min-width: 340px;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.qc-video-pane {
+  min-height: 180px;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.qc-detail-pane {
+  flex: 1 1 0;
+  min-height: 140px;
+  overflow: auto;
+  padding: 10px 12px;
+}
+
+/* JASSUB inserts its canvas right after the <video>, absolutely positioned. */
+.qc-video-wrap {
+  position: relative;
+  flex: 1 1 0;
+  min-height: 0;
+  background: #000;
+}
+
+.qc-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+/* Fullscreen target is the wrapper so the JASSUB canvas stays in the subtree.
+   The <video> keeps filling it with object-fit: contain, so the canvas (sized by
+   JASSUB to the displayed video rectangle) stays aligned inside the letterbox. */
+.qc-video-wrap:fullscreen {
+  width: 100vw;
+  height: 100vh;
+  background: #000;
+}
+
+.qc-fullscreen-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  z-index: 2;
+  opacity: 0.55;
+  transition: opacity 120ms;
+}
+
+.qc-video-wrap:hover .qc-fullscreen-btn,
+.qc-fullscreen-btn:focus-visible {
+  opacity: 1;
+}
+
+.qc-splitter {
+  flex: 0 0 auto;
+  background: var(--mantine-color-default-border);
+  position: relative;
+  touch-action: none;
+  z-index: 3;
+}
+
+.qc-splitter::after {
+  content: '';
+  position: absolute;
+}
+
+.qc-splitter-h {
+  width: 5px;
+  cursor: col-resize;
+}
+
+.qc-splitter-h::after {
+  inset: 0 -4px;
+}
+
+.qc-splitter-v {
+  height: 5px;
+  cursor: row-resize;
+}
+
+.qc-splitter-v::after {
+  inset: -4px 0;
+}
+
+.qc-splitter:hover,
+.qc-splitter:focus-visible,
+.qc-splitter[data-dragging='true'] {
+  background: var(--mantine-primary-color-filled);
+  outline: none;
+}
+
+/* Don't let the <video>/iframes steal pointer events mid-drag. */
+.qc-root[data-dragging='true'] {
+  user-select: none;
+}
+
+.qc-root[data-dragging='true'] video {
+  pointer-events: none;
+}
+
+.qc-list {
+  flex: 1 1 0;
+  min-height: 0;
+  overflow-y: auto;
+  position: relative;
+  outline: none;
+  contain: strict;
+}
+
+.qc-row {
+  position: absolute;
+  left: 0;
+  right: 0;
+  padding: 4px 10px 4px 12px;
+  box-sizing: border-box;
+  border-bottom: 1px solid var(--mantine-color-default-border);
+  cursor: default;
+  overflow: hidden;
+  border-left: 4px solid transparent;
+}
+
+.qc-row[data-watched='true'] {
+  background: var(--qc-watched-bg);
+}
+
+.qc-row:hover {
+  background: var(--mantine-color-default-hover);
+}
+
+/* ACTIVE = on screen at the playhead: filled background + blue left bar. */
+.qc-row[data-active='true'] {
+  background: var(--mantine-color-blue-light);
+  border-left-color: var(--mantine-color-blue-filled);
+}
+
+/* SELECTED = the row shown in the detail panel: accent outline. Independent of
+   active; a row can be both (fill + outline). */
+.qc-row[data-selected='true'] {
+  box-shadow: inset 0 0 0 2px var(--mantine-primary-color-filled);
+}
+
+.qc-row[data-hidden='true'] {
+  opacity: 0.55;
+}
+
+.qc-row[data-hidden='true'] .qc-row-text {
+  text-decoration: line-through;
+}
+
+.qc-row-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 18px;
+  font-size: 11px;
+  line-height: 18px;
+  color: var(--mantine-color-dimmed);
+  white-space: nowrap;
+}
+
+.qc-row-time {
+  font-family: var(--mantine-font-family-monospace);
+}
+
+.qc-row-text {
+  font-size: 13px;
+  line-height: 18px;
+  height: 18px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qc-row-source {
+  font-size: 11px;
+  line-height: 16px;
+  height: 16px;
+  color: var(--mantine-color-dimmed);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qc-empty-text {
+  font-style: italic;
+  color: var(--mantine-color-dimmed);
+}
+
+/* Detail editor */
+.qc-detail-text textarea {
+  font-family: var(--mantine-font-family);
+  font-size: 14px;
+  line-height: 1.35;
+}
+
+.qc-time-input input {
+  font-family: var(--mantine-font-family-monospace);
+  width: 124px;
+}
+
+/* Detail panel: two columns when the panel itself is wide enough (container query,
+   so it follows the resizable workspace rather than the viewport). */
+.qc-detail-wrap {
+  container-type: inline-size;
+}
+
+.qc-detail-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 10px 16px;
+}
+
+.qc-detail-main {
+  min-width: 0;
+}
+
+@container (min-width: 560px) {
+  .qc-detail-grid {
+    grid-template-columns: minmax(0, 7fr) minmax(190px, 3fr);
+  }
+}
+
+.qc-source-text textarea {
+  background: var(--mantine-color-gray-light);
+  color: var(--mantine-color-dimmed);
+  cursor: text;
+}
+
+.qc-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+  padding: 4px 10px;
+  border: 1px solid var(--mantine-color-default-border);
+  border-radius: var(--mantine-radius-sm);
+  align-self: start;
+}
+
+.qc-meta-row {
+  display: grid;
+  grid-template-columns: 6.5em minmax(0, 1fr);
+  align-items: baseline;
+  column-gap: 8px;
+  min-width: 0;
+}
+
+.qc-meta-value {
+  overflow-wrap: anywhere;
+}
+
+.qc-meta-sep {
+  width: 100%;
+  margin: 3px 0;
+  border: 0;
+  border-top: 1px solid var(--mantine-color-default-border);
+}

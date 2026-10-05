@@ -11,3 +11,5 @@ pysubs2==1.7.3
 openai==1.78.0
 httpx==0.28.1
 rapidfuzz==3.13.0
+fonttools==4.66.1
+brotli==1.2.0

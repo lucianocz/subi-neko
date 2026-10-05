@@ -80,7 +80,8 @@ def _seed(factory, *, status="processing", polished=False, ai_text="Ahoj", confi
         session.flush()
         session.add(SubtitleEvent(
             file_id=file.id, line_index=0, event_type="dialogue", layer=0, start_ms=0,
-            end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj",
+            end_ms=1000,
+            original_start_ms=0, original_end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj",
             original_ai_translated_text=ai_text, translation_status="translated",
             translation_confidence=confidence, created_at=_now(), updated_at=_now(),
         ))

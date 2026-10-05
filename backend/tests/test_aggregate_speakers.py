@@ -53,6 +53,7 @@ def _make_project_with_events(factory, now, dialogue_specs):
                 layer=0,
                 start_ms=i * 1000,
                 end_ms=i * 1000 + 500,
+                original_start_ms=i * 1000, original_end_ms=i * 1000 + 500,
                 style="Default",
                 name=name,
                 source_text=f"Line {i}",

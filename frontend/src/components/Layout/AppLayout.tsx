@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   ActionIcon,
   AppShell,
@@ -35,6 +36,7 @@ import {
   Gear,
   Info,
   ListChecks,
+  FilmSlate,
   MinusCircle,
   NotePencil,
   Pause,
@@ -557,6 +559,12 @@ function FileRow({
       || file.status === 'review_required'
       || file.status === 'accepted'
       || file.status === 'completed';
+  // Final QC entry: the backend's derived `qc_available` is authoritative; the only
+  // frontend guard is "has chunks" — a file with none has never entered the
+  // translation pipeline (nothing translated to review), so opening QC is useless.
+  // Deliberately independent of file status (QC does not require ACCEPTED).
+  const showQcButton = file.qc_available && (file.chunks_total ?? 0) > 0;
+  const navigate = useNavigate();
   const acceptReview = useAcceptFileReview(projectId);
   const translateFile = useTranslateFile(projectId);
   const showAcceptButton = file.status === 'review_required';
@@ -579,7 +587,7 @@ function FileRow({
     <>
       <Table.Tr style={{ cursor: 'pointer' }} onClick={() => onToggleExpanded(file.id)}>
         <Table.Td>
-          <Text size="sm" truncate>{file.filename}</Text>
+          <Text size="sm" truncate title={file.filename}>{file.filename}</Text>
         </Table.Td>
         <Table.Td>
           {file.last_error_code ? (
@@ -606,7 +614,7 @@ function FileRow({
         <Table.Td>
           <FileIssuesCell file={file} />
         </Table.Td>
-        <Table.Td style={{ width: 224, textAlign: 'right', minHeight: '45px', height: '45px' }}>
+        <Table.Td style={{ width: 340, textAlign: 'right', minHeight: '45px', height: '45px' }}>
           <Group gap={6} justify="flex-end" wrap="nowrap">
             {showTranslateButton && (
               <Tooltip
@@ -664,6 +672,21 @@ function FileRow({
                 }}
               >
                 Accept
+              </Button>
+            )}
+            {showQcButton && (
+              <Button
+                size="xs"
+                variant="light"
+                color="pink"
+                leftSection={<FilmSlate size={13} />}
+                title="Final QC: review the translation against the video"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  navigate(`/projects/${projectId}/files/${file.id}/qc`);
+                }}
+              >
+                Final QC
               </Button>
             )}
             {showEditButton && (
@@ -1183,16 +1206,16 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
         ) : files.length === 0 ? (
           <Text size="sm" c="dimmed">No files discovered yet.</Text>
         ) : (
-          <Table striped highlightOnHover style={{ minWidth: 1150, tableLayout: 'fixed' }}>
+          <Table striped highlightOnHover style={{ minWidth: 1296, tableLayout: 'fixed' }}>
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Filename</Table.Th>
                 <Table.Th style={{ width: 100 }}>Chunks</Table.Th>
-                <Table.Th style={{ width: 150 }}>Status</Table.Th>
+                <Table.Th style={{ width: 180 }}>Status</Table.Th>
                 <Table.Th style={{ width: 100 }}>Format</Table.Th>
                 <Table.Th style={{ width: 160 }}>Updated</Table.Th>
                 <Table.Th style={{ width: 80 }}>Issues</Table.Th>
-                <Table.Th style={{ width: 224 }} />
+                <Table.Th style={{ width: 340 }} />
                 <Table.Th style={{ width: 28, textAlign: 'center' }}>
                   <ActionIcon
                     size="xs"
@@ -1235,11 +1258,17 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
 
 export function AppLayout() {
   const { data: projects = [], isLoading } = useProjects();
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(null);
+  // `?project=<id>` lets sub-pages (Final QC "Back") return to a specific project.
+  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() => {
+    const id = Number(new URLSearchParams(window.location.search).get('project'));
+    return Number.isInteger(id) && id > 0 ? id : null;
+  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const effectiveId = selectedProjectId ?? projects[0]?.id ?? null;
+  const effectiveId = projects.some((p) => p.id === selectedProjectId)
+    ? selectedProjectId
+    : projects[0]?.id ?? null;
   const selectedProject = projects.find((p) => p.id === effectiveId) ?? null;
 
   return (

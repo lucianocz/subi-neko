@@ -70,7 +70,10 @@ async def orchestrate_file(file_id: int, enqueue_fn: EnqueueFn) -> None:
     elif status == FileStatus.REVIEW_REQUIRED.value:
         await _handle_review_required(file_id, project.id, enqueue_fn)
     elif status == FileStatus.MUXING.value:
-        await _handle_muxing(file_id, project.id, enqueue_fn)
+        # Retired status (output is a project-level, explicit Publish now):
+        # nothing produces it, but heal a stray row back to the accepted state
+        # it really represents instead of leaving it parked.
+        await _set_file_status(file_id, FileStatus.ACCEPTED.value, None)
 
 
 # ------------------------------------------------------------------
@@ -240,9 +243,9 @@ async def _handle_chunks_result(
         return
 
     # All chunks complete — risk-based acceptance:
-    #   fully_clean (default): auto-mux when zero unresolved QA items of ANY
+    #   fully_clean (default): auto-accept when zero unresolved QA items of ANY
     #                          severity remain; anything flagged → human review
-    #   no_blockers:           auto-mux unless a blocker-severity item remains
+    #   no_blockers:           auto-accept unless a blocker-severity item remains
     #   manual:                always require an explicit accept
     policy = (await options_store.aget("AUTO_ACCEPT_POLICY", "fully_clean") or "fully_clean").strip().lower()
     if policy in ("fully_clean", "no_blockers"):
@@ -270,8 +273,9 @@ async def _handle_chunks_result(
 async def finalize_accepted_file(file_id: int, project_id: int, enqueue_fn: EnqueueFn) -> None:
     """Shared acceptance path (auto-accept and the accept endpoint): the
     translations are final — feed them into the translation memory, let the
-    style bible learn from the episode, and mark the file accepted. Output is
-    released for the whole project only after every file has been accepted.
+    style bible learn from the episode, and mark the file accepted. Acceptance
+    never produces output: once every file is accepted the project's output
+    state becomes READY and the user publishes explicitly (orchestrator/publish).
     TM/bible steps are best-effort and never block the acceptance."""
     try:
         written = await asyncio.to_thread(_populate_translation_memory_sync, project_id, file_id)
@@ -300,42 +304,7 @@ async def finalize_accepted_file(file_id: int, project_id: int, enqueue_fn: Enqu
         file.updated_at = now
         await session.commit()
 
-        # MUXING/COMPLETED count as already accepted for compatibility with a
-        # project that was partially output before this barrier was introduced.
-        awaiting_acceptance = await session.scalar(
-            select(func.count())
-            .select_from(File)
-            .where(
-                File.project_id == project_id,
-                File.status.notin_([
-                    FileStatus.ACCEPTED.value,
-                    FileStatus.MUXING.value,
-                    FileStatus.COMPLETED.value,
-                ]),
-            )
-        )
-        if awaiting_acceptance:
-            logger.info(
-                "File id=%d accepted; project id=%d still has %d file(s) awaiting acceptance",
-                file_id, project_id, awaiting_acceptance,
-            )
-            return
-
-        accepted_files = list((await session.scalars(
-            select(File).where(
-                File.project_id == project_id,
-                File.status == FileStatus.ACCEPTED.value,
-            )
-        )).all())
-        for accepted_file in accepted_files:
-            accepted_file.status = FileStatus.MUXING.value
-            accepted_file.updated_at = now
-        await session.commit()
-
-    logger.info(
-        "All files accepted for project id=%d; released %d file(s) for muxing",
-        project_id, len(accepted_files),
-    )
+    logger.info("File id=%d accepted (project id=%d)", file_id, project_id)
 
 
 def _populate_translation_memory_sync(project_id: int, file_id: int) -> int:
@@ -357,42 +326,6 @@ async def _handle_review_required(
         FileStatus.REVIEW_REQUIRED.value,
         FileBlockingReason.USER_REVIEW_REQUIRED.value,
     )
-
-
-async def _handle_muxing(file_id: int, project_id: int, enqueue_fn: EnqueueFn) -> None:
-    render_key = f"render_output_ass:{file_id}"
-    mux_key = f"mux_output_mkv:{file_id}"
-
-    async with AsyncSessionLocal() as session:
-        render_done = await session.scalar(
-            select(func.count())
-            .select_from(JobRecord)
-            .where(
-                JobRecord.dedupe_key == render_key,
-                JobRecord.status == JobStatus.COMPLETED.value,
-            )
-        ) > 0
-
-        mux_done = await session.scalar(
-            select(func.count())
-            .select_from(JobRecord)
-            .where(
-                JobRecord.dedupe_key == mux_key,
-                JobRecord.status == JobStatus.COMPLETED.value,
-            )
-        ) > 0
-
-    if not render_done:
-        await _ensure_file_job(enqueue_fn, "render_output_ass", file_id, project_id)
-        return
-
-    if not mux_done:
-        await _ensure_file_job(enqueue_fn, "mux_output_mkv", file_id, project_id)
-        return
-
-    # mux handler sets file.status = completed, so if we get here
-    # the job completed but status wasn't updated — fix it
-    await _set_file_status(file_id, FileStatus.COMPLETED.value, None)
 
 
 # ------------------------------------------------------------------

@@ -60,6 +60,9 @@ async def db_session(monkeypatch):
     monkeypatch.setattr("app.orchestrator.file_orchestrator.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.orchestrator.project_orchestrator.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.orchestrator.context_status.AsyncSessionLocal", session_factory)
+    # orchestrate_on_job_complete looks the JobRecord up itself; without this it
+    # read the real config DB and passed only by coincidence.
+    monkeypatch.setattr("app.orchestrator.orchestrator.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.api.routes.projects.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.jobs.manager.AsyncSessionLocal", session_factory)
     monkeypatch.setattr("app.db.options.AsyncSessionLocal", session_factory)
@@ -308,6 +311,7 @@ async def _create_event(
         layer=0,
         start_ms=0,
         end_ms=1000,
+        original_start_ms=0, original_end_ms=1000,
         style="Default",
         source_text=source_text,
         translated_text=translated_text,
@@ -920,7 +924,8 @@ class TestFileOrchestrator:
     @pytest.mark.asyncio
     async def test_processing_all_chunks_complete_no_qa_auto_accepts(self, db_session, enqueue_mock, monkeypatch):
         """Default policy fully_clean: a file with zero unresolved QA items
-        of any severity auto-muxes without a human accept click."""
+        of any severity auto-accepts without a human accept click (and, like
+        every acceptance, starts no output)."""
         from app.orchestrator import file_orchestrator
         from app.orchestrator.file_orchestrator import orchestrate_file
 
@@ -934,11 +939,12 @@ class TestFileOrchestrator:
         await orchestrate_file(file.id, enqueue_mock)
 
         await db_session.refresh(file)
-        assert file.status == "muxing"
+        assert file.status == "accepted"
         assert file.blocking_reason is None
-        # Acceptance feeds the style bible; muxing enqueues render next pass.
+        # Acceptance feeds the style bible; it never starts output.
         job_types = [c.kwargs["job_type"] for c in enqueue_mock.call_args_list]
         assert "update_style_bible" in job_types
+        assert not {"render_output_ass", "mux_output_mkv", "publish_project"} & set(job_types)
 
     @pytest.mark.asyncio
     async def test_auto_accept_waits_for_other_project_files(
@@ -1013,7 +1019,7 @@ class TestFileOrchestrator:
         await orchestrate_file(file.id, enqueue_mock)
 
         await db_session.refresh(file)
-        assert file.status == "muxing"
+        assert file.status == "accepted"
 
     @pytest.mark.asyncio
     async def test_processing_all_chunks_complete_with_qa_sets_review(self, db_session, enqueue_mock):
@@ -1081,7 +1087,7 @@ class TestFileOrchestrator:
         assert files[0].qa_issues == 2
 
     @pytest.mark.asyncio
-    async def test_accept_file_review_with_zero_qa_sets_muxing(self, db_session, enqueue_mock):
+    async def test_accept_file_review_with_zero_qa_sets_accepted(self, db_session, enqueue_mock):
         from app.api.routes.projects import accept_file_review
         import unittest.mock as mock
 
@@ -1094,6 +1100,7 @@ class TestFileOrchestrator:
         )
 
         with mock.patch("app.api.routes.projects.orchestrate_file") as mock_orchestrate, \
+             mock.patch("app.api.routes.projects.orchestrate_project"), \
              mock.patch("app.orchestrator.file_orchestrator._populate_translation_memory_sync",
                         return_value=0) as mock_tm, \
              mock.patch("app.api.routes.projects.job_manager") as mock_manager:
@@ -1101,8 +1108,8 @@ class TestFileOrchestrator:
             result = await accept_file_review(project.id, file.id)
 
         await db_session.refresh(file)
-        assert result.status == "muxing"
-        assert file.status == "muxing"
+        assert result.status == "accepted"
+        assert file.status == "accepted"
         assert file.blocking_reason is None
         mock_orchestrate.assert_called_once()
         # Accepting feeds the TM and schedules the style bible update.
@@ -1110,7 +1117,7 @@ class TestFileOrchestrator:
         assert mock_manager.enqueue.call_args.kwargs["job_type"] == "update_style_bible"
 
     @pytest.mark.asyncio
-    async def test_final_accept_releases_all_project_files_for_muxing(
+    async def test_final_accept_leaves_files_accepted_and_starts_no_output(
         self, db_session, enqueue_mock
     ):
         import unittest.mock as mock
@@ -1125,6 +1132,7 @@ class TestFileOrchestrator:
             blocking_reason="user_review_required", relative_path="e2.mkv")
 
         with mock.patch("app.api.routes.projects.orchestrate_file"), \
+             mock.patch("app.api.routes.projects.orchestrate_project"), \
              mock.patch("app.orchestrator.file_orchestrator._populate_translation_memory_sync",
                         return_value=0), \
              mock.patch("app.api.routes.projects.job_manager") as mock_manager:
@@ -1136,18 +1144,18 @@ class TestFileOrchestrator:
             assert first_result.status == "accepted"
             assert first.status == "accepted"
             assert second.status == "review_required"
-            assert all(
-                call.kwargs["job_type"] not in ("render_output_ass", "mux_output_mkv")
-                for call in mock_manager.enqueue.call_args_list
-            )
 
             second_result = await accept_file_review(project.id, second.id)
 
         await db_session.refresh(first)
         await db_session.refresh(second)
-        assert second_result.status == "muxing"
-        assert first.status == "muxing"
-        assert second.status == "muxing"
+        # Accepting the last file changes nothing but its own status...
+        assert second_result.status == "accepted"
+        assert first.status == "accepted"
+        assert second.status == "accepted"
+        # ...and enqueues no render/mux/publish job (only the style-bible updates).
+        job_types = [call.kwargs["job_type"] for call in mock_manager.enqueue.call_args_list]
+        assert set(job_types) == {"update_style_bible"}
 
     @pytest.mark.asyncio
     async def test_accept_file_review_rejects_unresolved_blockers(self, db_session, enqueue_mock):
@@ -1169,7 +1177,7 @@ class TestFileOrchestrator:
         assert exc_info.value.status_code == 409
 
     @pytest.mark.asyncio
-    async def test_accept_file_review_with_warnings_resolves_and_muxes(self, db_session, enqueue_mock):
+    async def test_accept_file_review_with_warnings_resolves_and_accepts(self, db_session, enqueue_mock):
         """Warnings no longer block acceptance; resolve_warnings marks them
         resolved as part of the accept."""
         import unittest.mock as mock
@@ -1185,6 +1193,7 @@ class TestFileOrchestrator:
         qa = await _create_qa_item(db_session, file.id, severity="warning", is_resolved=0)
 
         with mock.patch("app.api.routes.projects.orchestrate_file"), \
+             mock.patch("app.api.routes.projects.orchestrate_project"), \
              mock.patch("app.orchestrator.file_orchestrator._populate_translation_memory_sync",
                         return_value=0), \
              mock.patch("app.api.routes.projects.job_manager") as mock_manager:
@@ -1192,7 +1201,7 @@ class TestFileOrchestrator:
             result = await accept_file_review(
                 project.id, file.id, AcceptReviewIn(resolve_warnings=True))
 
-        assert result.status == "muxing"
+        assert result.status == "accepted"
         await db_session.refresh(qa)
         assert qa.is_resolved == 1
         assert qa.resolution_note == "accepted_with_file"
@@ -1260,25 +1269,20 @@ class TestFileOrchestrator:
         assert reverted.original_ai_translated_text == "AI text"
 
     @pytest.mark.asyncio
-    async def test_muxing_enqueues_render_then_mux(self, db_session, enqueue_mock):
+    async def test_legacy_muxing_file_heals_to_accepted_and_enqueues_nothing(
+        self, db_session, enqueue_mock
+    ):
+        """MUXING is a retired status: a stray row is healed, never muxed."""
         from app.orchestrator.file_orchestrator import orchestrate_file
 
         project = await _create_project(db_session, status="processing")
         file = await _create_file(db_session, project.id, status="muxing")
 
-        # First call: no render job → enqueue render
         await orchestrate_file(file.id, enqueue_mock)
-        call_kwargs = enqueue_mock.call_args.kwargs
-        assert call_kwargs["job_type"] == "render_output_ass"
 
-        # Simulate render completed
-        await _create_job(db_session, project.id, "render_output_ass",
-                         f"render_output_ass:{file.id}", status="completed", file_id=file.id)
-
-        enqueue_mock.reset_mock()
-        await orchestrate_file(file.id, enqueue_mock)
-        call_kwargs = enqueue_mock.call_args.kwargs
-        assert call_kwargs["job_type"] == "mux_output_mkv"
+        await db_session.refresh(file)
+        assert file.status == "accepted"
+        enqueue_mock.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_paused_file_no_action(self, db_session, enqueue_mock):
@@ -2430,8 +2434,6 @@ class TestFileActions:
             "plan_translation_chunks",
             "analyze_script",
             "translate_chunk",
-            "render_output_ass",
-            "mux_output_mkv",
             "compute_file_metrics",
             "update_style_bible",
         ):

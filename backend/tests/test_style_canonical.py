@@ -171,7 +171,8 @@ def _build(text_variant, **style_over):
     style = SubtitleStyle(project_id=1, source_style_hash="h", **row)
     subtitle = Subtitle(file_id=1)
     ev = SubtitleEvent(file_id=1, line_index=0, event_type="dialogue", layer=0, start_ms=0,
-                       end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj")
+                       end_ms=1000,
+                       original_start_ms=0, original_end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj")
     return build_ass(subtitle, [style], [ev], text_variant=text_variant).styles["Default"]
 
 
@@ -206,7 +207,8 @@ def _repl_style(**over) -> SubtitleStyle:
 def _render(style, variant, enabled):
     subtitle = Subtitle(file_id=1)
     ev = SubtitleEvent(file_id=1, line_index=0, event_type="dialogue", layer=0, start_ms=0,
-                       end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj")
+                       end_ms=1000,
+                       original_start_ms=0, original_end_ms=1000, style="Default", source_text="Hi", translated_text="Ahoj")
     st = build_ass(subtitle, [style], [ev], text_variant=variant,
                    use_font_replacements=enabled).styles["Default"]
     return st.fontname, st.fontsize
@@ -219,7 +221,8 @@ def test_option_defaults_to_enabled_when_missing():  # A
     # build_ass itself defaults to the legacy (enabled) behavior
     style = _repl_style(replacement_font_name="Noto Sans", replacement_font_size=30.0)
     ev = SubtitleEvent(file_id=1, line_index=0, event_type="dialogue", layer=0, start_ms=0,
-                       end_ms=1000, style="Default", source_text="Hi")
+                       end_ms=1000,
+                       original_start_ms=0, original_end_ms=1000, style="Default", source_text="Hi")
     st = build_ass(Subtitle(file_id=1), [style], [ev], text_variant="translated").styles["Default"]
     assert (st.fontname, st.fontsize) == ("Noto Sans", 30.0)
 
@@ -256,8 +259,8 @@ def test_both_translated_paths_pass_the_option():
     """Download route and render job must both forward the option to build_ass."""
     import inspect
     from app.api.routes import projects
-    from app.jobs.handlers import render_output_ass
-    for mod in (projects, render_output_ass):
+    from app.jobs.handlers import publish_project
+    for mod in (projects, publish_project):
         assert "use_font_replacements=" in inspect.getsource(mod)
 
 
@@ -275,7 +278,7 @@ def test_event_style_references_are_unchanged_by_sharing(session_factory):  # J
             s.add(subtitle)
             for i, name in enumerate(names):
                 s.add(SubtitleEvent(file_id=fid, line_index=i, event_type="dialogue", layer=0,
-                                    start_ms=i * 1000, end_ms=i * 1000 + 900, style=name,
+                                    start_ms=i * 1000, end_ms=i * 1000 + 900, original_start_ms=i * 1000, original_end_ms=i * 1000 + 900, style=name,
                                     source_text="x", created_at=_now(), updated_at=_now()))
         s.commit()
 

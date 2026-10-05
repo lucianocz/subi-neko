@@ -35,11 +35,11 @@ CONTENT_CYCLE = ["dialogue", "sign", "song", "karaoke", "other"]
 
 async def _add_event(
     session, file_id, line_index, *, source="Hello", translated="Ahoj", ai="Ahoj",
-    start_ms=0, end_ms=1000, content_type="dialogue", event_type="dialogue",
+    start_ms=0, end_ms=1000, original_start_ms=0, original_end_ms=1000, content_type="dialogue", event_type="dialogue",
 ) -> SubtitleEvent:
     event = SubtitleEvent(
         file_id=file_id, line_index=line_index, event_type=event_type,
-        content_type=content_type, layer=0, start_ms=start_ms, end_ms=end_ms,
+        content_type=content_type, layer=0, start_ms=start_ms, end_ms=end_ms, original_start_ms=start_ms, original_end_ms=end_ms,
         style="Default", source_text=source, translated_text=translated,
         original_ai_translated_text=ai, translation_status="translated",
         created_at=NOW, updated_at=NOW,

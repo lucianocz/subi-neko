@@ -56,14 +56,14 @@ def _seed(session_factory, *, status: str = "final_reviewed") -> tuple[int, int,
         events = [
             SubtitleEvent(
                 file_id=file.id, line_index=10, event_type="dialogue", content_type="dialogue",
-                layer=0, start_ms=0, end_ms=1000, style="Default", name="ALICE",
+                layer=0, start_ms=0, end_ms=1000, original_start_ms=0, original_end_ms=1000, style="Default", name="ALICE",
                 source_text="I did not do it.", translated_text="Já jsem to udělala.",
                 original_ai_translated_text="Starší verze", translation_status="validated",
                 is_locked=1,
             ),
             SubtitleEvent(
                 file_id=file.id, line_index=11, event_type="dialogue", content_type="dialogue",
-                layer=0, start_ms=1000, end_ms=2000, style="Default", name="BOB",
+                layer=0, start_ms=1000, end_ms=2000, original_start_ms=1000, original_end_ms=2000, style="Default", name="BOB",
                 source_text="Believe me.", translated_text="Věř mi.",
                 original_ai_translated_text="Jiný koncept", translation_status="validated",
                 is_user_edited=1,

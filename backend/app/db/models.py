@@ -24,6 +24,10 @@ class ProjectStatus(str, Enum):
 
 
 class FileStatus(str, Enum):
+    # MUXING / COMPLETED belong to the retired automatic-output lifecycle: no
+    # code produces them any more (publishing is a project-level state, see
+    # Project.publish_state) and the publish-state migration converts legacy
+    # rows to ACCEPTED. The values stay so old data/history still deserializes.
     NEW = "new"
     DISCOVERING = "discovering"
     WAITING = "waiting"
@@ -44,7 +48,7 @@ class FileBlockingReason(str, Enum):
     ANALYSIS_FAILED = "analysis_failed"
     TRANSLATION_FAILED = "translation_failed"
     VALIDATION_FAILED = "validation_failed"
-    MUX_FAILED = "mux_failed"
+    MUX_FAILED = "mux_failed"  # legacy: publish failures live on Project.publish_*
     PAUSED = "paused"
 
 
@@ -96,6 +100,23 @@ class Project(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="new")
     is_paused: Mapped[bool] = mapped_column(Integer, nullable=False, server_default="0")
     context_approved_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # --- Output / publish lifecycle (see app/db/output_state.py) -------------
+    # output_revision identifies the current state of everything that feeds the
+    # final ASS/MKV; touch_output() bumps it. published_revision is the revision
+    # the last *successful* publish represented. The user-facing state (not_ready
+    # / ready / publishing / published / failed) is derived, never stored.
+    output_revision: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    published_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Last explicit publish run: None | publishing | published | failed.
+    publish_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    publish_error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    published_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Monotonic id of the latest Publish click: part of the job's dedupe key and
+    # a fence so a superseded run can never write the project's publish state.
+    publish_attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # output_revision the latest run captured (a failure only counts while it
+    # still matches the current revision).
+    publish_target_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -278,6 +299,12 @@ class SubtitleEvent(Base):
     layer: Mapped[int] = mapped_column(Integer, nullable=False)
     start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    # Immutable source timing, set once at extraction. start_ms/end_ms are the
+    # editable translated/QC timing; the source ASS is built from these two.
+    # Manual QC events have no source counterpart: original == current at
+    # creation (structural fallback only; they are excluded from the source ASS).
+    original_start_ms: Mapped[int] = mapped_column(Integer, nullable=False)
+    original_end_ms: Mapped[int] = mapped_column(Integer, nullable=False)
     style: Mapped[str] = mapped_column(Text, nullable=False)
     name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     margin_l: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
@@ -292,6 +319,11 @@ class SubtitleEvent(Base):
     is_user_edited: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     is_locked: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     is_approved: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Final-QC state. Hidden events are dropped from the *translated* ASS only;
+    # manual events are QC-created lines (fansub signs…) that exist only in the
+    # translated ASS. Both reset on full retranslate / re-extraction.
+    is_hidden: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    is_manual: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -644,3 +676,9 @@ class LlmCall(Base):
     latency_ms: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     error_code: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
+
+
+# Registers the session listener that bumps Project.output_revision. Imported
+# last: it needs the mapped classes above, and importing models anywhere (app,
+# alembic env, tests) must be enough to arm it.
+import app.db.output_state  # noqa: E402,F401

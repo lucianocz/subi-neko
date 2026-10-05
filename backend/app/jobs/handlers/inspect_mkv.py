@@ -10,6 +10,7 @@ from typing import Any
 from sqlalchemy.orm import selectinload
 
 from app.core.database import SyncSessionLocal
+from app.core.media_paths import resolve_source_path_parts
 from app.db.models import File
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
@@ -31,13 +32,6 @@ _SUBTITLE_FORMAT_BY_CODEC_ID = {
 # be part of the decision.
 _SIGNS_TRACK_NAME_RE = re.compile(r"sign|song|karaoke|lyric|typeset|forced", re.IGNORECASE)
 _FULL_TRACK_NAME_RE = re.compile(r"\bfull\b|dialog", re.IGNORECASE)
-
-
-def _safe_source_path(ctx: JobContext, source_directory: str, relative_path: str):
-    candidate = (ctx.import_root / source_directory / relative_path).resolve()
-    if not candidate.is_relative_to(ctx.import_root.resolve()):
-        raise ValueError(f"Resolved path {candidate} escapes import root")
-    return candidate
 
 
 def _track_rank(track: dict) -> tuple:
@@ -118,7 +112,9 @@ def inspect_mkv(
         relative_path = file.relative_path
 
     try:
-        source_path = _safe_source_path(ctx, source_directory, relative_path)
+        source_path = resolve_source_path_parts(
+            source_directory, relative_path,
+            import_root=ctx.import_root, must_exist=False)
     except ValueError as exc:
         return JobResult(status="failed", result=None,
                          error_code="INVALID_PATH", error_message=str(exc))

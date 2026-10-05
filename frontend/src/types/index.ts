@@ -14,6 +14,20 @@ export type SpeakerMappingStatus =
   | 'aggregated'
   | 'complete';
 
+/** Derived by the backend (see backend/app/db/output_state.py) — never recompute in the UI. */
+export type ProjectOutputState = 'not_ready' | 'ready' | 'publishing' | 'published' | 'failed';
+
+export interface ProjectOutput {
+  state: ProjectOutputState;
+  output_revision: number;
+  published_revision: number | null;
+  accepted_files: number;
+  total_files: number;
+  published_at: string | null;
+  /** Only set while state === 'failed'. */
+  error: string | null;
+}
+
 export interface Project {
   id: number;
   name: string;
@@ -26,6 +40,7 @@ export interface Project {
   context_approved_at: string | null;
   created_at: string;
   updated_at: string;
+  output: ProjectOutput;
 }
 
 // ─── Translation context (gate 1) ────────────────────────────────────────────
@@ -176,6 +191,8 @@ export interface VideoFile {
   qa_issues: number;
   qa_errors: number;
   qa_warnings: number;
+  /** Final QC is open: no incomplete chunk (backend-derived, authoritative). */
+  qc_available: boolean;
 }
 
 export interface QaIssue {

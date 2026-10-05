@@ -87,6 +87,7 @@ def _event(session, file_id: int, line: int, source: str, translated: str | None
         layer=0,
         start_ms=line * 1000,
         end_ms=line * 1000 + 1000,
+        original_start_ms=line * 1000, original_end_ms=line * 1000 + 1000,
         style="Default",
         source_text=source,
         translated_text=translated,

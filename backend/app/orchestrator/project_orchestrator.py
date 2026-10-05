@@ -28,7 +28,11 @@ logger = logging.getLogger(__name__)
 
 EnqueueFn = Callable[..., Awaitable[Any]]
 
-# File statuses that mean "done for project-completion purposes"
+# File statuses that mean "done for project-completion purposes". ProjectStatus
+# COMPLETED therefore means "every file is accepted - the translation work is
+# finished"; it says nothing about output. Publishing is a separate, explicit
+# lifecycle (Project.publish_state / output_revision, see orchestrator/publish.py)
+# that this orchestrator never starts or inspects.
 _TERMINAL_FILE_STATUSES = frozenset({
     FileStatus.COMPLETED.value,
     FileStatus.FAILED.value,

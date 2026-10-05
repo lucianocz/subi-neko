@@ -7,7 +7,8 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "test": "node --test \"tests/*.test.ts\""
   },
   "dependencies": {
     "@mantine/core": "^9.0.2",
@@ -15,7 +16,9 @@
     "@mantine/notifications": "^9.0.2",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.99.2",
+    "@tanstack/react-virtual": "^3.14.13",
     "axios": "^1.15.1",
+    "jassub": "2.5.18",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
     "react-router-dom": "^7.14.1"

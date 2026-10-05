@@ -55,7 +55,7 @@ def test_update_prompt_supplies_episode_mapping_and_cannot_replace_pair(monkeypa
                 created_at=_now(), updated_at=_now()),
             SubtitleEvent(
                 file_id=file.id, line_index=0, event_type="dialogue", content_type="dialogue",
-                layer=0, start_ms=0, end_ms=1000, style="Default", name="LUXION",
+                layer=0, start_ms=0, end_ms=1000, original_start_ms=0, original_end_ms=1000, style="Default", name="LUXION",
                 source_text="Leon.", translated_text="Leone.", translation_status="translated",
                 created_at=_now(), updated_at=_now()),
         ])
@@ -140,7 +140,7 @@ def test_initial_style_bible_receives_rich_separately_budgeted_character_context
             ProjectSpeaker(project_id=project.id, name="ARIA", character_id=character.id,
                            created_at=_now(), updated_at=_now()),
             SubtitleEvent(file_id=file.id, line_index=0, event_type="dialogue",
-                          content_type="dialogue", layer=0, start_ms=0, end_ms=1000,
+                          content_type="dialogue", layer=0, start_ms=0, end_ms=1000, original_start_ms=0, original_end_ms=1000,
                           style="Default", name="ARIA", source_text="Hello.",
                           created_at=_now(), updated_at=_now()),
         ])
@@ -196,7 +196,7 @@ def test_update_dialogue_evidence_preserves_chronological_order(monkeypatch):
         for index, source, translated in [(20, "Second.", "Druhá."), (10, "First.", "První.")]:
             session.add(SubtitleEvent(
                 file_id=file.id, line_index=index, event_type="dialogue",
-                content_type="dialogue", layer=0, start_ms=index, end_ms=index + 1,
+                content_type="dialogue", layer=0, start_ms=index, end_ms=index + 1, original_start_ms=index, original_end_ms=index + 1,
                 style="Default", name="N", source_text=source,
                 translated_text=translated, created_at=_now(), updated_at=_now()))
         session.commit()
@@ -265,7 +265,7 @@ def test_initial_style_bible_excludes_tagged_speaker_evidence_and_budget_count(m
             # content_tag propagation happens later during chunk planning.
             session.add(SubtitleEvent(
                 file_id=file.id, line_index=index, event_type="dialogue",
-                content_type="dialogue", layer=0, start_ms=index, end_ms=index + 1,
+                content_type="dialogue", layer=0, start_ms=index, end_ms=index + 1, original_start_ms=index, original_end_ms=index + 1,
                 style="Default", name=name, source_text=source,
                 created_at=_now(), updated_at=_now()))
         session.commit()

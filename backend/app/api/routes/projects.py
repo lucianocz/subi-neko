@@ -42,7 +42,15 @@ from app.db.models import (
 from app.jobs.manager import job_manager
 from app.metadata.base import CharacterGender
 from app.orchestrator.context_status import compute_context_status
+from app.db.output_state import derive_output_state, touch_output
+from app.db.qc_state import is_qc_available, qc_available_map
 from app.orchestrator.file_orchestrator import finalize_accepted_file, orchestrate_file
+from app.orchestrator.publish import (
+    ProjectNotFound,
+    PublishNotReady,
+    accepted_counts,
+    start_publish,
+)
 from app.orchestrator.project_orchestrator import (
     orchestrate_project,
     pick_style_bible_sample_file_id,
@@ -57,7 +65,19 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
-class ProjectOut(BaseModel):
+class ProjectOutputOut(BaseModel):
+    """Derived publish/output state — the backend decides, the UI renders it."""
+    state: Literal["not_ready", "ready", "publishing", "published", "failed"]
+    output_revision: int
+    published_revision: int | None
+    accepted_files: int
+    total_files: int
+    published_at: str | None
+    # Only populated while state == "failed" (an obsolete failure is never shown).
+    error: str | None
+
+
+class _ProjectFields(BaseModel):
     id: int
     name: str
     source_directory: str
@@ -71,6 +91,39 @@ class ProjectOut(BaseModel):
     updated_at: str
 
     model_config = {"from_attributes": True}
+
+
+class ProjectOut(_ProjectFields):
+    output: ProjectOutputOut
+
+
+def _project_out(project: Project, counts: tuple[int, int]) -> ProjectOut:
+    accepted, total = counts
+    state = derive_output_state(
+        accepted_files=accepted,
+        total_files=total,
+        publish_state=project.publish_state,
+        output_revision=project.output_revision,
+        published_revision=project.published_revision,
+        publish_target_revision=project.publish_target_revision,
+    )
+    return ProjectOut(
+        **_ProjectFields.model_validate(project).model_dump(),
+        output=ProjectOutputOut(
+            state=state.value,
+            output_revision=project.output_revision,
+            published_revision=project.published_revision,
+            accepted_files=accepted,
+            total_files=total,
+            published_at=project.published_at,
+            error=project.publish_error if state.value == "failed" else None,
+        ),
+    )
+
+
+async def _load_project_out(session, project: Project) -> ProjectOut:
+    counts = (await accepted_counts(session, [project.id]))[project.id]
+    return _project_out(project, counts)
 
 
 class FileOut(BaseModel):
@@ -94,6 +147,8 @@ class FileOut(BaseModel):
     qa_issues: int = 0
     qa_errors: int = 0
     qa_warnings: int = 0
+    # Final QC is open: no incomplete chunk (see app.db.qc_state). Derived.
+    qc_available: bool = False
 
     model_config = {"from_attributes": True}
 
@@ -244,8 +299,9 @@ class SubtitleEventUpdateIn(BaseModel):
 @router.get("", response_model=list[ProjectOut])
 async def list_projects():
     async with AsyncSessionLocal() as session:
-        rows = await session.scalars(select(Project).order_by(Project.name))
-        return list(rows.all())
+        projects = list((await session.scalars(select(Project).order_by(Project.name))).all())
+        counts = await accepted_counts(session, [p.id for p in projects])
+        return [_project_out(p, counts[p.id]) for p in projects]
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
@@ -254,7 +310,7 @@ async def get_project(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return project
+        return await _load_project_out(session, project)
 
 
 @router.post("/{project_id}/pause", response_model=ProjectOut)
@@ -270,9 +326,10 @@ async def pause_project(project_id: int):
             project.updated_at = datetime.utcnow().isoformat()
             await session.commit()
         await session.refresh(project)
+        out = await _load_project_out(session, project)
 
     await job_manager.cancel_queued_project_jobs(project_id)
-    return project
+    return out
 
 
 @router.post("/{project_id}/resume", response_model=ProjectOut)
@@ -282,14 +339,15 @@ async def resume_project(project_id: int):
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         if not project.is_paused:
-            return project
+            return await _load_project_out(session, project)
         project.is_paused = False
         project.updated_at = datetime.utcnow().isoformat()
         await session.commit()
         await session.refresh(project)
+        out = await _load_project_out(session, project)
 
     await orchestrate_project(project_id, job_manager.enqueue)
-    return project
+    return out
 
 
 async def _broadcast_project_updated(project_id: int) -> None:
@@ -297,6 +355,36 @@ async def _broadcast_project_updated(project_id: int) -> None:
         await connection_manager.broadcast("project_updated", {"project_id": project_id})
     except Exception:
         logger.exception("project_updated broadcast failed for project_id=%d", project_id)
+
+
+@router.post("/{project_id}/publish", response_model=ProjectOut, status_code=202)
+async def publish_project_output(project_id: int):
+    """The one entry point into output generation (render + mux every file).
+
+    Allowed from READY, FAILED and PUBLISHED alike — a repeated Publish simply
+    replaces the existing output, with no confirmation or force flag. Returns
+    immediately (202); the run is a background job. While a run is active a
+    second call is a safe no-op that returns the unchanged project."""
+    try:
+        await start_publish(project_id, job_manager.enqueue)
+    except ProjectNotFound:
+        raise HTTPException(status_code=404, detail="Project not found")
+    except PublishNotReady as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "All files must be accepted before publishing",
+                "accepted_files": exc.accepted,
+                "total_files": exc.total,
+            },
+        )
+
+    await _broadcast_project_updated(project_id)
+    async with AsyncSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return await _load_project_out(session, project)
 
 
 @router.get("/{project_id}/context-status")
@@ -346,7 +434,7 @@ async def approve_context(project_id: int):
         project = await session.get(Project, project_id)
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
-        return ProjectOut.model_validate(project)
+        return await _load_project_out(session, project)
 
 
 _CONTEXT_COMPONENT_JOBS = {
@@ -443,6 +531,7 @@ async def translate_file(project_id: int, file_id: int):
         # else: already started — idempotent no-op
 
         out = FileOut.model_validate(file)
+        out.qc_available = await is_qc_available(session, file_id)
 
     if retry_analysis:
         # Enqueue with the canonical key so the manager's stale-reset clears
@@ -575,6 +664,12 @@ async def retranslate_file(project_id: int, file_id: int):
                 detail=f"File cannot be retranslated from status '{file.status}'",
             )
 
+        # Full retranslate is an intentional restart: QC-created lines go away
+        # (original events never carry is_manual) and hidden originals return.
+        await session.execute(
+            delete(SubtitleEvent).where(
+                SubtitleEvent.file_id == file_id, SubtitleEvent.is_manual == 1)
+        )
         events = list((await session.scalars(
             select(SubtitleEvent).where(SubtitleEvent.file_id == file_id)
         )).all())
@@ -594,6 +689,10 @@ async def retranslate_file(project_id: int, file_id: int):
             event.is_user_edited = 0
             event.is_locked = 0
             event.is_approved = 0
+            event.is_hidden = 0
+            # Restart translated timing from the source baseline.
+            event.start_ms = event.original_start_ms
+            event.end_ms = event.original_end_ms
             event.updated_at = now
 
         # Re-plan from scratch rather than reusing the old chunk boundaries.
@@ -615,8 +714,6 @@ async def retranslate_file(project_id: int, file_id: int):
         invalidated_keys = {
             f"plan_translation_chunks:{file_id}",
             f"analyze_script:{file_id}",
-            f"render_output_ass:{file_id}",
-            f"mux_output_mkv:{file_id}",
             f"compute_file_metrics:{file_id}",
             f"update_style_bible:{project_id}:{file_id}",
         }
@@ -648,9 +745,14 @@ async def retranslate_file(project_id: int, file_id: int):
             project.status = ProjectStatus.PROCESSING.value
             project.updated_at = now
 
+        # The reset (and the translation that follows) replaces this file's
+        # output data: any published output is stale from here on.
+        await touch_output(session, project_id)
+
         await session.commit()
         await session.refresh(file)
         out = FileOut.model_validate(file)
+        out.qc_available = await is_qc_available(session, file_id)
 
     await _broadcast_project_updated(project_id)
     await orchestrate_file(file_id, job_manager.enqueue)
@@ -729,16 +831,20 @@ async def list_project_styles(project_id: int):
     async with AsyncSessionLocal() as session:
         if await session.get(Project, project_id) is None:
             raise HTTPException(status_code=404, detail="Project not found")
+        file_count_col = func.count(file_subtitle_styles.c.file_id).label("file_count")
+        event_count_col = _style_event_count_subquery().label("event_count")
+        # Usage-heavy styles first: events, then files, then a stable name/id tie-break.
         rows = (await session.execute(
-            select(
-                SubtitleStyle,
-                func.count(file_subtitle_styles.c.file_id),
-                _style_event_count_subquery(),
-            )
+            select(SubtitleStyle, file_count_col, event_count_col)
             .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
             .where(SubtitleStyle.project_id == project_id)
             .group_by(SubtitleStyle.id)
-            .order_by(func.lower(SubtitleStyle.style_name), SubtitleStyle.id)
+            .order_by(
+                event_count_col.desc(),
+                file_count_col.desc(),
+                func.lower(SubtitleStyle.style_name),
+                SubtitleStyle.id,
+            )
         )).all()
         return [_style_out(style, files, events) for style, files, events in rows]
 
@@ -762,7 +868,10 @@ async def update_project_style(project_id: int, style_id: int, body: SubtitleSty
         event_count = await session.scalar(
             select(_style_event_count_subquery()).where(SubtitleStyle.id == style_id)
         )
-        return _style_out(style, file_count or 0, event_count or 0)
+        out = _style_out(style, file_count or 0, event_count or 0)
+
+    await _broadcast_project_updated(project_id)  # output state may have flipped to READY
+    return out
 
 
 @router.get("/{project_id}/watched-words", response_model=list[WatchedWordOut])
@@ -864,9 +973,11 @@ async def list_project_files(project_id: int):
             bucket = "errors" if _severity_rank(row.severity) == 0 else "warnings"
             qa_map.setdefault(row.file_id, {"errors": 0, "warnings": 0})[bucket] += int(row.cnt or 0)
 
+        qc_map = await qc_available_map(session, file_ids)
         result = []
         for f in files:
             out = FileOut.model_validate(f)
+            out.qc_available = qc_map.get(f.id, True)
             if f.id in chunk_map:
                 out.chunks_done, out.chunks_total = chunk_map[f.id]
             qa_counts = qa_map.get(f.id, {"errors": 0, "warnings": 0})
@@ -1190,7 +1301,8 @@ class AcceptReviewIn(BaseModel):
 async def accept_file_review(project_id: int, file_id: int, body: AcceptReviewIn | None = None):
     """Accept a reviewed file. Only unresolved BLOCKER items stand in the
     way; warnings/info ride along and can optionally be bulk-resolved with
-    resolve_warnings=true. Output starts once every project file is accepted."""
+    resolve_warnings=true. Accepting never produces output: once every project
+    file is accepted the project becomes ready to Publish."""
     now = datetime.utcnow().isoformat()
     resolve_warnings = bool(body and body.resolve_warnings)
 
@@ -1231,8 +1343,13 @@ async def accept_file_review(project_id: int, file_id: int, body: AcceptReviewIn
     async with AsyncSessionLocal() as session:
         file = await session.get(File, file_id)
         out = FileOut.model_validate(file)
+        out.qc_available = await is_qc_available(session, file_id)
 
     await orchestrate_file(file_id, job_manager.enqueue)
+    # Let the project notice it is fully accepted (no output starts - Publish is
+    # explicit - but the project status and the OUTPUT card should settle now).
+    await orchestrate_project(project_id, job_manager.enqueue)
+    await _broadcast_project_updated(project_id)
     return out
 
 
@@ -1884,6 +2001,7 @@ async def update_file_subtitle_event(
         out = _subtitle_event_editor_out(event, speaker_map)
 
     await _sync_tm_after_edit(project_id, event_id, file_status)
+    await _broadcast_project_updated(project_id)  # output state may have flipped to READY
     return out
 
 
@@ -1918,6 +2036,7 @@ async def revert_file_subtitle_event(
         out = _subtitle_event_editor_out(event, speaker_map)
 
     await _sync_tm_after_edit(project_id, event_id, file_status)
+    await _broadcast_project_updated(project_id)  # output state may have flipped to READY
     return out
 
 
@@ -2144,6 +2263,14 @@ async def retranslate_affected_chunks(project_id: int, speaker_id: int):
                     file.status = FileStatus.PROCESSING.value
                     file.blocking_reason = None
                     file.updated_at = now
+
+            # Reopened files must be driven again, and a COMPLETED project (all
+            # files accepted) would otherwise be skipped by the orchestrator.
+            project = await session.get(Project, project_id)
+            if project is not None and project.status == ProjectStatus.COMPLETED.value:
+                project.status = ProjectStatus.PROCESSING.value
+                project.updated_at = now
+            await touch_output(session, project_id)
             await session.commit()
 
         out = SpeakerUpdateOut(

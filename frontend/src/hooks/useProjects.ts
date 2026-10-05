@@ -66,6 +66,20 @@ export function useResumeProject() {
   });
 }
 
+/** Explicit Publish (also "Publish again" / retry): always allowed server-side
+ * from ready/published/failed, no confirmation. The 202 response already carries
+ * the new "publishing" state; websocket project_updated events follow progress. */
+export function usePublishProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (projectId: number) => {
+      const { data } = await client.post<Project>(`/projects/${projectId}/publish`);
+      return data;
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['projects'] }),
+  });
+}
+
 export function useFileChunks(projectId: number, fileId: number, enabled: boolean) {
   return useQuery<SubtitleChunk[]>({
     queryKey: ['projects', projectId, 'files', fileId, 'chunks'],

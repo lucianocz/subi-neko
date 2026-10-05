@@ -1,3 +1,4 @@
+import { GENDER_COLORS, NON_BINARY_BADGE_STYLE } from '../utils/gender';
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   ActionIcon,
@@ -30,18 +31,9 @@ import {
   useUpdateSubtitleEvent,
 } from '../hooks/useSubtitleEditor';
 import { useProjectWatchedWords } from '../hooks/useProjects';
-
-// One severity scale: blocker | warning | info (legacy names tolerated).
-const SEVERITY_COLORS: Record<string, string> = {
-  blocker: 'red',
-  critical: 'red',
-  error: 'red',
-  high: 'red',
-  warning: 'yellow',
-  medium: 'yellow',
-  info: 'blue',
-  low: 'blue',
-};
+import { WatchedWordBadge } from '../components/WatchedWordBadge';
+import { WATCHED_ROW_BACKGROUND } from '../utils/watchedWords';
+import { SEVERITY_COLORS } from '../utils/qaSeverity';
 
 const SEVERITY_RANK: Record<string, number> = {
   blocker: 0,
@@ -52,19 +44,6 @@ const SEVERITY_RANK: Record<string, number> = {
   medium: 1,
   info: 2,
   low: 2,
-};
-
-const GENDER_COLORS: Record<string, string> = {
-  female: 'pink',
-  male: 'blue',
-  non_binary: 'gray',
-  other: 'gray',
-};
-
-const NON_BINARY_BADGE_STYLE = {
-  color: '#b7791f',
-  borderColor: '#b7791f',
-  backgroundColor: 'rgba(183, 121, 31, 0.12)',
 };
 
 function sortIssues(issues: QaIssue[]) {
@@ -97,9 +76,7 @@ function WatchedWordBadges({ words }: { words: ProjectWatchedWord[] }) {
   return (
     <Group gap={4} mt={5}>
       {words.map((word) => (
-        <Badge key={word.id} size="xs" color="yellow" variant="light" title={`Watched word: ${word.word}`}>
-          {word.word}
-        </Badge>
+        <WatchedWordBadge key={word.id} word={word.word} />
       ))}
     </Group>
   );
@@ -306,7 +283,7 @@ const SubtitleRow = memo(function SubtitleRow({
     <Table.Tr
       style={{
         backgroundColor: hasWatchedMatch
-          ? 'rgba(250, 176, 5, 0.08)'
+          ? WATCHED_ROW_BACKGROUND
           : dirty ? 'var(--mantine-color-dark-6)' : undefined,
       }}
     >

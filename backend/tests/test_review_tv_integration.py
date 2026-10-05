@@ -106,7 +106,8 @@ def _seed(session_factory, *, polish_attempts: int) -> tuple[int, dict[int, int]
             event = SubtitleEvent(
                 file_id=file.id, line_index=line, event_type="dialogue",
                 content_type="dialogue", layer=0, start_ms=line * 5000,
-                end_ms=line * 5000 + 5000, style="Default", name=speaker,
+                end_ms=line * 5000 + 5000,
+                original_start_ms=line * 5000, original_end_ms=line * 5000 + 5000, style="Default", name=speaker,
                 source_text=f"Source line {line}", translated_text=translated,
                 translation_status="validated",
             )

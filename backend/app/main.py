@@ -1,4 +1,5 @@
 from contextlib import asynccontextmanager
+import os
 import logging
 
 from fastapi import FastAPI
@@ -22,8 +23,7 @@ from app.orchestrator.orchestrator import (
 import app.jobs.handlers.inspect_mkv       # noqa: F401
 import app.jobs.handlers.extract_subtitles # noqa: F401
 import app.jobs.handlers.aggregate_speakers  # noqa: F401
-import app.jobs.handlers.render_output_ass   # noqa: F401
-import app.jobs.handlers.mux_output_mkv      # noqa: F401
+import app.jobs.handlers.publish_project     # noqa: F401
 import app.jobs.handlers.scan_project        # noqa: F401
 import app.jobs.handlers.plan_translation_chunks  # noqa: F401
 import app.jobs.handlers.translate_chunk          # noqa: F401
@@ -59,6 +59,11 @@ async def lifespan(app: FastAPI):
     # Startup
     settings.ensure_directories()
     await run_migrations()
+    try:
+        from app.subs.font_registry import refresh_configured_registry
+        refresh_configured_registry()
+    except Exception:
+        logging.getLogger(__name__).exception("Configured font scan failed; fonts will be rescanned on demand")
     await verify_connection()
 
     opts = await options_store.asnapshot()
@@ -93,6 +98,34 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
+def resolve_static_file(static_dir: str, rel_path: str) -> str | None:
+    """Return the real path of ``rel_path`` inside ``static_dir``, or None.
+
+    None when the file doesn't exist or resolves (``..``, symlinks, absolute
+    paths, drive letters) outside the static root.
+    """
+    root = os.path.realpath(static_dir)
+    if "\x00" in rel_path:
+        return None
+    candidate = os.path.realpath(os.path.join(root, rel_path))
+    if os.path.commonpath([root, candidate]) != root:
+        return None
+    return candidate if os.path.isfile(candidate) else None
+
+
+def mount_spa(app: FastAPI, static_dir: str) -> None:
+    """Serve the built frontend: /assets plus an index.html SPA fallback."""
+    app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
+
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def spa_fallback(full_path: str):
+        try:
+            target = resolve_static_file(static_dir, full_path)
+        except ValueError:  # e.g. different drives on Windows
+            target = None
+        return FileResponse(target or os.path.join(static_dir, "index.html"))
+
+
 def create_app() -> FastAPI:
     app = FastAPI(
         title=APP_NAME,
@@ -101,27 +134,21 @@ def create_app() -> FastAPI:
     )
 
     # API routes
-    from app.api.routes import health, ws, projects, options, metadata, import_, jobs
+    from app.api.routes import health, ws, projects, qc, media, options, metadata, import_, jobs
     app.include_router(health.router, prefix="/api")
     app.include_router(ws.router)
     app.include_router(projects.router, prefix="/api")
+    app.include_router(qc.router, prefix="/api")
+    app.include_router(media.router, prefix="/api")
     app.include_router(options.router, prefix="/api")
     app.include_router(metadata.router, prefix="/api")
     app.include_router(import_.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
 
     # Serve frontend static files (populated by Docker build)
-    import os
     static_dir = os.path.join(os.path.dirname(__file__), "..", "static")
     if os.path.isdir(static_dir):
-        app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
-
-        @app.get("/{full_path:path}", include_in_schema=False)
-        async def spa_fallback(full_path: str):
-            file_path = os.path.join(static_dir, full_path)
-            if os.path.isfile(file_path):
-                return FileResponse(file_path)
-            return FileResponse(os.path.join(static_dir, "index.html"))
+        mount_spa(app, static_dir)
 
     return app
 

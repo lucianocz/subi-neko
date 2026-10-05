@@ -32,7 +32,7 @@ Extracts subtitles from MKV files, translates them using an OpenAI-compatible LL
 - **Quality metrics** — every completed file gets a quality snapshot (human-edit distance between AI output and what shipped, polish edit rate, QA density, confidence calibration, cost/tokens per episode), visible in the Metrics dialog; a falling edit-distance trend across episodes means the consistency layer is learning
 - **Fuzzy translation memory** — near-match TM hits (≥92% similar) surface as `[TM] previously translated as:` hints in translation prompts, in addition to exact-match reuse
 - **QA items** — flagged issues surfaced per subtitle event; visible in the UI for manual review
-- **Output muxing** — renders translated subtitles back to ASS and muxes into the original MKV using mkvmerge
+- **Explicit publishing** — nothing is muxed automatically. Once every file is accepted the project's OUTPUT card offers **Publish**, which renders the translated ASS and muxes every file with mkvmerge (staged to temp files, then atomically replaced). Publish again at any time; later edits turn the project back to *ready to publish* without changing file acceptance
 - **Configurable via UI** — all settings (API keys, models, prompts, providers, pipeline switches) editable from the Options drawer without restarting
 
 ---
@@ -189,9 +189,9 @@ context; signs/karaoke/songs and all later stages run in parallel):
 All chunks complete
   └─ clean file (no unresolved QA) → auto-accepted; flagged file → review queue
   └─ (on accept: translation memory populated, style bible learns from the episode)
-  └─ all project files accepted – release output for the whole project
-  └─ render_output_ass   – write translated ASS file
-  └─ mux_output_mkv      – mux back into MKV
+  └─ all project files accepted – output state becomes READY (nothing runs yet)
+  └─ user clicks Publish (POST /projects/{id}/publish)
+  └─ publish_project     – render translated ASS + mux every file, replace output atomically per file
 ```
 
 Karaoke chunks are completed without translation by default (`TRANSLATE_KARAOKE=0`) so their per-syllable timing survives.
@@ -238,7 +238,7 @@ npm install
 npm run dev     # Vite dev server on http://localhost:5173
 ```
 
-Set `VITE_API_BASE_URL=http://localhost:8000` (or configure the Vite proxy) to point the frontend at the local backend.
+The dev server proxies `/api` (including media `Range` requests) and `/ws` (WebSocket) to the backend at `http://localhost:8000`, so the browser always uses same-origin URLs, as in production. If the backend runs elsewhere, set `VITE_BACKEND_URL` (e.g. in `frontend/.env.local`).
 
 ### Tests
 

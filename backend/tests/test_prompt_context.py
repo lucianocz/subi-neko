@@ -164,7 +164,7 @@ def _event(session, file_id: int, line_index: int, content_type: str,
     now = datetime.utcnow().isoformat()
     session.add(SubtitleEvent(
         file_id=file_id, line_index=line_index, event_type=event_type,
-        content_type=content_type, layer=0, start_ms=0, end_ms=2000,
+        content_type=content_type, layer=0, start_ms=0, end_ms=2000, original_start_ms=0, original_end_ms=2000,
         style="Default", source_text=f"line {line_index}",
         translated_text=f"řádek {line_index}", translation_status="translated",
         created_at=now, updated_at=now,

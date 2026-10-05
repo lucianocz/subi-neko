@@ -68,6 +68,14 @@ def build_ass(
     This is shared by the output job and the download endpoints so exported
     files cannot drift from the subtitle that is ultimately muxed.
     ``use_font_replacements`` mirrors the REPLACE_INCOMPATIBLE_FONTS option.
+
+    Final-QC semantics live here so no caller can get them wrong:
+
+    * ``translated`` drops hidden events and keeps manual (QC-created) ones;
+    * ``original`` keeps hidden events (hiding only affects the translation)
+      and drops manual events, which have no source counterpart;
+    * ``translated`` uses the editable ``start_ms``/``end_ms``; ``original``
+      uses the immutable ``original_start_ms``/``original_end_ms``.
     """
     subs = pysubs2.SSAFile()
     subs.info.clear()
@@ -121,12 +129,19 @@ def build_ass(
         )
 
     for row in events:
+        if text_variant == "translated":
+            if row.is_hidden:
+                continue
+        elif row.is_manual:
+            continue
         text = row.source_text
+        start, end = row.original_start_ms, row.original_end_ms
         if text_variant == "translated":
             text = row.translated_text if row.translated_text is not None else row.source_text
+            start, end = row.start_ms, row.end_ms
         event = pysubs2.SSAEvent(
-            start=row.start_ms,
-            end=row.end_ms,
+            start=start,
+            end=end,
             layer=row.layer,
             style=row.style,
             name=row.name or "",

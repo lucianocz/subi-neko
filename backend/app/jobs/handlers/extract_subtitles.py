@@ -14,7 +14,9 @@ import pysubs2
 from sqlalchemy import delete, insert
 
 from app.core.database import SyncSessionLocal
+from app.core.media_paths import resolve_source_path_parts
 from app.db.models import File, Subtitle, SubtitleEvent
+from app.db.output_state import touch_output_sync
 from app.subs.style_canonical import link_file_styles, prune_orphan_styles
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
@@ -68,11 +70,39 @@ def _color_to_str(c) -> str | None:
     return f"&H{c.a:02X}{c.b:02X}{c.g:02X}{c.r:02X}&"
 
 
-def _safe_source_path(ctx: JobContext, source_directory: str, relative_path: str) -> Path:
-    candidate = (ctx.import_root / source_directory / relative_path).resolve()
-    if not candidate.is_relative_to(ctx.import_root.resolve()):
-        raise ValueError(f"Resolved path {candidate} escapes import root")
-    return candidate
+def _build_event_rows(subs: pysubs2.SSAFile, file_id: int, now: str) -> list[dict]:
+    """Event insert rows. Original (immutable source) timing starts out equal
+    to the editable start_ms/end_ms."""
+    event_rows = []
+    for idx, event in enumerate(subs):
+        event_type = event.type.lower()
+        style = event.style or ""
+        content_type, content_type_reason = classify_content_type(event_type, style, event.text)
+        event_rows.append(dict(
+            file_id=file_id,
+            line_index=idx,
+            event_type=event_type,
+            content_type=content_type,
+            content_type_reason=content_type_reason,
+            # 'other' (ASS comments) is never chunked or translated — an
+            # honest terminal status instead of a perpetual 'pending'.
+            translation_status="skipped" if content_type == "other" else "pending",
+            layer=int(event.layer),
+            start_ms=int(event.start),
+            end_ms=int(event.end),
+            original_start_ms=int(event.start),
+            original_end_ms=int(event.end),
+            style=style,
+            name=(event.name.strip() or None) if event.name else None,
+            margin_l=int(event.marginl) if event.marginl else None,
+            margin_r=int(event.marginr) if event.marginr else None,
+            margin_v=int(event.marginv) if event.marginv else None,
+            effect=event.effect or None,
+            source_text=event.text,
+            created_at=now,
+            updated_at=now,
+        ))
+    return event_rows
 
 
 def _int(val) -> int | None:
@@ -116,7 +146,9 @@ def extract_subtitles(
                          error_message=f"Unsupported subtitle format: {subtitle_format}")
 
     try:
-        source_path = _safe_source_path(ctx, source_directory, relative_path)
+        source_path = resolve_source_path_parts(
+            source_directory, relative_path,
+            import_root=ctx.import_root, must_exist=False)
     except ValueError as exc:
         return JobResult(status="failed", result=None,
                          error_code="INVALID_PATH", error_message=str(exc))
@@ -221,33 +253,7 @@ def extract_subtitles(
         for name, s in subs.styles.items()
     ]
 
-    event_rows = []
-    for idx, event in enumerate(subs):
-        event_type = event.type.lower()
-        style = event.style or ""
-        content_type, content_type_reason = classify_content_type(event_type, style, event.text)
-        event_rows.append(dict(
-            file_id=file_id,
-            line_index=idx,
-            event_type=event_type,
-            content_type=content_type,
-            content_type_reason=content_type_reason,
-            # 'other' (ASS comments) is never chunked or translated — an
-            # honest terminal status instead of a perpetual 'pending'.
-            translation_status="skipped" if content_type == "other" else "pending",
-            layer=int(event.layer),
-            start_ms=int(event.start),
-            end_ms=int(event.end),
-            style=style,
-            name=(event.name.strip() or None) if event.name else None,
-            margin_l=int(event.marginl) if event.marginl else None,
-            margin_r=int(event.marginr) if event.marginr else None,
-            margin_v=int(event.marginv) if event.marginv else None,
-            effect=event.effect or None,
-            source_text=event.text,
-            created_at=now,
-            updated_at=now,
-        ))
+    event_rows = _build_event_rows(subs, file_id, now)
 
     progress(0.75, f"Writing {len(event_rows)} events, {len(style_rows)} styles")
 
@@ -263,6 +269,10 @@ def extract_subtitles(
         prune_orphan_styles(session, project_id)
         if event_rows:
             session.execute(insert(SubtitleEvent), event_rows)
+
+        # Core DELETE/INSERT above bypass the ORM output listener; re-extraction
+        # replaces the file's events, styles and header, so invalidate explicitly.
+        touch_output_sync(session, project_id)
 
         session.commit()
 

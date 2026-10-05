@@ -75,20 +75,20 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
   }
 
   return (
-    <Stack gap="md">
-      <Group grow align="flex-start">
+    <Stack gap="md" h="100%" style={{ minHeight: 0 }}>
+      <Group grow align="flex-start" style={{ flex: '0 0 auto' }}>
         <TextInput label="Style name" value={style.style_name} readOnly />
         <TextInput label="Source font" value={style.font_name} readOnly />
         <TextInput label="Source size" value={formatSize(style.font_size)} readOnly />
       </Group>
 
-      <Text size="xs" c="dimmed">
+      <Text size="xs" c="dimmed" style={{ flex: '0 0 auto' }}>
         The replacement applies to translated subtitles in all {style.file_count} file
         {style.file_count === 1 ? '' : 's'} using this style. Source subtitles keep the original font.
         Leave a field empty to fall back to the source value.
       </Text>
 
-      <Group grow align="flex-start">
+      <Group grow align="flex-start" style={{ flex: '0 0 auto' }}>
         <Autocomplete
           label="Replacement font"
           placeholder={style.font_name}
@@ -110,15 +110,25 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
         />
       </Group>
 
-      <Paper withBorder p="md" radius="sm">
-        <Group justify="space-between" mb="xs">
+      {/* Bounded: the sample keeps its real size and scrolls here instead of growing the dialog. */}
+      <Paper
+        withBorder
+        p="md"
+        radius="sm"
+        style={{ flex: '1 1 0', minHeight: 80, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
+      >
+        <Group justify="space-between" mb="xs" style={{ flex: '0 0 auto' }}>
           <Text size="xs" c="dimmed">Preview (translated)</Text>
           <Badge size="sm" variant="light" tt="none">{effectiveName} {formatSize(effectiveSize)}</Badge>
         </Group>
         <Box
           style={{
+            flex: '1 1 0',
+            minHeight: 0,
+            overflow: 'auto',
+            overflowWrap: 'anywhere',
             fontFamily: cssFamily(effectiveName),
-            fontSize: Math.min(Math.max(effectiveSize, 10), 64),
+            fontSize: Math.max(effectiveSize, 10),
             lineHeight: 1.3,
           }}
         >
@@ -126,7 +136,7 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
         </Box>
       </Paper>
 
-      <Group justify="flex-end">
+      <Group justify="flex-end" style={{ flex: '0 0 auto' }}>
         <Button
           variant="subtle"
           color="gray"
@@ -162,7 +172,11 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
     <Modal
       opened={opened}
       onClose={onClose}
-      size="xl"
+      size="min(1120px, 94vw)"
+      styles={{
+        content: { height: 'min(82vh, 860px)', display: 'flex', flexDirection: 'column' },
+        body: { flex: '1 1 0', minHeight: 0, display: 'flex', flexDirection: 'column' },
+      }}
       title={(
         <Group gap="xs">
           <TextAa size={18} />
@@ -177,15 +191,15 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
       ) : styles.length === 0 ? (
         <Text c="dimmed" size="sm">No styles yet — subtitles have not been extracted.</Text>
       ) : (
-        <Group align="flex-start" wrap="nowrap" gap="md">
-          <Stack gap="xs" w={260} miw={260} maw={260} style={{ flexShrink: 0, minWidth: 0 }}>
+        <Group align="stretch" wrap="nowrap" gap="md" style={{ flex: '1 1 0', minHeight: 0 }}>
+          <Stack gap="xs" w={340} miw={300} maw={340} style={{ flexShrink: 0, minHeight: 0 }}>
             <TextInput
               placeholder="Search styles"
               value={search}
               onChange={(e) => setSearch(e.currentTarget.value)}
             />
             {/* Plain overflow box: Mantine's ScrollArea content is display:table and grows with long names. */}
-            <Box style={{ maxHeight: 420, overflowY: 'auto', overflowX: 'hidden' }}>
+            <Box style={{ flex: '1 1 0', minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
               <Stack gap={4}>
                 {filtered.map((style) => {
                   const active = style.id === selected?.id;
@@ -224,7 +238,7 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
             </Box>
           </Stack>
 
-          <Box style={{ flex: 1, minWidth: 0 }}>
+          <Box style={{ flex: 1, minWidth: 380, minHeight: 0 }}>
             {selected && <StyleEditor key={selected.id} projectId={projectId} style={selected} />}
           </Box>
         </Group>

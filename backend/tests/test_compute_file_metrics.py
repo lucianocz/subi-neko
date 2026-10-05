@@ -57,7 +57,7 @@ def _seed(session) -> int:
     def _event(i, ai, final, *, edited=False, approved=False, confidence=None):
         session.add(SubtitleEvent(
             file_id=file.id, line_index=i, event_type="dialogue", layer=0,
-            start_ms=0, end_ms=2000, style="Default", source_text=f"src {i}",
+            start_ms=0, end_ms=2000, original_start_ms=0, original_end_ms=2000, style="Default", source_text=f"src {i}",
             translated_text=final, original_ai_translated_text=ai,
             translation_status="validated", translation_confidence=confidence,
             is_user_edited=1 if edited else 0, is_approved=1 if approved else 0,

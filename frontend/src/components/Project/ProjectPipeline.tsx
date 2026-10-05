@@ -1,12 +1,14 @@
-import { Box, Group, Paper, Stack, Text } from '@mantine/core';
-import { CheckCircle, Hourglass, Play, Stop, Warning } from '@phosphor-icons/react';
+import { Box, Button, Group, Loader, Paper, Stack, Text, Tooltip } from '@mantine/core';
+import { notifications } from '@mantine/notifications';
+import { CheckCircle, Hourglass, Play, RocketLaunch, Stop, Warning } from '@phosphor-icons/react';
+import { isAxiosError } from 'axios';
 import type { Project, VideoFile } from '../../types';
 import { useProjectSpeakers } from '../../hooks/useCharacterMapping';
-import { useContextStatus, useProjectStats } from '../../hooks/useProjects';
+import { useContextStatus, useProjectStats, usePublishProject } from '../../hooks/useProjects';
 
 // ─── State helpers ────────────────────────────────────────────────────────────
 
-type StepState = 'waiting' | 'active' | 'needs_attention' | 'completed';
+type StepState = 'waiting' | 'active' | 'needs_attention' | 'completed' | 'failed';
 
 const STATUS_RANK: Record<string, number> = {
   new: 0,
@@ -23,6 +25,7 @@ const STATE_COLOR: Record<StepState, string> = {
   active: 'var(--mantine-color-blue-4)',
   needs_attention: 'var(--mantine-color-yellow-5)',
   completed: 'var(--mantine-color-green-5)',
+  failed: 'var(--mantine-color-red-5)',
 };
 
 const STATE_LABEL: Record<StepState, string> = {
@@ -30,13 +33,16 @@ const STATE_LABEL: Record<StepState, string> = {
   active: 'Processing',
   needs_attention: 'Needs attention',
   completed: 'Completed',
+  failed: 'Failed',
 };
 
 function StepIcon({ state, size = 14 }: { state: StepState; size?: number }) {
   const color = STATE_COLOR[state];
   if (state === 'waiting') return <Hourglass size={size} color={color} />;
   if (state === 'active') return <Play size={size} color={color} weight="fill" />;
-  if (state === 'needs_attention') return <Warning size={size} color={color} weight="fill" />;
+  if (state === 'needs_attention' || state === 'failed') {
+    return <Warning size={size} color={color} weight="fill" />;
+  }
   return <CheckCircle size={size} color={color} weight="fill" />;
 }
 
@@ -46,9 +52,11 @@ interface StepBoxProps {
   title: string;
   state: StepState;
   detail: React.ReactNode;
+  /** Overrides the generic label for the state (e.g. "Ready to publish"). */
+  label?: string;
 }
 
-function StepBox({ title, state, detail }: StepBoxProps) {
+function StepBox({ title, state, detail, label }: StepBoxProps) {
   const color = STATE_COLOR[state];
   return (
     <Paper
@@ -67,7 +75,7 @@ function StepBox({ title, state, detail }: StepBoxProps) {
         </Text>
         <Group gap={5} wrap="nowrap">
           <StepIcon state={state} />
-          <Text size="sm" fw={500} c={color}>{STATE_LABEL[state]}</Text>
+          <Text size="sm" fw={500} c={color}>{label ?? STATE_LABEL[state]}</Text>
         </Group>
         <Box>{detail}</Box>
       </Stack>
@@ -92,7 +100,6 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
   // Aggregate counts from files
   const filesTotal = files.length;
   const filesDiscovered = files.filter((f) => f.status !== 'new' && f.status !== 'discovering').length;
-  const filesCompleted = files.filter((f) => f.status === 'completed').length;
   const chunksTotal = files.reduce((s, f) => s + (f.chunks_total ?? 0), 0);
   const chunksDone = files.reduce((s, f) => s + (f.chunks_done ?? 0), 0);
 
@@ -176,15 +183,100 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
       <Text size="xs" c="dimmed">—</Text>
     );
 
-  // ── Output ───────────────────────────────────────────────────────────────
-  const outputState: StepState =
-    rank >= 5 ? 'completed' : rank >= 4 ? 'active' : 'waiting';
+  // ── Output (explicit Publish) ────────────────────────────────────────────
+  // The backend derives the whole output state; this only renders it.
+  const publish = usePublishProject();
+  const output = project.output;
 
-  const outputDetail = (
-    <Text size="xs" c="dimmed">
-      {filesCompleted}/{filesTotal} files
-    </Text>
+  function handlePublish() {
+    publish.mutate(project.id, {
+      onError: (err) => {
+        const detail = isAxiosError(err) ? err.response?.data?.detail : undefined;
+        notifications.show({
+          color: 'red',
+          title: 'Publish failed to start',
+          message: typeof detail === 'string' ? detail : detail?.message ?? 'Unexpected error.',
+        });
+      },
+    });
+  }
+
+  const publishedAt = output.published_at
+    ? new Date(output.published_at + (output.published_at.endsWith('Z') ? '' : 'Z')).toLocaleString()
+    : null;
+
+  const publishButton = (text: string, primary: boolean) => (
+    <Button
+      size="compact-xs"
+      mt={4}
+      variant={primary ? 'filled' : 'light'}
+      leftSection={<RocketLaunch size={12} weight="fill" />}
+      loading={publish.isPending}
+      onClick={handlePublish}
+    >
+      {text}
+    </Button>
   );
+
+  let outputState: StepState;
+  let outputLabel: string | undefined;
+  let outputDetail: React.ReactNode;
+  switch (output.state) {
+    case 'ready':
+      outputState = 'needs_attention';
+      outputLabel = 'Ready to publish';
+      outputDetail = (
+        <Stack gap={2} align="flex-start">
+          <Text size="xs" c="dimmed">
+            {output.published_revision !== null
+              ? 'changes since last publish'
+              : `${output.accepted_files}/${output.total_files} files accepted`}
+          </Text>
+          {publishButton('Publish', true)}
+        </Stack>
+      );
+      break;
+    case 'publishing':
+      outputState = 'active';
+      outputLabel = 'Publishing…';
+      outputDetail = (
+        <Group gap={6} wrap="nowrap">
+          <Loader size={12} />
+          <Text size="xs" c="dimmed">{output.total_files} files</Text>
+        </Group>
+      );
+      break;
+    case 'published':
+      outputState = 'completed';
+      outputLabel = 'Published';
+      outputDetail = (
+        <Stack gap={2} align="flex-start">
+          {publishedAt && <Text size="xs" c="dimmed">{publishedAt}</Text>}
+          {publishButton('Publish again', false)}
+        </Stack>
+      );
+      break;
+    case 'failed':
+      outputState = 'failed';
+      outputLabel = 'Publish failed';
+      outputDetail = (
+        <Stack gap={2} align="flex-start">
+          <Tooltip label={output.error} disabled={!output.error} multiline maw={420} withArrow>
+            <Text size="xs" c="red" lineClamp={2}>{output.error ?? 'Unknown error'}</Text>
+          </Tooltip>
+          {publishButton('Retry publish', true)}
+        </Stack>
+      );
+      break;
+    default:
+      outputState = 'waiting';
+      outputLabel = 'Not ready';
+      outputDetail = (
+        <Text size="xs" c="dimmed">
+          {output.accepted_files} / {output.total_files} files accepted
+        </Text>
+      );
+  }
 
   return (
     <Group gap="xs" align="stretch" wrap="nowrap">
@@ -192,7 +284,7 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
       <StepBox title="Context" state={contextState} detail={contextDetail} />
       <StepBox title="Translation" state={transState} detail={transDetail} />
       <StepBox title="Review" state={reviewState} detail={reviewDetail} />
-      <StepBox title="Output" state={outputState} detail={outputDetail} />
+      <StepBox title="Output" state={outputState} detail={outputDetail} label={outputLabel} />
     </Group>
   );
 }

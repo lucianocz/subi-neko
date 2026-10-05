@@ -42,6 +42,7 @@ from app.db.default_prompts import (
     DEFAULT_SONG_TRANSLATION_PROMPT,
 )
 from app.db.models import Option
+from app.db.output_state import touch_all_outputs_sync
 
 
 # -- Typed options -------------------------------------------------------------
@@ -376,9 +377,28 @@ def get(name: str, default: str | None = None) -> str | None:
         return _cache.get(name, default)
 
 
+# Options that change the rendered ASS/MKV of *already translated* data. A real
+# change invalidates every project's published output (their output_revision).
+# Pipeline-only options (models, prompts, chunking, CPS…) shape future
+# translations, whose data changes are tracked at the event level instead.
+OUTPUT_AFFECTING_OPTIONS = frozenset({
+    "REPLACE_INCOMPATIBLE_FONTS",  # which font the translated ASS styles use
+    "TARGET_LANG_NAME",            # ASS Title + MKV subtitle track name
+    "TARGET_LANG_CODE",            # MKV subtitle track language
+})
+
+
+def _changes_output(name: str, value: str | None) -> bool:
+    # Compared against the in-memory cache (loaded at startup). A cold cache can
+    # only over-invalidate, never miss a change.
+    return name in OUTPUT_AFFECTING_OPTIONS and (_cache.get(name) or None) != (value or None)
+
+
 def set(name: str, value: str | None) -> None:
     now = datetime.utcnow().isoformat()
     with SyncSessionLocal() as session:
+        if _changes_output(name, value):
+            touch_all_outputs_sync(session)
         session.execute(
             sqlite_insert(Option)
             .values(name=name, value=value, created_at=now, updated_at=now)
@@ -412,6 +432,8 @@ async def aget(name: str, default: str | None = None) -> str | None:
 async def aset(name: str, value: str | None) -> None:
     now = datetime.utcnow().isoformat()
     async with AsyncSessionLocal() as session:
+        if _changes_output(name, value):
+            await session.run_sync(touch_all_outputs_sync)
         await session.execute(
             sqlite_insert(Option)
             .values(name=name, value=value, created_at=now, updated_at=now)

@@ -44,7 +44,8 @@ def metrics_fingerprint_stmt(file_id: int):
             func.coalesce(func.sum(SubtitleEvent.is_user_edited), 0),
             func.coalesce(func.sum(SubtitleEvent.is_approved), 0),
         )
-        .where(SubtitleEvent.file_id == file_id, SubtitleEvent.event_type == "dialogue")
+        .where(SubtitleEvent.file_id == file_id, SubtitleEvent.event_type == "dialogue",
+               SubtitleEvent.is_manual == 0)  # QC-created lines are not translations
         .subquery()
     )
     qa = (
@@ -90,6 +91,7 @@ def compute_file_metrics(
             select(SubtitleEvent)
             .where(SubtitleEvent.file_id == file_id)
             .where(SubtitleEvent.event_type == "dialogue")
+            .where(SubtitleEvent.is_manual == 0)
             .where(SubtitleEvent.translated_text.isnot(None))
         ).all())
 
