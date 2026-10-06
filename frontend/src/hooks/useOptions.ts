@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
 import client from '../api/client';
+import { optionsErrorMessage } from '../utils/optionsValidation';
 
 export type OptionsMap = Record<string, string | null>;
 
@@ -34,7 +35,7 @@ export function useSaveOptions() {
       );
     },
     onError: (err: unknown) => {
-      const msg = err instanceof Error ? err.message : 'Unknown error';
+      const msg = optionsErrorMessage(err);
       notifications.show({
         color: 'red',
         title: 'Failed to save',

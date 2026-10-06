@@ -72,11 +72,19 @@ class AppOptions:
     # the source font. Off ignores them without clearing the stored values.
     replace_incompatible_fonts: bool = True
     require_style_bible: bool = True
+    # HARD reading-speed limit: drives QA `high_cps` and the red CPS styling.
     cps_limit: float = 20.0
+    # SOFT limit: editor-only orange warning band (soft < CPS <= hard); never
+    # creates QA. Effective value is clamped below cps_limit (see from_dict).
+    soft_cps_limit: float = 18.0
     max_row_chars: int = 42
     # Deterministically rebalance over-long dialogue rows with \N before the
     # readability check (long_row then only flags what a split can't fix).
     auto_line_break: bool = True
+    # Remove dialogue line breaks that aren't needed: joined text must fit
+    # min(join_lines_under, max_row_chars). Same reflow pass as auto_line_break.
+    auto_join_short_lines: bool = True
+    join_lines_under: int = 45
     auto_accept_policy: str = "fully_clean"  # manual | fully_clean | no_blockers
     auto_mapping_accept_threshold: float = 0.8
     translation_confidence_flag_threshold: float = 0.55
@@ -101,6 +109,12 @@ class AppOptions:
     def from_dict(cls, d: dict[str, str | None]) -> "AppOptions":
         raw_chunk_size = d.get("CHUNK_SIZE")
         raw_context_size = d.get("PREPEND_CONTEXT_SIZE")
+        cps_limit = _validated_positive_float(d.get("CPS_LIMIT"), "CPS_LIMIT", 20.0)
+        soft_cps_limit = _validated_positive_float(d.get("SOFT_CPS_LIMIT"), "SOFT_CPS_LIMIT", 18.0)
+        if soft_cps_limit >= cps_limit:
+            # Stored hard limit below the (default) soft one: collapse the
+            # warning band instead of mutating either stored value.
+            soft_cps_limit = cps_limit
         return cls(
             target_lang_name=d.get("TARGET_LANG_NAME"),
             target_lang_code=d.get("TARGET_LANG_CODE"),
@@ -120,9 +134,12 @@ class AppOptions:
             replace_incompatible_fonts=_validated_bool_default_true(
                 d.get("REPLACE_INCOMPATIBLE_FONTS")),
             require_style_bible=_validated_bool_default_true(d.get("REQUIRE_STYLE_BIBLE")),
-            cps_limit=_validated_positive_float(d.get("CPS_LIMIT"), "CPS_LIMIT", 20.0),
+            cps_limit=cps_limit,
+            soft_cps_limit=soft_cps_limit,
             max_row_chars=_validated_positive_int(d.get("MAX_ROW_CHARS"), "MAX_ROW_CHARS", 42),
             auto_line_break=_validated_bool_default_true(d.get("AUTO_LINE_BREAK")),
+            auto_join_short_lines=_validated_bool_default_true(d.get("AUTO_JOIN_SHORT_LINES")),
+            join_lines_under=_validated_positive_int(d.get("JOIN_LINES_UNDER"), "JOIN_LINES_UNDER", 45),
             auto_accept_policy=_validated_auto_accept_policy(d.get("AUTO_ACCEPT_POLICY")),
             auto_mapping_accept_threshold=_validated_ratio(
                 d.get("AUTO_MAPPING_ACCEPT_THRESHOLD"), "AUTO_MAPPING_ACCEPT_THRESHOLD", 0.8),
@@ -327,6 +344,42 @@ def _validated_worker_count(raw: str | None) -> int:
         _logger.warning("JOB_WORKER_COUNT capped at 32, got %d", n)
         return 32
     return n
+
+
+def validate_option_changes(changes: dict[str, str | None], current: dict[str, str | None]) -> list[str]:
+    """Cross-field/range validation for a PATCH, evaluated on the *resulting*
+    values so a request carrying both limits is judged as a whole. Returns
+    human-readable problems (empty = fine)."""
+    merged = {**current, **changes}
+    problems: list[str] = []
+
+    def number(key: str, label: str, default: float) -> float:
+        raw = merged.get(key)
+        if raw in (None, ""):
+            return default
+        value = _try_float(raw)
+        if value is None or value <= 0:
+            if key in changes:  # stored garbage already falls back in from_dict
+                problems.append(f"{label} must be a positive number.")
+            return default
+        return value
+
+    hard = number("CPS_LIMIT", "Hard CPS limit", 20.0)
+    soft = number("SOFT_CPS_LIMIT", "Soft CPS limit", 18.0)
+    join = number("JOIN_LINES_UNDER", "Join lines under", 45.0)
+    if "JOIN_LINES_UNDER" in changes and not join.is_integer():
+        problems.append("Join lines under must be a whole number.")
+    if not problems and soft >= hard and {"CPS_LIMIT", "SOFT_CPS_LIMIT"} & changes.keys():
+        problems.append(
+            f"Soft CPS limit ({soft:g}) must be lower than the hard CPS limit ({hard:g}).")
+    return problems
+
+
+def _try_float(raw: str | None) -> float | None:
+    try:
+        return float(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 # -- Change listeners (async only) ---------------------------------------------

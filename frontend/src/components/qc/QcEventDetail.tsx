@@ -3,6 +3,10 @@ import { Alert, Badge, Box, Button, Group, Loader, NativeSelect, Stack, Text, Te
 import type { QcEvent, QcEventDetail as QcEventDetailDto } from '../../types/qc';
 import type { EventDraft, NewEventDraft } from '../../utils/qcDraft';
 import { validateNewEvent } from '../../utils/qcDraft';
+import { ArrowCounterClockwise, CheckCircle } from '@phosphor-icons/react';
+import { CPS_COLORS, cpsSeverity } from '../../utils/cps';
+import type { CpsLimits } from '../../utils/cps';
+import { canRestoreAi } from '../../utils/qcQa';
 import { SEVERITY_COLORS } from '../../utils/qaSeverity';
 import { formatMs } from '../../utils/qcText';
 import { formatTimeField, nudgeBoundary, parseTimeField, setBoundary } from '../../utils/qcTime';
@@ -69,14 +73,14 @@ function GenderBadge({ gender }: { gender: string | null }) {
 
 /** Read-only facts about the selected event (right column of the detail panel). */
 function QcEventMetadata({
-  event, d, cpsLimit, loading,
+  event, d, cpsLimits, loading,
 }: {
   event: QcEvent;
   d: QcEventDetailDto | undefined;
-  cpsLimit: number;
+  cpsLimits: CpsLimits;
   loading: boolean;
 }) {
-  const cpsOver = event.cps != null && event.cps > cpsLimit;
+  const cpsLevel = cpsSeverity(event.cps, cpsLimits);
   const timingChanged = d && (d.original_start_ms !== event.start_ms || d.original_end_ms !== event.end_ms);
   // Same identity rule as the subtitle editor: mapped character's gender, else the speaker's.
   const gender = d ? (d.character_name ? d.character_gender : d.speaker_gender) : null;
@@ -96,10 +100,12 @@ function QcEventMetadata({
       <MetaRow label="CPS">
         {event.cps == null ? '—' : (
           <Text
-            span size="sm" fw={cpsOver ? 700 : 400} c={cpsOver ? 'red' : undefined}
-            data-testid="qc-cps" data-cps-over={cpsOver ? 'true' : 'false'}
+            span size="sm" fw={cpsLevel === 'normal' ? 400 : 700} c={CPS_COLORS[cpsLevel]}
+            data-testid="qc-cps" data-cps-over={cpsLevel === 'error' ? 'true' : 'false'}
+            data-cps-level={cpsLevel}
           >
-            {event.cps.toFixed(1)}{cpsOver ? ` (limit ${cpsLimit})` : ''}
+            {event.cps.toFixed(1)}
+            {cpsLevel === 'error' ? ` (limit ${cpsLimits.hard})` : cpsLevel === 'warning' ? ` (soft ${cpsLimits.soft})` : ''}
           </Text>
         )}
       </MetaRow>
@@ -210,7 +216,7 @@ export interface QcEventDetailProps {
   detail: QcEventDetailDto | undefined;
   loading: boolean;
   error: boolean;
-  cpsLimit: number;
+  cpsLimits: CpsLimits;
   draft: EventDraft | null;
   onDraftChange: (draft: EventDraft) => void;
   dirty: boolean;
@@ -219,6 +225,11 @@ export interface QcEventDetailProps {
   /** Save the pending edit now (blur / Ctrl+Enter). */
   onFlush: () => void;
   onToggleHidden: () => void;
+  /** Resolve one QA issue (the legacy editor's endpoint; review state only). */
+  onResolveIssue: (issueId: number) => void;
+  resolvingIssueId: number | null;
+  /** Put the original AI translation back (locks the event). */
+  onRestoreAi: () => void;
   actionBusy: boolean;
   getVideoTimeMs: () => number | null;
   newDraft: NewEventDraft | null;
@@ -313,8 +324,8 @@ function NewEventEditor(props: QcEventDetailProps & { newDraft: NewEventDraft })
  */
 export function QcEventDetail(props: QcEventDetailProps) {
   const {
-    event, detail, loading, error, cpsLimit, draft, onDraftChange, dirty, saving, saveError, onFlush,
-    onToggleHidden, actionBusy, getVideoTimeMs, newDraft,
+    event, detail, loading, error, cpsLimits, draft, onDraftChange, dirty, saving, saveError, onFlush,
+    onToggleHidden, onResolveIssue, resolvingIssueId, onRestoreAi, actionBusy, getVideoTimeMs, newDraft,
   } = props;
 
   if (newDraft) return <NewEventEditor {...props} newDraft={newDraft} />;
@@ -329,6 +340,8 @@ export function QcEventDetail(props: QcEventDetailProps) {
   const matches = (type: 'original' | 'translated') =>
     (d?.watched_matches ?? []).filter((m) => m.word_type === type).map((m) => m.word);
   const unresolved = d ? d.issues.filter((i) => !i.is_resolved).length : null;
+  const shownText = current ? current.text : event.translated_text ?? '';
+  const restorable = canRestoreAi(d?.original_ai_translated_text, shownText);
 
   return (
     <Stack gap="xs" data-testid="qc-detail" data-event-id={event.id}>
@@ -364,6 +377,22 @@ export function QcEventDetail(props: QcEventDetailProps) {
             // Focus left the whole editor (not just moved between its fields/buttons).
             if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onFlush();
           }}>
+            <Box pos="relative">
+            {restorable && (
+              <Button
+                size="compact-xs"
+                variant="subtle"
+                color="gray"
+                data-testid="qc-restore-ai"
+                title="Revert to the original AI translation"
+                leftSection={<ArrowCounterClockwise size={12} />}
+                disabled={actionBusy}
+                style={{ position: 'absolute', top: -2, right: 0, zIndex: 1 }}
+                onClick={onRestoreAi}
+              >
+                Restore AI translation
+              </Button>
+            )}
             <Textarea
               className="qc-detail-text"
               label="Translation"
@@ -380,6 +409,7 @@ export function QcEventDetail(props: QcEventDetailProps) {
               onBlur={onFlush}
               onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onFlush(); } }}
             />
+            </Box>
             {matches('translated').length > 0 && (
               <Group gap={4} mt={4}>{matches('translated').map((w) => <WatchedWordBadge key={w} word={w} />)}</Group>
             )}
@@ -399,7 +429,7 @@ export function QcEventDetail(props: QcEventDetailProps) {
             </Box>
           </Box>
           </Stack>
-          <QcEventMetadata event={event} d={d} cpsLimit={cpsLimit} loading={loading} />
+          <QcEventMetadata event={event} d={d} cpsLimits={cpsLimits} loading={loading} />
         </div>
       </div>
 
@@ -414,22 +444,46 @@ export function QcEventDetail(props: QcEventDetailProps) {
 
       <Box data-testid="qc-qa">
         {!d || d.issues.length === 0 ? (
-          <Text size="xs" c="dimmed">
-            QA issues: {!d ? (event.issue_count > 0 ? `${event.issue_count} unresolved…` : loading ? '…' : 'none') : 'none'} · not re-run after QC edits
+          <Text size="xs" c="dimmed" data-testid="qc-qa-heading">
+            QA issues{!d && event.issue_count > 0 ? ` (${event.issue_count} unresolved)` : !d && loading ? ' …' : d ? ': none' : ''}
           </Text>
         ) : (
           <>
-            <Text size="xs" c="dimmed" mb={2}>
-              QA issues ({unresolved} unresolved) · as of the last review, not re-run after QC edits
+            <Text size="xs" c="dimmed" mb={2} data-testid="qc-qa-heading">
+              QA issues ({unresolved} unresolved)
             </Text>
             <Stack gap={4}>
               {d.issues.map((issue) => (
-                <Group key={issue.id} gap={6} wrap="nowrap" align="flex-start" style={{ opacity: issue.is_resolved ? 0.55 : 1 }}>
+                <Group
+                  key={issue.id} gap={6} wrap="nowrap" align="flex-start"
+                  data-testid="qc-issue" data-resolved={issue.is_resolved ? 'true' : 'false'}
+                  style={{ opacity: issue.is_resolved ? 0.55 : 1 }}
+                >
                   <Badge size="xs" variant="light" color={SEVERITY_COLORS[issue.severity.toLowerCase()] ?? 'gray'}>{issue.severity}</Badge>
                   <Text size="xs" c="dimmed" style={{ flex: '0 0 auto' }}>{issue.qa_type}</Text>
-                  <Text size="sm" style={{ minWidth: 0, wordBreak: 'break-word' }}>
-                    {issue.message}{issue.is_resolved ? ' (resolved)' : ''}
+                  <Text size="sm" style={{ minWidth: 0, flex: 1, wordBreak: 'break-word' }}>
+                    {issue.message}
                   </Text>
+                  {issue.is_resolved ? (
+                    <Badge
+                      size="xs" color="green" variant="outline" style={{ flexShrink: 0 }}
+                      title={issue.resolution_note ? `Resolved: ${issue.resolution_note}` : 'Resolved'}
+                    >
+                      resolved
+                    </Badge>
+                  ) : (
+                    <Button
+                      size="compact-xs" variant="subtle" color="green" style={{ flexShrink: 0 }}
+                      data-testid="qc-resolve-issue"
+                      title="Resolve issue"
+                      leftSection={<CheckCircle size={13} />}
+                      loading={resolvingIssueId === issue.id}
+                      disabled={resolvingIssueId !== null && resolvingIssueId !== issue.id}
+                      onClick={() => onResolveIssue(issue.id)}
+                    >
+                      Resolve
+                    </Button>
+                  )}
                 </Group>
               ))}
             </Stack>

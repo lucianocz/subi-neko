@@ -5,6 +5,8 @@ import { Badge } from '@mantine/core';
 import type { QcEvent } from '../../types/qc';
 import type { ActiveEvents } from '../../hooks/useActiveSubtitleEvents';
 import { formatMs, plainAssText } from '../../utils/qcText';
+import { CPS_COLORS, cpsSeverity } from '../../utils/cps';
+import type { CpsLimits } from '../../utils/cps';
 import { SEVERITY_COLORS } from '../../utils/qaSeverity';
 import { WATCHED_ROW_BACKGROUND, WATCHED_WORD_BADGE } from '../../utils/watchedWords';
 import './qc.css';
@@ -21,14 +23,14 @@ interface RowProps {
   top: number;
   selected: boolean;
   active: boolean;
-  cpsLimit: number;
+  cpsLimits: CpsLimits;
   onSelect: (event: QcEvent) => void;
   onSeek: (event: QcEvent) => void;
 }
 
-const Row = memo(function Row({ event, top, selected, active, cpsLimit, onSelect, onSeek }: RowProps) {
+const Row = memo(function Row({ event, top, selected, active, cpsLimits, onSelect, onSeek }: RowProps) {
   const translated = plainAssText(event.translated_text);
-  const cpsOver = event.cps != null && event.cps > cpsLimit;
+  const cpsLevel = cpsSeverity(event.cps, cpsLimits);
   return (
     <div
       className="qc-row"
@@ -48,7 +50,14 @@ const Row = memo(function Row({ event, top, selected, active, cpsLimit, onSelect
           {event.content_type !== 'dialogue' ? `${event.content_type} · ` : ''}{event.style}
         </span>
         {event.cps != null && (
-          <Badge size="xs" variant={cpsOver ? 'filled' : 'light'} color={cpsOver ? 'red' : 'gray'} title="Characters per second">
+          <Badge
+            size="xs"
+            variant={cpsLevel === 'error' ? 'filled' : 'light'}
+            color={CPS_COLORS[cpsLevel] ?? 'gray'}
+            title="Characters per second"
+            data-testid="qc-row-cps"
+            data-cps-level={cpsLevel}
+          >
             {event.cps.toFixed(1)} cps
           </Badge>
         )}
@@ -84,10 +93,10 @@ const Row = memo(function Row({ event, top, selected, active, cpsLimit, onSelect
  * they are not input events — so no suppression flag is needed.
  */
 export function QcEventList({
-  events, cpsLimit, active, selectedId, follow, reveal, onSelect, onSeek, onUserScroll,
+  events, cpsLimits, active, selectedId, follow, reveal, onSelect, onSeek, onUserScroll,
 }: {
   events: readonly QcEvent[];
-  cpsLimit: number;
+  cpsLimits: CpsLimits;
   active: ActiveEvents;
   selectedId: number | null;
   follow: boolean;
@@ -151,7 +160,7 @@ export function QcEventList({
               top={item.start}
               selected={event.id === selectedId}
               active={active.ids.has(event.id)}
-              cpsLimit={cpsLimit}
+              cpsLimits={cpsLimits}
               onSelect={onSelect}
               onSeek={onSeek}
             />

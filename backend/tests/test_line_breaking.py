@@ -48,9 +48,12 @@ def test_leading_override_block_preserved():
     assert all(len(r) <= 42 for r in body.split("\\N"))
 
 
-def test_inline_override_skipped():
+def test_inline_override_is_preserved_not_skipped():
+    # Reflow is tag-aware now: inline blocks stay byte-identical, in order.
     text = "Tohle je jako pozdrav {\\fscx237}-{\\r} strčit mi jazyk do pusy, fakt hodně dlouhá věta"
-    assert rebalance_rows(text, 42) is None
+    fixed = rebalance_rows(text, 42)
+    assert fixed is not None
+    assert fixed.replace("\\N", " ") == text
 
 
 def test_soft_break_and_hard_space_skipped():

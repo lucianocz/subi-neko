@@ -41,7 +41,7 @@ from app.subs.czech_checks import (
     check_vocative,
     infer_addressee,
 )
-from app.subs.line_breaking import rebalance_empty_hard_break, rebalance_rows
+from app.subs.line_breaking import rebalance_empty_hard_break, reflow_dialogue
 logger = logging.getLogger(__name__)
 
 # qa_types produced here — used to scope deletion of stale findings and to
@@ -136,15 +136,24 @@ def _rebalance_dialogue_text(
     source_text: str,
     translated_text: str,
     max_row_chars: int,
+    *,
+    join_under: int = 0,
+    auto_join: bool = False,
+    auto_break: bool = True,
 ) -> str | None:
-    """Apply safe empty-row repair, then the ordinary length rebalancer."""
+    """Apply safe empty-row repair, then the shared dialogue reflow (join +
+    balanced wrap). Dialogue chunks only: the caller never reaches here for
+    signs/karaoke/songs (see the content_type guard in the handler)."""
     current = translated_text
     fixed = None
     if check_empty_hard_break(source_text, current):
         fixed = rebalance_empty_hard_break(current, max_row_chars)
         if fixed is not None:
             current = fixed
-    length_fixed = rebalance_rows(current, max_row_chars)
+    length_fixed = reflow_dialogue(
+        current, max_row_chars,
+        join_under=join_under, auto_join=auto_join, auto_break=auto_break,
+    )
     return length_fixed if length_fixed is not None else fixed
 
 
@@ -305,7 +314,11 @@ def review_chunk_final(
     # Deterministic rewrap before the readability check: long_row then only
     # flags what a balanced two-row split can't fix.
     rebalanced: dict[int, str] = {}
-    if ctx.options.auto_line_break:
+    # Lines whose break the auto-join itself removed: the row-count drift from
+    # the source is our deliberate normalisation, not something to review.
+    auto_joined: set[int] = set()
+    auto_join = ctx.options.auto_join_short_lines
+    if ctx.options.auto_line_break or auto_join:
         for snap in events_snapshot:
             if snap["untouchable"]:
                 continue
@@ -313,8 +326,13 @@ def review_chunk_final(
                 snap["source_text"] or "",
                 snap["translated_text"] or "",
                 max_row_chars,
+                join_under=ctx.options.join_lines_under,
+                auto_join=auto_join,
+                auto_break=ctx.options.auto_line_break,
             )
             if fixed is not None:
+                if "\\N" in (snap["translated_text"] or "") and "\\N" not in fixed:
+                    auto_joined.add(snap["id"])
                 snap["translated_text"] = fixed
                 rebalanced[snap["id"]] = fixed
 
@@ -355,7 +373,8 @@ def review_chunk_final(
             snap["source_text"] or "", translated, english_exclude)
         # Re-run after auto line breaking (above) so this reflects the row
         # count actually shipped, not the pre-rebalance draft validate_chunk saw.
-        findings += check_escape_mismatch(snap["source_text"] or "", translated)
+        if snap["id"] not in auto_joined:
+            findings += check_escape_mismatch(snap["source_text"] or "", translated)
         findings += check_empty_hard_break(snap["source_text"] or "", translated)
 
         confidence = snap["translation_confidence"]

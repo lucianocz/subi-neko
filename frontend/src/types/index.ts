@@ -237,7 +237,10 @@ export interface SubtitleEventsSummary {
   unresolved_issue_count: number;
   issue_counts: SubtitleEventsIssueCount[];
   watched_occurrences: number;
+  /** HARD limit: red, and the only one QA uses. */
   cps_limit: number;
+  /** SOFT limit: orange readability hint, never QA. */
+  soft_cps_limit: number;
 }
 
 export interface SubtitleEventPage {

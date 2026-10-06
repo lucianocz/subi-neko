@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Badge, Button, Center, Group, Loader, Stack, Switch, Text, Title } from '@mantine/core';
 import { ArrowLeft, ArrowClockwise, Plus } from '@phosphor-icons/react';
@@ -13,6 +13,7 @@ import { useQcEditing } from '../hooks/useQcEditing';
 import { useQcFonts } from '../hooks/useQcFonts';
 import { useQcPreview } from '../hooks/useQcPreview';
 import type { QcEvent, QcEventList as QcEventListData } from '../types/qc';
+import { cpsLimitsFrom } from '../utils/cps';
 import { spaceBelongsToTarget } from '../utils/qcKeyboard';
 import '../components/qc/qc.css';
 
@@ -132,6 +133,12 @@ function FinalQcWorkspace({
   const leftRef = useRef<HTMLDivElement>(null);
 
   const events = list.events;
+  const hardCps = list.cps_limit;
+  const softCps = list.soft_cps_limit;
+  const cpsLimits = useMemo(
+    () => cpsLimitsFrom({ cps_limit: hardCps, soft_cps_limit: softCps }),
+    [hardCps, softCps],
+  );
 
   // The renderer is built once from the first preview + fonts; every later change
   // goes through setTrack/addFonts on the live instance (see useQcEditing).
@@ -330,7 +337,7 @@ function FinalQcWorkspace({
               detail={detail.data}
               loading={detail.isFetching}
               error={detail.isError}
-              cpsLimit={list.cps_limit}
+              cpsLimits={cpsLimits}
               draft={editing.draft}
               onDraftChange={editing.changeDraft}
               dirty={editing.dirty}
@@ -338,6 +345,9 @@ function FinalQcWorkspace({
               saveError={saveMessage}
               onFlush={() => { void editing.flushSelected(); }}
               onToggleHidden={() => { void editing.toggleHidden(); }}
+              onResolveIssue={(id) => { void editing.resolveIssue(id); }}
+              resolvingIssueId={editing.resolvingIssueId}
+              onRestoreAi={() => { void editing.restoreAi(); }}
               actionBusy={editing.action.state === 'busy'}
               getVideoTimeMs={editing.getVideoTimeMs}
               newDraft={editing.newDraft}
@@ -370,7 +380,7 @@ function FinalQcWorkspace({
           ) : (
             <QcEventList
               events={events}
-              cpsLimit={list.cps_limit}
+              cpsLimits={cpsLimits}
               active={active}
               selectedId={editing.selectedId}
               follow={follow}

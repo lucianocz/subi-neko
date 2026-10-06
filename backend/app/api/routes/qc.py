@@ -9,6 +9,10 @@ Contract (see also ``app.db.qc_state`` / ``app.subs.ass_rendering.build_ass``):
   ASS serializer ships) when written.
 * Any real QC edit locks the event (``is_locked=1``) so translate/repair/polish/
   review can't overwrite it; only a full retranslate resets the lock.
+* ``restore-ai`` mirrors the legacy revert but also locks the event (see its
+  docstring). Resolving a QA item is NOT done here: the editor's existing
+  ``POST .../qa-issues/{id}/resolve`` is reused (review metadata only — it
+  never touches text/timing, so it never bumps ``output_revision``).
 * Output invalidation is *not* done here: the ``before_flush`` listener in
   ``app.db.output_state`` bumps ``Project.output_revision`` for every
   ``SubtitleEvent`` insert / output-column change made through the session
@@ -119,7 +123,8 @@ class QcEventListOut(BaseModel):
     event_count: int          # rows in this response
     total_count: int          # rows in the file, hidden included
     hidden_count: int
-    cps_limit: float
+    cps_limit: float          # HARD limit (red; QA high_cps)
+    soft_cps_limit: float     # SOFT limit (orange; display only, never QA)
     # Style names linked to the file (for the manual-event style selector).
     styles: list[str]
     events: list[QcEventOut]
@@ -321,7 +326,7 @@ async def list_qc_events(project_id: int, file_id: int, show_hidden: bool = Fals
         )).all()
         issues = _issue_summary(issue_rows)
         watched = await _watched_words(session, project_id)
-        cps_limit = (await options_store.asnapshot()).cps_limit
+        opts = await options_store.asnapshot()
         styles = list((await session.scalars(
             select(SubtitleStyle.style_name)
             .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
@@ -338,7 +343,8 @@ async def list_qc_events(project_id: int, file_id: int, show_hidden: bool = Fals
             event_count=len(events),
             total_count=int(counts[0]),
             hidden_count=int(counts[1]),
-            cps_limit=cps_limit,
+            cps_limit=opts.cps_limit,
+            soft_cps_limit=opts.soft_cps_limit,
             styles=list(dict.fromkeys(styles)),
             events=events,
         )
@@ -440,6 +446,43 @@ async def patch_qc_event(
     if changed:
         if text_changed and not is_manual:
             await _sync_tm_after_edit(project_id, event_id, file_status)
+        await _broadcast_project_updated(project_id)
+    return out
+
+
+@router.post("/{project_id}/files/{file_id}/qc/events/{event_id}/restore-ai", response_model=QcEventOut)
+async def restore_ai_qc_event(project_id: int, file_id: int, event_id: int, response: Response):
+    """Put the original AI translation back (the legacy editor's *revert*).
+
+    Same data semantics as ``POST .../subtitle-events/{id}/revert`` —
+    ``translated_text`` := ``original_ai_translated_text``, ``is_user_edited``
+    cleared, 409 when there is no baseline — with ONE deliberate QC difference:
+    the event ends up ``is_locked=1``. An explicit QC interaction stays
+    protected, so a later translate/polish/review run can never overwrite the
+    restored line (the legacy revert leaves the lock untouched and relies on
+    ``is_user_edited``, which restore clears). Timing is left as it is. Output
+    invalidation is the usual ``before_flush`` listener: the revision bumps
+    only when ``translated_text`` actually changed.
+    """
+    async with AsyncSessionLocal() as session:
+        file = await _qc_file(session, project_id, file_id)
+        event = await _load_event(session, file_id, event_id)
+        if event.original_ai_translated_text is None:
+            raise HTTPException(status_code=409, detail="No original AI translation stored")
+        text_changed = event.translated_text != event.original_ai_translated_text
+        is_manual = bool(event.is_manual)
+        file_status = file.status
+        event.translated_text = event.original_ai_translated_text
+        event.is_user_edited = 0
+        event.is_locked = 1
+        event.updated_at = datetime.utcnow().isoformat()
+        await session.commit()
+        out = await _event_out(session, project_id, event_id)
+        await _stamp_revision(session, project_id, response)
+
+    if text_changed and not is_manual:
+        await _sync_tm_after_edit(project_id, event_id, file_status)
+    if text_changed:
         await _broadcast_project_updated(project_id)
     return out
 

@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ActionIcon, Alert } from '@mantine/core';
 import { ArrowsIn, ArrowsOut } from '@phosphor-icons/react';
+import { readPlayerPrefs, writePlayerPrefs } from '../../utils/qcPlayerPrefs';
 import './qc.css';
+
+/** Height of the native control bar (clicks there are never "the picture"). */
+const CONTROLS_STRIP_PX = 48;
 
 const MEDIA_ERR_ABORTED = 1;
 const MEDIA_ERR_NETWORK = 2;
@@ -46,6 +50,26 @@ export function QcVideoPlayer({
   onFullscreenChange?: () => void;
 }) {
   const wrapRef = useRef<HTMLDivElement>(null);
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+  const setVideoRef = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    onVideoElement(el);
+  }, [onVideoElement]);
+
+  // Volume/mute persist across files and sessions. Restoring only sets the
+  // element's properties — never calls play(), so autoplay policy is untouched.
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+    const stored = readPlayerPrefs();
+    if (stored) {
+      video.volume = stored.volume;
+      video.muted = stored.muted;
+    }
+    const onVolumeChange = () => writePlayerPrefs({ volume: video.volume, muted: video.muted });
+    video.addEventListener('volumechange', onVolumeChange);
+    return () => video.removeEventListener('volumechange', onVolumeChange);
+  }, []);
   const [fullscreen, setFullscreen] = useState(false);
   const onChangeRef = useRef(onFullscreenChange);
   useEffect(() => { onChangeRef.current = onFullscreenChange; });
@@ -72,6 +96,27 @@ export function QcVideoPlayer({
     op.catch((e) => console.warn('Fullscreen request failed', e));
   }, []);
 
+  // Click on the picture = play/pause. Browsers differ in whether the native
+  // controls already toggle on a click of the picture, so this never toggles
+  // blindly: it only steps in when the press left playback state unchanged
+  // (otherwise the native handler already did it -> no double toggle). Clicks
+  // in the control bar strip and the 2nd click of a double-click are ignored.
+  const pausedAtPress = useRef<boolean | null>(null);
+  const onPicturePointerDown = useCallback((e: React.PointerEvent<HTMLVideoElement>) => {
+    pausedAtPress.current = e.button === 0 ? e.currentTarget.paused : null;
+  }, []);
+  const onPictureClick = useCallback((e: React.MouseEvent<HTMLVideoElement>) => {
+    const video = e.currentTarget;
+    const before = pausedAtPress.current;
+    pausedAtPress.current = null;
+    if (before === null || e.detail > 1) return;
+    const rect = video.getBoundingClientRect();
+    if (e.clientY > rect.bottom - CONTROLS_STRIP_PX) return;
+    if (video.paused !== before) return; // native controls already toggled
+    if (video.paused) video.play().catch(() => { /* blocked or unsupported: the player shows why */ });
+    else video.pause();
+  }, []);
+
   const [errorState, setError] = useState<{ src: string; message: string } | null>(null);
   const error = errorState?.src === src ? errorState.message : null;
 
@@ -83,7 +128,7 @@ export function QcVideoPlayer({
   return (
     <div className="qc-video-wrap" ref={wrapRef}>
       <video
-        ref={onVideoElement}
+        ref={setVideoRef}
         className="qc-video"
         src={src}
         controls
@@ -91,6 +136,8 @@ export function QcVideoPlayer({
         playsInline
         controlsList="nofullscreen"
         disablePictureInPicture
+        onPointerDown={onPicturePointerDown}
+        onClick={onPictureClick}
         onError={onError}
         onLoadedData={() => setError(null)}
       />

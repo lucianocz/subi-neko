@@ -278,6 +278,7 @@ class SubtitleEventsSummaryOut(BaseModel):
     # app.subs.watched_words for the exact matching semantics.
     watched_occurrences: int
     cps_limit: float
+    soft_cps_limit: float
 
 
 class SubtitleEventPageOut(BaseModel):
@@ -1839,6 +1840,7 @@ async def _subtitle_events_summary(
     total_events = await session.scalar(
         select(func.count()).select_from(SubtitleEvent).where(SubtitleEvent.file_id == file_id)
     ) or 0
+    opts = await options_store.asnapshot()
     # Only issues attached to an event ever show up in the editor.
     attached = (QaItem.file_id == file_id, QaItem.subtitle_event_id.is_not(None))
     unresolved = await session.scalar(
@@ -1872,7 +1874,8 @@ async def _subtitle_events_summary(
             for severity, qa_type, count in count_rows
         ],
         watched_occurrences=watched_occurrences,
-        cps_limit=(await options_store.asnapshot()).cps_limit,
+        cps_limit=opts.cps_limit,
+        soft_cps_limit=opts.soft_cps_limit,
     )
 
 

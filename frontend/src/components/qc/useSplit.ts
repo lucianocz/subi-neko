@@ -1,15 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import type { KeyboardEvent as ReactKeyboardEvent, PointerEvent as ReactPointerEvent, RefObject } from 'react';
 
-const STORAGE_KEY = 'subi-neko.qc.layout.v1';
-
-type LayoutKey = 'h' | 'v';
+import { mergeStoredFraction, parseStoredFraction, QC_LAYOUT_KEY } from '../../utils/qcLayout';
+import type { LayoutKey } from '../../utils/qcLayout';
 
 function readStored(key: LayoutKey): number | null {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const value = raw ? (JSON.parse(raw) as Partial<Record<LayoutKey, unknown>>)[key] : null;
-    return typeof value === 'number' && value > 0 && value < 1 ? value : null;
+    return parseStoredFraction(localStorage.getItem(QC_LAYOUT_KEY), key);
   } catch {
     return null;
   }
@@ -17,9 +14,7 @@ function readStored(key: LayoutKey): number | null {
 
 function store(key: LayoutKey, value: number) {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const all = raw ? (JSON.parse(raw) as Record<string, unknown>) : {};
-    localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...all, [key]: value }));
+    localStorage.setItem(QC_LAYOUT_KEY, mergeStoredFraction(localStorage.getItem(QC_LAYOUT_KEY), key, value));
   } catch {
     // Persistence is a convenience only (private mode, blocked storage, ...).
   }

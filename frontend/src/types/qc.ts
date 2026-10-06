@@ -30,7 +30,10 @@ export interface QcEventList {
   event_count: number;
   total_count: number;
   hidden_count: number;
+  /** HARD limit: red, and the only one QA uses. */
   cps_limit: number;
+  /** SOFT limit: orange readability hint, never QA. */
+  soft_cps_limit: number;
   /** Style names linked to the file (manual-event style selector). */
   styles: string[];
   events: QcEvent[];

@@ -34,6 +34,8 @@ import { useProjectWatchedWords } from '../hooks/useProjects';
 import { WatchedWordBadge } from '../components/WatchedWordBadge';
 import { WATCHED_ROW_BACKGROUND } from '../utils/watchedWords';
 import { SEVERITY_COLORS } from '../utils/qaSeverity';
+import { CPS_COLORS, cpsLimitsFrom, cpsSeverity } from '../utils/cps';
+import type { CpsLimits } from '../utils/cps';
 
 const SEVERITY_RANK: Record<string, number> = {
   blocker: 0,
@@ -180,7 +182,7 @@ function IssueRow({
 
 interface SubtitleRowProps {
   row: SubtitleEventEditorRow;
-  cpsLimit: number;
+  cpsLimits: CpsLimits;
   originalWatchedWords: ProjectWatchedWord[];
   translatedWatchedWords: ProjectWatchedWord[];
   showInfo: boolean;
@@ -198,7 +200,7 @@ interface SubtitleRowProps {
 // row re-renders that row only.
 const SubtitleRow = memo(function SubtitleRow({
   row,
-  cpsLimit,
+  cpsLimits,
   originalWatchedWords,
   translatedWatchedWords,
   showInfo,
@@ -277,7 +279,7 @@ const SubtitleRow = memo(function SubtitleRow({
     }
   };
 
-  const cpsOver = row.cps !== null && row.cps > cpsLimit;
+  const cpsLevel = cpsSeverity(row.cps, cpsLimits);
 
   return (
     <Table.Tr
@@ -345,17 +347,18 @@ const SubtitleRow = memo(function SubtitleRow({
       </Table.Td>
       <Table.Td style={{ width: 64, verticalAlign: 'top', textAlign: 'center' }}>
         <Tooltip
-          label="Raw reading speed; QA may allow longer translations based on source length."
+          label="Raw reading speed. Orange: above the soft limit (hint only). Red: above the hard limit; QA may still allow longer translations based on source length."
           withArrow
           multiline
           w={220}
         >
           <Text
             size="sm"
-            fw={cpsOver ? 700 : 400}
-            c={cpsOver ? 'red' : 'dimmed'}
+            fw={cpsLevel === 'normal' ? 400 : 700}
+            c={CPS_COLORS[cpsLevel] ?? 'dimmed'}
             data-testid="cps-cell"
-            data-cps-over={cpsOver ? 'true' : 'false'}
+            data-cps-over={cpsLevel === 'error' ? 'true' : 'false'}
+            data-cps-level={cpsLevel}
             style={{ paddingTop: 8 }}
           >
             {row.cps === null ? '—' : Math.round(row.cps)}
@@ -569,7 +572,13 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
   const rangeStart = rows.length > 0 && data ? (data.page - 1) * data.page_size + 1 : 0;
   const rangeEnd = rows.length > 0 ? rangeStart + rows.length - 1 : 0;
   const unresolvedCount = summary?.unresolved_issue_count ?? 0;
-  const cpsLimit = summary?.cps_limit ?? Number.POSITIVE_INFINITY;
+  const hardCps = summary?.cps_limit;
+  const softCps = summary?.soft_cps_limit;
+  // Keyed on the numbers: row memoization must survive summary refetches.
+  const cpsLimits = useMemo(
+    () => cpsLimitsFrom({ cps_limit: hardCps, soft_cps_limit: softCps }),
+    [hardCps, softCps],
+  );
 
   return (
     <Modal
@@ -694,7 +703,7 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
                     <SubtitleRow
                       key={row.id}
                       row={row}
-                      cpsLimit={cpsLimit}
+                      cpsLimits={cpsLimits}
                       originalWatchedWords={watchedWordsByType.original}
                       translatedWatchedWords={watchedWordsByType.translated}
                       showInfo={showInfo}

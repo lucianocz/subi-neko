@@ -2,12 +2,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
-import type { QcEvent, QcEventList } from '../types/qc';
+import type { QaIssue } from '../types';
+import type { QcEvent, QcEventDetail, QcEventList } from '../types/qc';
 import {
   defaultStyle, diffDraft, draftFromEvent, isUntouchedNewEvent, mergeSaved, validateNewEvent,
 } from '../utils/qcDraft';
 import type { EventDraft, NewEventDraft } from '../utils/qcDraft';
 import { neighbourAfterRemoval, nextMeta, upsertEvent } from '../utils/qcEvents';
+import { applyIssueResolved, applyIssueSummary, mergeEventIntoDetail, summarizeIssues } from '../utils/qcQa';
 import { classifyMutationRevision, createLatestGate } from '../utils/qcRevision';
 import { videoTimeToMs } from '../utils/qcTime';
 import { qcErrorDetail, qcKey } from './useQcEvents';
@@ -70,6 +72,7 @@ export function useQcEditing({ projectId, fileId, showHidden, list, initialRevis
 
   const [save, setSave] = useState<Status>(IDLE);
   const [action, setAction] = useState<Status>(IDLE);
+  const [resolvingIssueId, setResolvingIssueId] = useState<number | null>(null);
   const [preview, setPreview] = useState<Status>(IDLE);
   const [fontError, setFontError] = useState<string | null>(null);
   const [reloading, setReloading] = useState(false);
@@ -362,6 +365,73 @@ export function useQcEditing({ projectId, fileId, showHidden, list, initialRevis
     });
   }, [acceptRevision, applyToCaches, base, busy, flushSelected, getEvent, readList, refreshOutput, selectNow, setDraft]);
 
+  /**
+   * Resolve one QA issue through the legacy editor's endpoint (review metadata
+   * only: no text/timing change, no output revision bump, no preview refresh).
+   * The cached detail and the list row are patched in place from the response —
+   * neither the event list nor the detail is refetched.
+   */
+  const resolveIssue = useCallback(async (issueId: number) => {
+    const id = selectedIdRef.current;
+    if (id === null) return;
+    setResolvingIssueId(issueId);
+    try {
+      const res = await client.post<{ id: number; issues: QaIssue[] }>(
+        `/projects/${projectId}/files/${fileId}/qa-issues/${issueId}/resolve`,
+      );
+      const summary = summarizeIssues(res.data.issues);
+      queryClient.setQueryData<QcEventDetail>(
+        [...qcKey(projectId, fileId), 'event', id],
+        (old) => (old ? applyIssueResolved(old, issueId) : old),
+      );
+      for (const q of queryClient.getQueryCache().findAll({ queryKey: [...qcKey(projectId, fileId), 'events'] })) {
+        queryClient.setQueryData<QcEventList>(q.queryKey, (old) => {
+          if (!old) return old;
+          return { ...old, events: old.events.map((e) => (e.id === id ? applyIssueSummary(e, summary) : e)) };
+        });
+      }
+      setAction((a) => (a.state === 'error' ? IDLE : a));
+    } catch (e) {
+      setAction({ state: 'error', message: qcErrorDetail(e) ?? 'Could not resolve the issue.' });
+    } finally {
+      setResolvingIssueId(null);
+    }
+  }, [projectId, fileId, queryClient]);
+
+  /**
+   * Put the original AI translation back. A pending draft is saved first (the
+   * usual flush gate), then the server restores it, locks the event and answers
+   * with the authoritative row (text, flags, recomputed CPS); the preview and
+   * the renderer follow like after any text edit.
+   */
+  const restoreAi = useCallback(async () => {
+    const id = selectedIdRef.current;
+    if (id === null) return;
+    if (!(await flushSelected())) return;
+    const event = getEvent(id);
+    if (!event) return;
+    setAction({ state: 'busy', message: null });
+    await busy(async () => {
+      try {
+        const res = await client.post<QcEvent>(`${base}/events/${id}/restore-ai`);
+        const saved = res.data;
+        const revision = revisionOf(res.headers);
+        queryClient.setQueryData<QcEventDetail>(
+          [...qcKey(projectId, fileId), 'event', id],
+          (old) => (old ? mergeEventIntoDetail(old, saved) : old),
+        );
+        applyToCaches(saved, false, revision);
+        acceptRevision(revision);
+        if (draftRef.current?.id === id) setDraft(draftFromEvent(saved));
+        setAction(IDLE);
+        // The server bumps the revision only when the text really changed.
+        if ((saved.translated_text ?? '') !== (event.translated_text ?? '')) void refreshOutput({ fonts: true });
+      } catch (e) {
+        setAction({ state: 'error', message: qcErrorDetail(e) ?? 'Could not restore the AI translation.' });
+      }
+    });
+  }, [acceptRevision, applyToCaches, base, busy, flushSelected, getEvent, projectId, fileId, queryClient, refreshOutput, setDraft]);
+
   /** Show-hidden toggle helper: leave a hidden selection that is about to vanish. */
   const dropHiddenSelection = useCallback(() => {
     const id = selectedIdRef.current;
@@ -427,9 +497,9 @@ export function useQcEditing({ projectId, fileId, showHidden, list, initialRevis
 
   return {
     selectedId, selected, draft, newDraft, newError, dirty,
-    save, action, preview, fontError, reloading, reveal, stale, known,
+    save, action, resolvingIssueId, preview, fontError, reloading, reveal, stale, known,
     setNewDraft, changeDraft, select, flushSelected, startNewEvent, cancelNewEvent,
     createEvent: () => createEvent(true),
-    toggleHidden, dropHiddenSelection, reload, retryPreview, getVideoTimeMs,
+    toggleHidden, resolveIssue, restoreAi, dropHiddenSelection, reload, retryPreview, getVideoTimeMs,
   };
 }

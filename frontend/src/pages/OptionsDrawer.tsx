@@ -17,6 +17,7 @@ import {
 } from '@mantine/core';
 import type { OptionsMap } from '../hooks/useOptions';
 import { useOptions, useSaveOptions } from '../hooks/useOptions';
+import { validateCpsLimits } from '../utils/optionsValidation';
 
 // ─── Language list ────────────────────────────────────────────────────────────
 
@@ -131,6 +132,50 @@ function SaveOnBlurNumber({
       min={min}
       max={max}
     />
+  );
+}
+
+/**
+ * Soft + hard CPS limits. Validated together (soft < hard) before anything is
+ * sent, and saved in ONE request so the server judges the pair as a whole.
+ */
+function CpsLimitFields({ soft, hard }: { soft: string | null; hard: string | null }) {
+  const { mutate } = useSaveOptions();
+  const [softValue, setSoftValue] = useState<number | string>(soft != null ? Number(soft) : 18);
+  const [hardValue, setHardValue] = useState<number | string>(hard != null ? Number(hard) : 20);
+  const errors = validateCpsLimits(softValue, hardValue);
+
+  const save = (key: 'SOFT_CPS_LIMIT' | 'CPS_LIMIT') => {
+    if (typeof softValue !== 'number' || typeof hardValue !== 'number') return;
+    if (errors.soft || errors.hard) return;
+    mutate({ [key]: String(key === 'CPS_LIMIT' ? hardValue : softValue) });
+  };
+
+  return (
+    <>
+      <NumberInput
+        label="Soft CPS limit"
+        description="CPS above this value is highlighted as a warning but does not create a QA issue."
+        value={softValue}
+        onChange={setSoftValue}
+        onBlur={() => save('SOFT_CPS_LIMIT')}
+        error={errors.soft}
+        min={5}
+        max={40}
+        data-testid="opt-soft-cps"
+      />
+      <NumberInput
+        label="Hard CPS limit"
+        description="CPS above this value is highlighted as an error and may trigger QA (QA still skips lines whose English source needed that many characters)."
+        value={hardValue}
+        onChange={setHardValue}
+        onBlur={() => save('CPS_LIMIT')}
+        error={errors.hard}
+        min={5}
+        max={40}
+        data-testid="opt-hard-cps"
+      />
+    </>
   );
 }
 
@@ -338,14 +383,6 @@ function OptionsForm({ options }: { options: OptionsMap }) {
           defaultValue={options['REPLACE_INCOMPATIBLE_FONTS'] ?? '1'}
         />
         <SaveOnBlurNumber
-          optionKey="CPS_LIMIT"
-          label="Reading speed limit (CPS)"
-          description="Characters per second above which a line is flagged for condensing."
-          defaultValue={options['CPS_LIMIT'] ?? null}
-          min={5}
-          max={40}
-        />
-        <SaveOnBlurNumber
           optionKey="MAX_ROW_CHARS"
           label="Max characters per row"
           description="Row length above which a line is flagged for rewrapping or condensing."
@@ -356,9 +393,24 @@ function OptionsForm({ options }: { options: OptionsMap }) {
         <SaveOnChangeSwitch
           optionKey="AUTO_LINE_BREAK"
           label="Auto line breaks"
-          description="On (recommended): dialogue rows longer than the row limit are automatically rebalanced onto two lines at a word boundary; only lines that still don't fit are flagged. Off: long rows are flagged for manual rewrapping."
+          description="Long dialogue rows are automatically reflowed at natural, balanced boundaries while avoiding bad linguistic breaks."
           defaultValue={options['AUTO_LINE_BREAK'] ?? '1'}
         />
+        <SaveOnChangeSwitch
+          optionKey="AUTO_JOIN_SHORT_LINES"
+          label="Auto join short lines"
+          description="Removes unnecessary dialogue line breaks when the joined text fits within this length."
+          defaultValue={options['AUTO_JOIN_SHORT_LINES'] ?? '1'}
+        />
+        <SaveOnBlurNumber
+          optionKey="JOIN_LINES_UNDER"
+          label="Join lines under"
+          description="Joined text must fit this many characters (and the row limit) for a break to be removed."
+          defaultValue={options['JOIN_LINES_UNDER'] ?? '45'}
+          min={10}
+          max={120}
+        />
+        <CpsLimitFields soft={options['SOFT_CPS_LIMIT'] ?? null} hard={options['CPS_LIMIT'] ?? null} />
       </Section>
 
       <Divider />
