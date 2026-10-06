@@ -1,6 +1,6 @@
 from typing import Annotated
 
-from fastapi import APIRouter, Body
+from fastapi import APIRouter, Body, HTTPException
 
 from app.db import options as options_store
 from app.ws.connection_manager import connection_manager
@@ -40,8 +40,11 @@ async def get_options() -> dict[str, str | None]:
         "REPLACE_INCOMPATIBLE_FONTS": "1" if opts.replace_incompatible_fonts else "0",
         "REQUIRE_STYLE_BIBLE": "1" if opts.require_style_bible else "0",
         "CPS_LIMIT": str(opts.cps_limit),
+        "SOFT_CPS_LIMIT": str(opts.soft_cps_limit),
         "MAX_ROW_CHARS": str(opts.max_row_chars),
         "AUTO_LINE_BREAK": "1" if opts.auto_line_break else "0",
+        "AUTO_JOIN_SHORT_LINES": "1" if opts.auto_join_short_lines else "0",
+        "JOIN_LINES_UNDER": str(opts.join_lines_under),
         "AUTO_ACCEPT_POLICY": opts.auto_accept_policy,
         "AUTO_MAPPING_ACCEPT_THRESHOLD": str(opts.auto_mapping_accept_threshold),
         "TRANSLATION_CONFIDENCE_FLAG_THRESHOLD": str(opts.translation_confidence_flag_threshold),
@@ -68,6 +71,13 @@ async def get_options() -> dict[str, str | None]:
 async def patch_options(
     body: Annotated[dict[str, str | None], Body()],
 ) -> None:
+    # Validate the whole request before writing anything (no half-applied PATCH).
+    # GET above reports the *effective* soft limit, so compare against the raw
+    # stored values here.
+    current = {k: await options_store.aget(k) for k in ("CPS_LIMIT", "SOFT_CPS_LIMIT", "JOIN_LINES_UNDER")}
+    problems = options_store.validate_option_changes(body, current)
+    if problems:
+        raise HTTPException(status_code=422, detail=" ".join(problems))
     for key, value in body.items():
         if key in _SECRET_KEYS:
             current = await options_store.aget(key)
