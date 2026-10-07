@@ -56,6 +56,7 @@ from app.core.media_paths import SourcePathError, resolve_source_path
 from app.db import options as options_store
 from app.db.models import (
     File,
+    FileBranding,
     Project,
     ProjectWatchedWord,
     QaItem,
@@ -68,6 +69,13 @@ from app.db.models import (
 from app.db.qc_state import is_qc_available
 from app.metadata.base import CharacterGender
 from app.subs.ass_rendering import HEADER_NOTICE, build_ass
+from app.subs.branding import (
+    BrandingError,
+    branding_families,
+    list_templates,
+    load_template,
+    spec_from_row,
+)
 from app.subs.font_attachments import FontAttachmentError, get_attachment_registry
 from app.subs.font_registry import FontFace, FontRegistry, get_configured_registry
 from app.subs.qc_fonts import collect_required_families, resolve_manifest
@@ -622,12 +630,18 @@ async def qc_preview_ass(project_id: int, file_id: int, request: Request):
             .order_by(SubtitleEvent.line_index)
         )).all())
         opts = await options_store.asnapshot()
-        subs = build_ass(
-            subtitle, styles, events,
-            text_variant="translated",
-            title=opts.target_lang_name or "",
-            use_font_replacements=opts.replace_incompatible_fonts,
-        )
+        branding = spec_from_row(await session.scalar(
+            select(FileBranding).where(FileBranding.file_id == file_id)))
+        try:
+            subs = build_ass(
+                subtitle, styles, events,
+                text_variant="translated",
+                title=opts.target_lang_name or "",
+                use_font_replacements=opts.replace_incompatible_fonts,
+                branding=branding,
+            )
+        except BrandingError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return Response(
         content=subs.to_string("ass", header_notice=HEADER_NOTICE).encode("utf-8"),
@@ -654,7 +668,8 @@ class QcFontOut(BaseModel):
 class QcFontsOut(BaseModel):
     file_id: int
     replace_incompatible_fonts: bool
-    # Families the translated ASS requests (style fonts + explicit \fn overrides).
+    # Families the translated ASS requests (style fonts + explicit \fn overrides,
+    # plus the branding template's fonts while branding is enabled).
     required_families: list[str]
     fonts: list[QcFontOut]
     missing_families: list[str]
@@ -708,8 +723,20 @@ async def get_qc_fonts(project_id: int, file_id: int, request: Request):
             )).all()
         ]
         replace = (await options_store.asnapshot()).replace_incompatible_fonts
+        branding = spec_from_row(await session.scalar(
+            select(FileBranding).where(FileBranding.file_id == file_id)))
 
-    required = collect_required_families(styles, event_rows, use_font_replacements=replace)
+    # Branding events are not SubtitleEvent rows, so their fonts are added here
+    # (only while branding is enabled). A broken template must not fail the
+    # manifest: the preview itself reports that.
+    extra: list[str] = []
+    if branding is not None:
+        try:
+            extra = branding_families(branding)
+        except BrandingError as exc:
+            logger.warning("Branding fonts unavailable for file id=%s: %s", file_id, exc)
+    required = collect_required_families(
+        styles, event_rows, use_font_replacements=replace, extra_families=extra)
     attachments, error = await _load_attachment_registry(project, file)
     resolved = resolve_manifest(required, attachments, get_configured_registry())
 
@@ -739,3 +766,118 @@ async def get_qc_attachment_font(project_id: int, file_id: int, font_id: str) ->
     if face is None or not face.path.is_file():
         raise HTTPException(status_code=404, detail="Font not found")
     return font_response(face)
+
+
+# ---------------------------------------------------------------------------
+# Branding overlay (render-time template; see app.subs.branding)
+# ---------------------------------------------------------------------------
+
+MAX_BRANDING_OFFSET_MS = 24 * 3600 * 1000
+
+
+class QcBrandingOut(BaseModel):
+    enabled: bool
+    template_filename: str | None
+    start_offset_ms: int
+    # Authoritative revision after the call; lets the page track its own save.
+    output_revision: int
+
+
+class QcBrandingIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool
+    template_filename: str | None = None
+    start_offset_ms: int = Field(0, ge=0, le=MAX_BRANDING_OFFSET_MS)
+
+
+class QcBrandingTemplatesOut(BaseModel):
+    templates: list[str]
+
+
+def _branding_defaults(templates: list[str]) -> tuple[bool, str | None, int]:
+    return False, (templates[0] if len(templates) == 1 else None), 0
+
+
+async def _branding_out(session, project_id: int, row, templates: list[str]) -> QcBrandingOut:
+    enabled, template, start = (
+        (bool(row.enabled), row.template_filename, row.start_offset_ms)
+        if row is not None else _branding_defaults(templates))
+    revision = await session.scalar(
+        select(Project.output_revision).where(Project.id == project_id)) or 0
+    return QcBrandingOut(
+        enabled=enabled, template_filename=template, start_offset_ms=start,
+        output_revision=revision)
+
+
+@router.get("/{project_id}/files/{file_id}/qc/branding", response_model=QcBrandingOut)
+async def get_qc_branding(project_id: int, file_id: int, response: Response):
+    """Stored branding config, or defaults when none was ever saved (no row is
+    created by a read)."""
+    async with AsyncSessionLocal() as session:
+        await _qc_file(session, project_id, file_id)
+        row = await session.scalar(select(FileBranding).where(FileBranding.file_id == file_id))
+        out = await _branding_out(session, project_id, row, list_templates())
+    response.headers["X-Output-Revision"] = str(out.output_revision)
+    return out
+
+
+@router.get(
+    "/{project_id}/files/{file_id}/qc/branding/templates", response_model=QcBrandingTemplatesOut)
+async def list_qc_branding_templates(project_id: int, file_id: int):
+    async with AsyncSessionLocal() as session:
+        await _qc_file(session, project_id, file_id)
+    return QcBrandingTemplatesOut(templates=list_templates())
+
+
+@router.put("/{project_id}/files/{file_id}/qc/branding", response_model=QcBrandingOut)
+async def put_qc_branding(
+    project_id: int, file_id: int, body: QcBrandingIn, response: Response,
+):
+    """Replace the file's branding config. Disabling keeps the stored template
+    and offset. A save that changes nothing writes nothing (no revision bump,
+    no row created). Real changes bump ``output_revision`` through the
+    ``output_state`` ORM listener, like every other output-affecting edit."""
+    start = quantize_ms(body.start_offset_ms)
+    async with AsyncSessionLocal() as session:
+        await _qc_file(session, project_id, file_id)
+        row = await session.scalar(select(FileBranding).where(FileBranding.file_id == file_id))
+        templates = list_templates()
+        current = (
+            (bool(row.enabled), row.template_filename, row.start_offset_ms)
+            if row is not None else _branding_defaults(templates))
+
+        template = body.template_filename or None
+        if body.enabled and template is None:
+            raise HTTPException(status_code=422, detail="Enabled branding requires a template")
+        # A disabled config may keep a template that has since disappeared.
+        if template is not None and not (not body.enabled and template == current[1]):
+            if template not in templates:
+                raise HTTPException(
+                    status_code=422, detail=f"Unknown branding template: {template}")
+            if body.enabled:
+                try:
+                    load_template(template)
+                except BrandingError as exc:
+                    raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if (body.enabled, template, start) != current:
+            if row is None:
+                row = FileBranding(file_id=file_id)
+                session.add(row)
+            row.enabled = int(body.enabled)
+            row.template_filename = template
+            row.start_offset_ms = start
+            try:
+                await session.commit()
+            except IntegrityError:
+                await session.rollback()
+                raise HTTPException(status_code=409, detail="Concurrent branding save; retry")
+            changed = True
+        else:
+            changed = False
+        out = await _branding_out(session, project_id, row, templates)
+
+    response.headers["X-Output-Revision"] = str(out.output_revision)
+    if changed:
+        await _broadcast_project_updated(project_id)
+    return out

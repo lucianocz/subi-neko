@@ -36,6 +36,7 @@ from sqlalchemy import select, update
 from app.core.database import SyncSessionLocal
 from app.db.models import (
     File,
+    FileBranding,
     Project,
     Subtitle,
     SubtitleEvent,
@@ -46,6 +47,7 @@ from app.db.output_state import ACCEPTED_FOR_OUTPUT, PublishState
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
 from app.subs.ass_rendering import build_ass, save_ass
+from app.subs.branding import BrandingError, spec_from_row
 
 logger = logging.getLogger(__name__)
 
@@ -191,13 +193,19 @@ def _publish(
                 .where(SubtitleEvent.file_id == f.id)
                 .order_by(SubtitleEvent.line_index)
             ).all()
-            # Existing authoritative rendering path — unchanged semantics.
-            subs = build_ass(
-                subtitle, styles, events,
-                text_variant="translated",
-                title=ctx.options.target_lang_name or "",
-                use_font_replacements=ctx.options.replace_incompatible_fonts,
-            )
+            # Existing authoritative rendering path (incl. enabled branding).
+            branding = spec_from_row(session.scalar(
+                select(FileBranding).where(FileBranding.file_id == f.id)))
+            try:
+                subs = build_ass(
+                    subtitle, styles, events,
+                    text_variant="translated",
+                    title=ctx.options.target_lang_name or "",
+                    use_font_replacements=ctx.options.replace_incompatible_fonts,
+                    branding=branding,
+                )
+            except BrandingError as exc:
+                raise PublishError("BRANDING_FAILED", f"{f.relative_path}: {exc}") from exc
             staged.append(_StagedFile(
                 relative_path=f.relative_path,
                 source_path=source_path,

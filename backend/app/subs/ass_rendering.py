@@ -7,6 +7,7 @@ from typing import Iterable, Literal
 import pysubs2
 
 from app.db.models import Subtitle, SubtitleEvent, SubtitleStyle
+from app.subs.branding import BrandingSpec, apply_branding
 
 
 TextVariant = Literal["original", "translated"]
@@ -62,6 +63,7 @@ def build_ass(
     text_variant: TextVariant,
     title: str | None = None,
     use_font_replacements: bool = True,
+    branding: BrandingSpec | None = None,
 ) -> pysubs2.SSAFile:
     """Rebuild an ASS document from the normalized subtitle records.
 
@@ -75,7 +77,9 @@ def build_ass(
     * ``original`` keeps hidden events (hiding only affects the translation)
       and drops manual events, which have no source counterpart;
     * ``translated`` uses the editable ``start_ms``/``end_ms``; ``original``
-      uses the immutable ``original_start_ms``/``original_end_ms``.
+      uses the immutable ``original_start_ms``/``original_end_ms``;
+    * ``branding`` (see ``app.subs.branding``) is merged into ``translated``
+      output only; ``original`` never receives it.
     """
     subs = pysubs2.SSAFile()
     subs.info.clear()
@@ -154,6 +158,8 @@ def build_ass(
         event.type = row.event_type.capitalize()
         subs.append(event)
 
+    if branding is not None and text_variant == "translated":
+        apply_branding(subs, branding)
     return subs
 
 

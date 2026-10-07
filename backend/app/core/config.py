@@ -35,13 +35,18 @@ class Settings(BaseSettings):
         return self.fonts_root if self.fonts_root is not None else self.config_root / "fonts"
 
     @property
+    def brand_dir(self) -> Path:
+        """Branding ASS templates (``*.ass``); may be empty."""
+        return self.config_root / "brand"
+
+    @property
     def cache_dir(self) -> Path:
         """Derived data (extracted MKV font attachments); safe to delete."""
         return self.config_root / "cache"
 
     def ensure_directories(self) -> None:
         """Create required directories if they don't exist."""
-        for path in (self.import_root, self.output_root, self.config_root, self.fonts_dir):
+        for path in (self.import_root, self.output_root, self.config_root, self.fonts_dir, self.brand_dir):
             path.mkdir(parents=True, exist_ok=True)
 
 

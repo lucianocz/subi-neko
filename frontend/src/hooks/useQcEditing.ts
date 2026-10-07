@@ -198,6 +198,20 @@ export function useQcEditing({ projectId, fileId, showHidden, list, initialRevis
 
   const retryPreview = useCallback(() => refreshOutput({ fonts: true }), [refreshOutput]);
 
+  /**
+   * A branding save changed the output (not an event): adopt its revision like
+   * any own mutation, then refresh the manifest (when fonts may have changed),
+   * the authoritative preview and the live track — no renderer rebuild.
+   */
+  const brandingSaved = useCallback((revision: number, fontsChanged: boolean) => {
+    acceptRevision(revision);
+    for (const q of queryClient.getQueryCache().findAll({ queryKey: [...qcKey(projectId, fileId), 'events'] })) {
+      queryClient.setQueryData<QcEventList>(q.queryKey, (old) => (old && Number.isFinite(revision)
+        ? { ...old, output_revision: Math.max(old.output_revision, revision) } : old));
+    }
+    return refreshOutput({ fonts: fontsChanged });
+  }, [acceptRevision, refreshOutput, queryClient, projectId, fileId]);
+
   // -- saving an existing event ---------------------------------------------
 
   const saveDraft = useCallback(async (): Promise<boolean> => {
@@ -500,6 +514,6 @@ export function useQcEditing({ projectId, fileId, showHidden, list, initialRevis
     save, action, resolvingIssueId, preview, fontError, reloading, reveal, stale, known,
     setNewDraft, changeDraft, select, flushSelected, startNewEvent, cancelNewEvent,
     createEvent: () => createEvent(true),
-    toggleHidden, resolveIssue, restoreAi, dropHiddenSelection, reload, retryPreview, getVideoTimeMs,
+    toggleHidden, resolveIssue, restoreAi, dropHiddenSelection, reload, retryPreview, brandingSaved, getVideoTimeMs,
   };
 }

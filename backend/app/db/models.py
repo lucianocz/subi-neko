@@ -611,6 +611,25 @@ class TranslationMemoryEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 
 
+class FileBranding(Base):
+    """Per-file render-time branding overlay (1:1 with ``files``).
+
+    Only the template *filename* (under ``<config>/brand``) and one global
+    start offset are stored; the template's styles/events are merged into the
+    translated ASS by ``app.subs.branding`` and never become SubtitleEvent rows.
+    """
+    __tablename__ = "file_branding"
+    __table_args__ = (
+        UniqueConstraint("file_id", name="uq_file_branding_file"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_id: Mapped[int] = mapped_column(Integer, ForeignKey("files.id", ondelete="CASCADE"), nullable=False)
+    enabled: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    template_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    start_offset_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+
+
 class FileQualityMetric(Base):
     """Per-file quality snapshot, refreshed progressively as the pipeline
     changes the file (never gated on mux/completion) — the long-term

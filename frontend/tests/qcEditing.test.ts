@@ -142,3 +142,43 @@ test('watched-word visuals: one shared definition used by both editors', () => {
   assert.match(read('components/WatchedWordBadge.tsx'), /\{\.\.\.WATCHED_WORD_BADGE\}/);
   assert.doesNotMatch(read('components/qc/QcEventList.tsx'), /grape/);
 });
+
+test('branding draft: round-trips through the shared QC time helpers', async () => {
+  const b = await import('../src/utils/qcBranding.ts');
+  const saved = { enabled: true, template_filename: 'final.ass', start_offset_ms: 1_200_000 };
+  const draft = b.draftFromBranding({ ...saved, output_revision: 3 });
+  assert.deepEqual(draft, { enabled: true, template: 'final.ass', start: '00:20:00.000' });
+  assert.deepEqual(b.parseBrandingDraft(draft), { ok: true, body: saved });
+  assert.equal(b.isBrandingDirty(draft, saved), false);
+  assert.equal(b.isBrandingDirty({ ...draft, start: '20:00' }, saved), false);   // same value, other spelling
+  assert.equal(b.isBrandingDirty({ ...draft, start: '20:01' }, saved), true);
+  assert.equal(b.isBrandingDirty({ ...draft, enabled: false }, saved), true);
+});
+
+test('branding draft validation', async () => {
+  const b = await import('../src/utils/qcBranding.ts');
+  assert.equal(b.parseBrandingDraft({ enabled: true, template: 'a.ass', start: 'nope' }).ok, false);
+  assert.equal(b.parseBrandingDraft({ enabled: true, template: null, start: '0' }).ok, false);
+  // disabled keeps its config even without a template
+  assert.deepEqual(b.parseBrandingDraft({ enabled: false, template: null, start: '1.5' }),
+    { ok: true, body: { enabled: false, template_filename: null, start_offset_ms: 1500 } });
+});
+
+test('branding: font refresh decision, indicator and template choices', async () => {
+  const b = await import('../src/utils/qcBranding.ts');
+  const on = { enabled: true, template_filename: 'a.ass', start_offset_ms: 0 };
+  assert.equal(b.brandingNeedsFontRefresh(on, { ...on, start_offset_ms: 5000 }), false);
+  assert.equal(b.brandingNeedsFontRefresh(on, { ...on, template_filename: 'b.ass' }), true);
+  assert.equal(b.brandingNeedsFontRefresh(on, { ...on, enabled: false }), true);
+  assert.equal(b.brandingNeedsFontRefresh({ ...on, enabled: false }, { ...on, enabled: false, template_filename: 'b.ass' }), false);
+  assert.equal(b.brandingIndicator({ enabled: true }), 'on');
+  assert.equal(b.brandingIndicator({ enabled: false }), 'off');
+  assert.equal(b.brandingIndicator(undefined), 'off');
+  assert.deepEqual(b.templateOptions(['a.ass'], 'gone.ass'), ['gone.ass', 'a.ass']);
+  assert.deepEqual(b.templateOptions(['a.ass'], 'a.ass'), ['a.ass']);
+});
+
+test('saving branding adopts the response revision like an own mutation', () => {
+  assert.deepEqual(classifyMutationRevision(7, 8), { kind: 'ours', known: 8 });
+  assert.deepEqual(classifyMutationRevision(7, 9), { kind: 'external' });
+});

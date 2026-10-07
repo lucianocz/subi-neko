@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { Alert, Badge, Button, Center, Group, Loader, Stack, Switch, Text, Title } from '@mantine/core';
-import { ArrowLeft, ArrowClockwise, Plus } from '@phosphor-icons/react';
+import { ArrowLeft, ArrowClockwise, Plus, Sparkle } from '@phosphor-icons/react';
+import { QcBrandingDialog } from '../components/qc/QcBrandingDialog';
 import { QcEventDetail } from '../components/qc/QcEventDetail';
 import { QcEventList } from '../components/qc/QcEventList';
 import { QcVideoPlayer } from '../components/qc/QcVideoPlayer';
@@ -9,11 +10,13 @@ import { useSplit } from '../components/qc/useSplit';
 import { useActiveSubtitleEvents } from '../hooks/useActiveSubtitleEvents';
 import { useJassub } from '../hooks/useJassub';
 import { qcErrorDetail, qcErrorKind, useQcEventDetail, useQcEvents } from '../hooks/useQcEvents';
+import { useQcBranding } from '../hooks/useQcBranding';
 import { useQcEditing } from '../hooks/useQcEditing';
 import { useQcFonts } from '../hooks/useQcFonts';
 import { useQcPreview } from '../hooks/useQcPreview';
-import type { QcEvent, QcEventList as QcEventListData } from '../types/qc';
+import type { QcBrandingSave, QcEvent, QcEventList as QcEventListData } from '../types/qc';
 import { cpsLimitsFrom } from '../utils/cps';
+import { brandingIndicator, brandingNeedsFontRefresh } from '../utils/qcBranding';
 import { spaceBelongsToTarget } from '../utils/qcKeyboard';
 import '../components/qc/qc.css';
 
@@ -153,6 +156,28 @@ function FinalQcWorkspace({
     renderer, fonts, videoRef,
   });
   const { selected } = editing;
+  const branding = useQcBranding(projectId, fileId);
+  const [brandingOpen, setBrandingOpen] = useState(false);
+  const { brandingSaved } = editing;
+  const savedBranding = branding.config.data;
+  const saveBranding = useCallback(async (body: QcBrandingSave) => {
+    let saved;
+    try {
+      saved = await branding.save(body);
+    } catch (e) {
+      throw new Error(qcErrorDetail(e) ?? 'Could not save branding.');
+    }
+    const changed = !savedBranding || savedBranding.enabled !== saved.enabled
+      || savedBranding.template_filename !== saved.template_filename
+      || savedBranding.start_offset_ms !== saved.start_offset_ms;
+    // A save that changed nothing leaves the preview as it is.
+    if (changed) {
+      void brandingSaved(
+        saved.output_revision,
+        !savedBranding || brandingNeedsFontRefresh(savedBranding, saved),
+      );
+    }
+  }, [branding, savedBranding, brandingSaved]);
   const detail = useQcEventDetail(projectId, fileId, selected?.id ?? null);
   const active = useActiveSubtitleEvents(video, events);
 
@@ -299,7 +324,31 @@ function FinalQcWorkspace({
           checked={follow}
           onChange={(e) => setFollow(e.currentTarget.checked)}
         />
+        <Button
+          size="compact-xs"
+          variant="subtle"
+          color="gray"
+          leftSection={<Sparkle size={12} />}
+          rightSection={brandingIndicator(savedBranding) === 'on'
+            ? <Badge size="xs" variant="filled" data-testid="qc-branding-on">On</Badge> : undefined}
+          disabled={!savedBranding}
+          onClick={() => { void branding.templates.refetch(); setBrandingOpen(true); }}
+          data-testid="qc-branding-button"
+        >
+          Branding
+        </Button>
       </div>
+      {savedBranding && (
+        <QcBrandingDialog
+          opened={brandingOpen}
+          onClose={() => setBrandingOpen(false)}
+          config={savedBranding}
+          templates={branding.templates.data}
+          templatesError={branding.templates.isError}
+          getVideoTimeMs={editing.getVideoTimeMs}
+          onSave={saveBranding}
+        />
+      )}
 
       <div className="qc-body" ref={bodyRef}>
         <div className="qc-left" ref={leftRef} style={{ flex: `0 0 ${hSplit.fraction * 100}%` }}>

@@ -15,7 +15,7 @@ The user-facing state is *derived* from those plus the accepted-file count
 How invalidation works (one mechanism, :func:`touch_output_sync`):
 
 * ORM changes to the rendered tables (``SubtitleEvent``, ``SubtitleStyle``,
-  ``Subtitle``) are caught by a ``before_flush`` listener below, so every code
+  ``Subtitle``, ``FileBranding``) are caught by a ``before_flush`` listener below, so every code
   path that edits them through a session — endpoints and pipeline handlers
   alike — invalidates the output without having to remember to.
 * Core/bulk statements and options bypass the ORM, so those flows call
@@ -153,6 +153,7 @@ _STYLE_OUTPUT_COLUMNS = (
     "scale_x", "scale_y", "spacing", "angle", "border_style", "outline",
     "shadow", "alignment", "margin_l", "margin_r", "margin_v", "encoding",
 )
+_BRANDING_OUTPUT_COLUMNS = ("enabled", "template_filename", "start_offset_ms")
 _SUBTITLE_OUTPUT_COLUMNS = (
     "script_type", "wrap_style", "play_res_x", "play_res_y",
     "scaled_border_and_shadow", "layout_res_x", "layout_res_y", "ycbcr_matrix",
@@ -181,7 +182,7 @@ def _projects_for_files(session: Session, file_ids: set[int]) -> set[int]:
 
 
 def _track_output_changes(session: Session, flush_context, instances) -> None:
-    from app.db.models import Subtitle, SubtitleEvent, SubtitleStyle
+    from app.db.models import FileBranding, Subtitle, SubtitleEvent, SubtitleStyle
 
     file_ids: set[int] = set()
     project_ids: set[int] = set()
@@ -193,6 +194,10 @@ def _track_output_changes(session: Session, flush_context, instances) -> None:
                     file_ids.add(obj.file_id)
         elif isinstance(obj, Subtitle):
             if is_new_or_deleted or _has_changes(obj, _SUBTITLE_OUTPUT_COLUMNS):
+                if obj.file_id is not None:
+                    file_ids.add(obj.file_id)
+        elif isinstance(obj, FileBranding):
+            if is_new_or_deleted or _has_changes(obj, _BRANDING_OUTPUT_COLUMNS):
                 if obj.file_id is not None:
                     file_ids.add(obj.file_id)
         elif isinstance(obj, SubtitleStyle):

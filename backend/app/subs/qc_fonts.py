@@ -45,12 +45,15 @@ def collect_required_families(
     events: Iterable[tuple[str, str | None, bool]],
     *,
     use_font_replacements: bool,
+    extra_families: Iterable[str] = (),
 ) -> list[str]:
     """Distinct (case-insensitive) family names the translated ASS will request,
-    sorted. ``events`` = ``(style_name, translated_text, is_hidden)``."""
+    sorted. ``events`` = ``(style_name, translated_text, is_hidden)``.
+    ``extra_families`` are render-time additions (branding template fonts)
+    that no event row carries."""
     by_name = {s.style_name: s for s in styles}
     used_styles: set[str] = set()
-    names: list[str] = []
+    names: list[str] = list(extra_families)
     for style_name, text, is_hidden in events:
         if is_hidden:
             continue

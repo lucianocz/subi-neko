@@ -84,3 +84,18 @@ export interface QcPreview {
   /** `X-Output-Revision` the body was built at. */
   revision: number;
 }
+
+/** `GET|PUT .../qc/branding` — per-file render-time branding overlay config. */
+export interface QcBranding {
+  enabled: boolean;
+  template_filename: string | null;
+  start_offset_ms: number;
+  /** Output revision after the call (own-save tracking). */
+  output_revision: number;
+}
+
+export interface QcBrandingSave {
+  enabled: boolean;
+  template_filename: string | null;
+  start_offset_ms: number;
+}

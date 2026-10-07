@@ -16,6 +16,7 @@ from app.db import options as options_store
 from app.db.models import (
     File,
     FileAnalysis,
+    FileBranding,
     FileBlockingReason,
     FileQualityMetric,
     FileStatus,
@@ -56,6 +57,7 @@ from app.orchestrator.project_orchestrator import (
     pick_style_bible_sample_file_id,
 )
 from app.subs.ass_rendering import HEADER_NOTICE, build_ass
+from app.subs.branding import BrandingError, spec_from_row
 from app.subs.readability import compute_cps
 from app.subs.watched_words import count_watched_matches
 from app.ws.connection_manager import connection_manager
@@ -628,14 +630,20 @@ async def download_file_subtitles(
 
         opts = await options_store.asnapshot()
         title = (opts.target_lang_name or "") if variant == "translated" else None
-        subs = build_ass(
-            subtitle,
-            styles,
-            events,
-            text_variant=variant,
-            title=title,
-            use_font_replacements=opts.replace_incompatible_fonts,
-        )
+        branding = spec_from_row(await session.scalar(
+            select(FileBranding).where(FileBranding.file_id == file_id)))
+        try:
+            subs = build_ass(
+                subtitle,
+                styles,
+                events,
+                text_variant=variant,
+                title=title,
+                use_font_replacements=opts.replace_incompatible_fonts,
+                branding=branding,
+            )
+        except BrandingError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     download_name = subtitle_download_name(file.filename, variant)
     encoded_name = quote(download_name)
