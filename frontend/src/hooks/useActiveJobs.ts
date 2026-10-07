@@ -8,11 +8,6 @@ export function useActiveJobs(): { jobs: Job[]; hiddenCount: number } {
   const mounted = useRef(true);
   const queryClient = useQueryClient();
 
-  function getProjectName(projectId: number): string | undefined {
-    const projects = queryClient.getQueryData<Project[]>(['projects']);
-    return projects?.find((p) => p.id === projectId)?.name;
-  }
-
   // Initial fetch
   useEffect(() => {
     mounted.current = true;
@@ -27,6 +22,11 @@ export function useActiveJobs(): { jobs: Job[]; hiddenCount: number } {
 
   // Real-time updates from WS events dispatched by useJobSocket
   useEffect(() => {
+    function getProjectName(projectId: number): string | undefined {
+      const projects = queryClient.getQueryData<Project[]>(['projects']);
+      return projects?.find((p) => p.id === projectId)?.name;
+    }
+
     const handler = async (e: Event) => {
       const msg = (e as CustomEvent<WsEvent>).detail;
 
@@ -142,7 +142,7 @@ export function useActiveJobs(): { jobs: Job[]; hiddenCount: number } {
 
     window.addEventListener('ws_job', handler);
     return () => window.removeEventListener('ws_job', handler);
-  }, []);
+  }, [queryClient]);
 
   const sorted = Array.from(jobs.values()).sort((a, b) => {
     // Running first, then queued; within same status sort by scheduled_at

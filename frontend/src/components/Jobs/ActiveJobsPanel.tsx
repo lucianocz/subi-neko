@@ -52,10 +52,7 @@ function JobRow({ job, stats }: { job: Job; stats: Record<string, JobTypeStat> }
 
   useEffect(() => {
     if (intervalRef.current) clearInterval(intervalRef.current);
-    if (!isRunning || !job.started_at) {
-      setElapsed(0);
-      return;
-    }
+    if (!isRunning || !job.started_at) return;
     const startMs = new Date(job.started_at.endsWith('Z') ? job.started_at : job.started_at + 'Z').getTime();
     const tick = () => setElapsed((Date.now() - startMs) / 1000);
     tick();

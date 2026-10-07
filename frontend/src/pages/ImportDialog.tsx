@@ -73,11 +73,6 @@ export function ImportDialog({ opened, onClose }: ImportDialogProps) {
     setSelectedResult(null);
   }, [selectedDir]);
 
-  // Clear selected result when provider changes
-  useEffect(() => {
-    setSelectedResult(null);
-  }, [provider, committedQuery]);
-
   function handleSearch() {
     const q = searchQuery.trim();
     if (q) {
@@ -207,7 +202,10 @@ export function ImportDialog({ opened, onClose }: ImportDialogProps) {
               <SegmentedControl
                 size="xs"
                 value={provider}
-                onChange={(v) => setProvider(v as 'anilist' | 'anidb')}
+                onChange={(v) => {
+                  setProvider(v as 'anilist' | 'anidb');
+                  setSelectedResult(null);
+                }}
                 data={[
                   { label: 'AniDB', value: 'anidb' },
                   { label: 'AniList', value: 'anilist' },

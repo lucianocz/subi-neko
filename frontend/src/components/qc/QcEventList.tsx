@@ -107,6 +107,7 @@ export function QcEventList({
   onUserScroll: () => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
+  // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is only used locally, not passed to memoized children
   const virtualizer = useVirtualizer({
     count: events.length,
     getScrollElement: () => parentRef.current,
