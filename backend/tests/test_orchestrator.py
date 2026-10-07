@@ -2385,6 +2385,35 @@ class TestFileActions:
         assert "Ahoj preklad" in translated_text
 
     @pytest.mark.asyncio
+    @pytest.mark.parametrize("media_name, original_name, translated_name", [
+        ("Episode 01.mkv", "Episode 01.en.ass", "Episode 01.ass"),
+        ("Show.S02E03.mkv", "Show.S02E03.en.ass", "Show.S02E03.ass"),
+        ("[Group] Show - 03 [1080p].mkv",
+         "[Group] Show - 03 [1080p].en.ass", "[Group] Show - 03 [1080p].ass"),
+    ])
+    async def test_download_filenames(
+        self, db_session, media_name, original_name, translated_name,
+    ):
+        from urllib.parse import quote
+        from app.api.routes.projects import download_file_subtitles
+
+        project = await _create_project(db_session, status="processing")
+        file = await _create_file(
+            db_session, project.id, status="review_required", relative_path=media_name,
+        )
+        await _create_subtitle(db_session, file.id)
+        await _create_style(db_session, file.id, font_check_status="resolved")
+        await _create_event(db_session, file.id, source_text="Hi", translated_text="Ahoj")
+
+        original = await download_file_subtitles(project.id, file.id, "original")
+        translated = await download_file_subtitles(project.id, file.id, "translated")
+        assert f"filename*=UTF-8''{quote(original_name)}" in original.headers["content-disposition"]
+        assert f"filename*=UTF-8''{quote(translated_name)}" in translated.headers["content-disposition"]
+        # No target-language suffix on the translated download.
+        assert not translated.headers["content-disposition"].split("filename*=")[1].endswith(
+            (".cs.ass", ".en.ass"))
+
+    @pytest.mark.asyncio
     async def test_retranslate_clears_text_and_keeps_cumulative_llm_calls(self, db_session):
         import unittest.mock as mock
         from sqlalchemy import func, select

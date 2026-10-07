@@ -60,12 +60,59 @@ def test_song_and_karaoke_names_also_deprioritised():
         assert _pick_subtitle_track(tracks)["id"] == 4, signs_name
 
 
-def test_ass_takes_precedence_over_plaintext():
+def test_ass_takes_precedence_over_plaintext_within_same_language():
     tracks = [
         _track(0, type_="video", codec_id="V_MPEG4/ISO/AVC"),
         _track(1, type_="audio", codec_id="A_AAC"),
         _track(2, codec_id="S_TEXT/UTF8", language="eng", track_name="English [Full]"),
-        _track(3, codec_id="S_TEXT/SSA", language="jpn", track_name="Japanese"),
+        _track(3, codec_id="S_TEXT/SSA", language="eng", track_name="English"),
+    ]
+    assert _pick_subtitle_track(tracks)["id"] == 3
+
+
+def test_english_srt_beats_spanish_ass():
+    tracks = [
+        _track(2, codec_id="S_TEXT/ASS", language="spa", track_name="Spanish"),
+        _track(3, codec_id="S_TEXT/UTF8", language="eng", track_name="English"),
+    ]
+    assert _pick_subtitle_track(tracks)["id"] == 3
+
+
+def test_english_ass_beats_spanish_ass():
+    tracks = [
+        _track(2, codec_id="S_TEXT/ASS", language="spa"),
+        _track(3, codec_id="S_TEXT/ASS", language="eng"),
+    ]
+    assert _pick_subtitle_track(tracks)["id"] == 3
+
+
+def test_english_ass_beats_english_srt_regardless_of_order():
+    tracks = [
+        _track(2, codec_id="S_TEXT/UTF8", language="eng"),
+        _track(3, codec_id="S_TEXT/ASS", language="eng"),
+    ]
+    assert _pick_subtitle_track(tracks)["id"] == 3
+
+
+def test_downstream_tiebreakers_unchanged_for_same_language_and_format():
+    # Same language + format: signs name, then SDH, then forced, then "Full"
+    # name, then container order decide exactly as before.
+    tracks = [
+        _track(2, language="eng", track_name="English [Signs]"),
+        _track(3, language="eng", track_name="English", flag_hearing_impaired=True),
+        _track(4, language="eng", track_name="English", forced_track=True),
+        _track(5, language="eng", track_name="English"),
+        _track(6, language="eng", track_name="English [Full]"),
+    ]
+    assert _pick_subtitle_track(tracks)["id"] == 6
+    assert _pick_subtitle_track(tracks[:4])["id"] == 5
+    assert _pick_subtitle_track(tracks[:3])["id"] == 4  # forced (4) beats SDH (3): SDH is compared first
+
+
+def test_downstream_tiebreakers_apply_within_non_ass_english_tracks():
+    tracks = [
+        _track(2, codec_id="S_TEXT/UTF8", language="eng", track_name="English [Signs]"),
+        _track(3, codec_id="S_TEXT/UTF8", language="eng", track_name="English"),
     ]
     assert _pick_subtitle_track(tracks)["id"] == 3
 

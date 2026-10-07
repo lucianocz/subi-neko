@@ -38,19 +38,19 @@ def _track_rank(track: dict) -> tuple:
     """Sort key for subtitle track preference — lower is better.
 
     Lexicographic so each signal only breaks ties left by the ones above it:
-    ASS/SSA first, language next (this pipeline expects an English source),
-    then avoid signs/songs tracks, then hearing-impaired and forced flags,
+    language first (this pipeline expects an English source), ASS/SSA over
+    plain text next, then avoid signs/songs tracks, then hearing-impaired and forced flags,
     then prefer an explicit "Full"/"Dialogue" name, and finally keep the
     file's own order.
     """
     props = track.get("properties", {})
     name = props.get("track_name") or ""
     return (
-        # Preserve rich typesetting whenever it is available.  Plain-text
-        # subtitles are a fallback, even if their language/name metadata is
-        # otherwise a better match.
-        _SUBTITLE_FORMAT_BY_CODEC_ID.get(props.get("codec_id")) != "ass",
+        # Language outranks format: an English SRT beats a non-English ASS.
         props.get("language") != "eng",
+        # Among equal-language tracks, preserve rich typesetting; plain text
+        # is the fallback.
+        _SUBTITLE_FORMAT_BY_CODEC_ID.get(props.get("codec_id")) != "ass",
         bool(_SIGNS_TRACK_NAME_RE.search(name)),
         bool(props.get("flag_hearing_impaired", False)),
         bool(props.get("forced_track", False)),

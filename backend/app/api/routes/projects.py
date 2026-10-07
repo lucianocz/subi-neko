@@ -581,6 +581,12 @@ _RETRANSLATION_CHUNK_JOB_TYPES = {
 }
 
 
+def subtitle_download_name(media_filename: str, variant: str) -> str:
+    """`<media basename>.en.ass` for the English source, `<basename>.ass` for the translation."""
+    stem = Path(media_filename).stem
+    return f"{stem}.en.ass" if variant == "original" else f"{stem}.ass"
+
+
 @router.get("/{project_id}/files/{file_id}/subtitles/{variant}")
 async def download_file_subtitles(
     project_id: int,
@@ -631,15 +637,15 @@ async def download_file_subtitles(
             use_font_replacements=opts.replace_incompatible_fonts,
         )
 
-    suffix = "original" if variant == "original" else "translated"
-    download_name = f"{Path(file.filename).stem}.{suffix}.ass"
+    download_name = subtitle_download_name(file.filename, variant)
     encoded_name = quote(download_name)
+    fallback_name = "subtitles.en.ass" if variant == "original" else "subtitles.ass"
     return Response(
         content=subs.to_string("ass", header_notice=HEADER_NOTICE).encode("utf-8"),
         media_type="text/x-ssa",
         headers={
             "Content-Disposition": (
-                f"attachment; filename=\"subtitles.{suffix}.ass\"; "
+                f"attachment; filename=\"{fallback_name}\"; "
                 f"filename*=UTF-8''{encoded_name}"
             ),
         },
