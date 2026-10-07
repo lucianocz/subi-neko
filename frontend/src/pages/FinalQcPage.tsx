@@ -169,7 +169,8 @@ function FinalQcWorkspace({
     }
     const changed = !savedBranding || savedBranding.enabled !== saved.enabled
       || savedBranding.template_filename !== saved.template_filename
-      || savedBranding.start_offset_ms !== saved.start_offset_ms;
+      || savedBranding.start_offset_ms !== saved.start_offset_ms
+      || savedBranding.scale_to_script_playres !== saved.scale_to_script_playres;
     // A save that changed nothing leaves the preview as it is.
     if (changed) {
       void brandingSaved(

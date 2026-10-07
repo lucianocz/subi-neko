@@ -628,6 +628,9 @@ class FileBranding(Base):
     enabled: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     template_filename: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     start_offset_ms: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Scale template \pos/\move/\org/\fscx/\fscy from the template PlayRes to the
+    # subtitle script PlayRes at render time (see app.subs.branding).
+    scale_to_script_playres: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
 
 
 class FileQualityMetric(Base):

@@ -90,6 +90,8 @@ export interface QcBranding {
   enabled: boolean;
   template_filename: string | null;
   start_offset_ms: number;
+  /** Scale template position/scale tags to the subtitle script PlayRes. */
+  scale_to_script_playres: boolean;
   /** Output revision after the call (own-save tracking). */
   output_revision: number;
 }
@@ -98,4 +100,5 @@ export interface QcBrandingSave {
   enabled: boolean;
   template_filename: string | null;
   start_offset_ms: number;
+  scale_to_script_playres: boolean;
 }

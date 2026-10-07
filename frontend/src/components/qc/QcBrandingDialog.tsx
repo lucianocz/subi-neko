@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Alert, Button, Group, Modal, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
+import { Alert, Button, Checkbox, Group, Modal, Select, Stack, Switch, Text, TextInput } from '@mantine/core';
 import type { QcBranding, QcBrandingSave } from '../../types/qc';
 import {
   draftFromBranding, isBrandingDirty, parseBrandingDraft, templateOptions,
@@ -93,6 +93,13 @@ function BrandingForm({
       <Text size="xs" c="dimmed">
         Shifts the whole template: each of its events starts this long after its own template time.
       </Text>
+      <Checkbox
+        label="Scale to subtitle PlayRes"
+        description={'Scale the branding position and style from the template resolution to the current subtitle script resolution.'}
+        checked={draft.scale}
+        onChange={(e) => patch({ scale: e.currentTarget.checked })}
+        data-testid="qc-branding-scale"
+      />
       {error && <Alert color="red" p="xs" data-testid="qc-branding-error">{error}</Alert>}
       <Group justify="flex-end" gap="xs">
         <Button variant="default" onClick={onClose} disabled={saving}>Cancel</Button>

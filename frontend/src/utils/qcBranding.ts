@@ -7,13 +7,15 @@ export interface BrandingDraft {
   enabled: boolean;
   template: string | null;
   start: string;
+  scale: boolean;
 }
 
-export function draftFromBranding(config: Pick<QcBranding, 'enabled' | 'template_filename' | 'start_offset_ms'>): BrandingDraft {
+export function draftFromBranding(config: Pick<QcBranding, 'enabled' | 'template_filename' | 'start_offset_ms' | 'scale_to_script_playres'>): BrandingDraft {
   return {
     enabled: config.enabled,
     template: config.template_filename,
     start: formatTimeField(config.start_offset_ms),
+    scale: config.scale_to_script_playres,
   };
 }
 
@@ -24,7 +26,15 @@ export function parseBrandingDraft(draft: BrandingDraft): BrandingDraftResult {
   const start = parseTimeField(draft.start);
   if (start === null) return { ok: false, reason: 'Start must be a time like 00:20:00.000.' };
   if (draft.enabled && !draft.template) return { ok: false, reason: 'Choose a template to enable branding.' };
-  return { ok: true, body: { enabled: draft.enabled, template_filename: draft.template, start_offset_ms: start } };
+  return {
+    ok: true,
+    body: {
+      enabled: draft.enabled,
+      template_filename: draft.template,
+      start_offset_ms: start,
+      scale_to_script_playres: draft.scale,
+    },
+  };
 }
 
 /** Unsaved changes? Compares parsed values so `0:20:00` equals `00:20:00.000`. */
@@ -32,7 +42,8 @@ export function isBrandingDirty(draft: BrandingDraft, saved: QcBrandingSave): bo
   const parsed = parseTimeField(draft.start);
   return draft.enabled !== saved.enabled
     || draft.template !== saved.template_filename
-    || parsed !== saved.start_offset_ms;
+    || parsed !== saved.start_offset_ms
+    || draft.scale !== saved.scale_to_script_playres;
 }
 
 /**

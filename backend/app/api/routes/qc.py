@@ -779,6 +779,7 @@ class QcBrandingOut(BaseModel):
     enabled: bool
     template_filename: str | None
     start_offset_ms: int
+    scale_to_script_playres: bool
     # Authoritative revision after the call; lets the page track its own save.
     output_revision: int
 
@@ -788,25 +789,27 @@ class QcBrandingIn(BaseModel):
     enabled: bool
     template_filename: str | None = None
     start_offset_ms: int = Field(0, ge=0, le=MAX_BRANDING_OFFSET_MS)
+    scale_to_script_playres: bool = False
 
 
 class QcBrandingTemplatesOut(BaseModel):
     templates: list[str]
 
 
-def _branding_defaults(templates: list[str]) -> tuple[bool, str | None, int]:
-    return False, (templates[0] if len(templates) == 1 else None), 0
+def _branding_defaults(templates: list[str]) -> tuple[bool, str | None, int, bool]:
+    return False, (templates[0] if len(templates) == 1 else None), 0, False
 
 
 async def _branding_out(session, project_id: int, row, templates: list[str]) -> QcBrandingOut:
-    enabled, template, start = (
-        (bool(row.enabled), row.template_filename, row.start_offset_ms)
+    enabled, template, start, scale = (
+        (bool(row.enabled), row.template_filename, row.start_offset_ms,
+         bool(row.scale_to_script_playres))
         if row is not None else _branding_defaults(templates))
     revision = await session.scalar(
         select(Project.output_revision).where(Project.id == project_id)) or 0
     return QcBrandingOut(
         enabled=enabled, template_filename=template, start_offset_ms=start,
-        output_revision=revision)
+        scale_to_script_playres=scale, output_revision=revision)
 
 
 @router.get("/{project_id}/files/{file_id}/qc/branding", response_model=QcBrandingOut)
@@ -843,7 +846,8 @@ async def put_qc_branding(
         row = await session.scalar(select(FileBranding).where(FileBranding.file_id == file_id))
         templates = list_templates()
         current = (
-            (bool(row.enabled), row.template_filename, row.start_offset_ms)
+            (bool(row.enabled), row.template_filename, row.start_offset_ms,
+             bool(row.scale_to_script_playres))
             if row is not None else _branding_defaults(templates))
 
         template = body.template_filename or None
@@ -860,13 +864,14 @@ async def put_qc_branding(
                 except BrandingError as exc:
                     raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        if (body.enabled, template, start) != current:
+        if (body.enabled, template, start, body.scale_to_script_playres) != current:
             if row is None:
                 row = FileBranding(file_id=file_id)
                 session.add(row)
             row.enabled = int(body.enabled)
             row.template_filename = template
             row.start_offset_ms = start
+            row.scale_to_script_playres = int(body.scale_to_script_playres)
             try:
                 await session.commit()
             except IntegrityError:

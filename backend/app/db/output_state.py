@@ -153,7 +153,7 @@ _STYLE_OUTPUT_COLUMNS = (
     "scale_x", "scale_y", "spacing", "angle", "border_style", "outline",
     "shadow", "alignment", "margin_l", "margin_r", "margin_v", "encoding",
 )
-_BRANDING_OUTPUT_COLUMNS = ("enabled", "template_filename", "start_offset_ms")
+_BRANDING_OUTPUT_COLUMNS = ("enabled", "template_filename", "start_offset_ms", "scale_to_script_playres")
 _SUBTITLE_OUTPUT_COLUMNS = (
     "script_type", "wrap_style", "play_res_x", "play_res_y",
     "scaled_border_and_shadow", "layout_res_x", "layout_res_y", "ycbcr_matrix",

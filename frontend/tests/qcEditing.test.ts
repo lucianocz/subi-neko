@@ -145,28 +145,32 @@ test('watched-word visuals: one shared definition used by both editors', () => {
 
 test('branding draft: round-trips through the shared QC time helpers', async () => {
   const b = await import('../src/utils/qcBranding.ts');
-  const saved = { enabled: true, template_filename: 'final.ass', start_offset_ms: 1_200_000 };
+  const saved = { enabled: true, template_filename: 'final.ass', start_offset_ms: 1_200_000, scale_to_script_playres: false };
   const draft = b.draftFromBranding({ ...saved, output_revision: 3 });
-  assert.deepEqual(draft, { enabled: true, template: 'final.ass', start: '00:20:00.000' });
+  assert.deepEqual(draft, { enabled: true, template: 'final.ass', start: '00:20:00.000', scale: false });
   assert.deepEqual(b.parseBrandingDraft(draft), { ok: true, body: saved });
   assert.equal(b.isBrandingDirty(draft, saved), false);
   assert.equal(b.isBrandingDirty({ ...draft, start: '20:00' }, saved), false);   // same value, other spelling
   assert.equal(b.isBrandingDirty({ ...draft, start: '20:01' }, saved), true);
   assert.equal(b.isBrandingDirty({ ...draft, enabled: false }, saved), true);
+  assert.equal(b.isBrandingDirty({ ...draft, scale: true }, saved), true);
+  assert.deepEqual(b.parseBrandingDraft({ ...draft, scale: true }), { ok: true, body: { ...saved, scale_to_script_playres: true } });
 });
 
 test('branding draft validation', async () => {
   const b = await import('../src/utils/qcBranding.ts');
-  assert.equal(b.parseBrandingDraft({ enabled: true, template: 'a.ass', start: 'nope' }).ok, false);
-  assert.equal(b.parseBrandingDraft({ enabled: true, template: null, start: '0' }).ok, false);
+  assert.equal(b.parseBrandingDraft({ enabled: true, template: 'a.ass', start: 'nope', scale: false }).ok, false);
+  assert.equal(b.parseBrandingDraft({ enabled: true, template: null, start: '0', scale: false }).ok, false);
   // disabled keeps its config even without a template
-  assert.deepEqual(b.parseBrandingDraft({ enabled: false, template: null, start: '1.5' }),
-    { ok: true, body: { enabled: false, template_filename: null, start_offset_ms: 1500 } });
+  assert.deepEqual(b.parseBrandingDraft({ enabled: false, template: null, start: '1.5', scale: false }),
+    { ok: true, body: { enabled: false, template_filename: null, start_offset_ms: 1500, scale_to_script_playres: false } });
 });
 
 test('branding: font refresh decision, indicator and template choices', async () => {
   const b = await import('../src/utils/qcBranding.ts');
-  const on = { enabled: true, template_filename: 'a.ass', start_offset_ms: 0 };
+  const on = { enabled: true, template_filename: 'a.ass', start_offset_ms: 0, scale_to_script_playres: false };
+  // toggling the scale option never changes font requirements
+  assert.equal(b.brandingNeedsFontRefresh(on, { ...on, scale_to_script_playres: true }), false);
   assert.equal(b.brandingNeedsFontRefresh(on, { ...on, start_offset_ms: 5000 }), false);
   assert.equal(b.brandingNeedsFontRefresh(on, { ...on, template_filename: 'b.ass' }), true);
   assert.equal(b.brandingNeedsFontRefresh(on, { ...on, enabled: false }), true);
