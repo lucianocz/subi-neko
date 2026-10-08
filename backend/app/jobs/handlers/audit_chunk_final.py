@@ -57,7 +57,7 @@ def _identity_suffix(identity: tuple[str | None, str | None]) -> str:
 def _context_line(prefix: str, event: SubtitleEvent, include_translation: bool) -> str:
     speaker = f" ({event.name})" if event.name else ""
     line = (f"[{prefix}] {event.line_index}{speaker}: "
-            f"EN: {plain_text(event.source_text or '')}")
+            f"SOURCE: {plain_text(event.source_text or '')}")
     if include_translation:
         line += f" | CZ: {plain_text(event.translated_text or '')}"
     return line
@@ -229,7 +229,7 @@ def audit_chunk_final(
         identity = identities.get(item["name"] or "", (item["name"], None))
         target_lines.extend([
             f"[LINE] {item['line_index']}{_identity_suffix(identity)}:",
-            f"  EN: {plain_text(item['source_text'] or '')}",
+            f"  SOURCE: {plain_text(item['source_text'] or '')}",
             f"  CZ: {plain_text(item['translated_text'] or '')}",
         ])
     sections.append("## Lines to audit\n" + "\n".join(target_lines))

@@ -17,9 +17,11 @@ from app.core.database import SyncSessionLocal
 from app.core.media_paths import resolve_source_path_parts
 from app.db.models import File, Subtitle, SubtitleEvent
 from app.db.output_state import touch_output_sync
+from app.subs.sidecar import select_sidecar
 from app.subs.style_canonical import link_file_styles, prune_orphan_styles
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
+from app.jobs.handlers.inspect_mkv import EXTERNAL_TRACK_INDEX
 from app.subs.content_classification import classify_content_type
 
 logger = logging.getLogger(__name__)
@@ -112,47 +114,15 @@ def _int(val) -> int | None:
         return None
 
 
-@register_job_handler("extract_subtitles")
-def extract_subtitles(
-    payload: dict[str, Any],
-    ctx: JobContext,
+def _extract_embedded_track(
+    file_id: int,
+    source_path: Path,
+    track_id: int,
+    subtitle_format: str,
+    now: str,
     progress: ProgressFn,
-) -> JobResult:
-    file_id: int = payload["file_id"]
-    now = datetime.utcnow().isoformat()
-
-    progress(0.05, "Loading file record")
-
-    from sqlalchemy.orm import selectinload
-    with SyncSessionLocal() as session:
-        file = session.get(File, file_id, options=[selectinload(File.project)])
-        if file is None:
-            return JobResult(status="failed", result=None,
-                             error_code="FILE_NOT_FOUND",
-                             error_message=f"File id={file_id} not found")
-        if file.subtitle_track_index is None:
-            return JobResult(status="failed", result=None,
-                             error_code="NO_TRACK_INDEX",
-                             error_message="subtitle_track_index not set - run inspect_mkv first")
-        track_id = file.subtitle_track_index
-        subtitle_format = file.detected_subtitle_format or "ass"
-        source_directory = file.project.source_directory
-        project_id = file.project_id
-        relative_path = file.relative_path
-
-    if subtitle_format not in {"ass", "srt"}:
-        return JobResult(status="failed", result=None,
-                         error_code="UNSUPPORTED_SUBTITLE_FORMAT",
-                         error_message=f"Unsupported subtitle format: {subtitle_format}")
-
-    try:
-        source_path = resolve_source_path_parts(
-            source_directory, relative_path,
-            import_root=ctx.import_root, must_exist=False)
-    except ValueError as exc:
-        return JobResult(status="failed", result=None,
-                         error_code="INVALID_PATH", error_message=str(exc))
-
+) -> pysubs2.SSAFile | JobResult:
+    """mkvextract one track and parse it; a JobResult means failure."""
     progress(0.1, "Extracting subtitle track")
 
     fd, tmp_path = tempfile.mkstemp(suffix=f".{subtitle_format}")
@@ -200,6 +170,66 @@ def extract_subtitles(
             os.unlink(tmp_path)
         except FileNotFoundError:
             pass
+    return subs
+
+
+@register_job_handler("extract_subtitles")
+def extract_subtitles(
+    payload: dict[str, Any],
+    ctx: JobContext,
+    progress: ProgressFn,
+) -> JobResult:
+    file_id: int = payload["file_id"]
+    now = datetime.utcnow().isoformat()
+
+    progress(0.05, "Loading file record")
+
+    from sqlalchemy.orm import selectinload
+    with SyncSessionLocal() as session:
+        file = session.get(File, file_id, options=[selectinload(File.project)])
+        if file is None:
+            return JobResult(status="failed", result=None,
+                             error_code="FILE_NOT_FOUND",
+                             error_message=f"File id={file_id} not found")
+        if file.subtitle_track_index is None:
+            return JobResult(status="failed", result=None,
+                             error_code="NO_TRACK_INDEX",
+                             error_message="subtitle_track_index not set - run inspect_mkv first")
+        track_id = file.subtitle_track_index
+        subtitle_format = file.detected_subtitle_format or "ass"
+        source_directory = file.project.source_directory
+        project_id = file.project_id
+        relative_path = file.relative_path
+
+    if subtitle_format not in {"ass", "srt"}:
+        return JobResult(status="failed", result=None,
+                         error_code="UNSUPPORTED_SUBTITLE_FORMAT",
+                         error_message=f"Unsupported subtitle format: {subtitle_format}")
+
+    try:
+        source_path = resolve_source_path_parts(
+            source_directory, relative_path,
+            import_root=ctx.import_root, must_exist=False)
+    except ValueError as exc:
+        return JobResult(status="failed", result=None,
+                         error_code="INVALID_PATH", error_message=str(exc))
+
+    if track_id == EXTERNAL_TRACK_INDEX:
+        progress(0.35, "Parsing external subtitle")
+        sidecar = select_sidecar(source_path)
+        if sidecar is None:
+            return JobResult(status="failed", result=None,
+                             error_code="SIDECAR_MISSING",
+                             error_message="External subtitle selected at inspection is "
+                                           "no longer present or usable")
+        subs = sidecar.subs
+        if sidecar.format == "srt":
+            _apply_plaintext_defaults(subs)
+    else:
+        subs = _extract_embedded_track(
+            file_id, source_path, track_id, subtitle_format, now, progress)
+        if isinstance(subs, JobResult):
+            return subs
 
     progress(0.55, "Building rows")
 

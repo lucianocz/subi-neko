@@ -583,10 +583,10 @@ _RETRANSLATION_CHUNK_JOB_TYPES = {
 }
 
 
-def subtitle_download_name(media_filename: str, variant: str) -> str:
-    """`<media basename>.en.ass` for the English source, `<basename>.ass` for the translation."""
+def subtitle_download_name(media_filename: str, variant: str, source_lang_code: str = "en") -> str:
+    """`<media basename>.<source code>.ass` for the source, `<basename>.ass` for the translation."""
     stem = Path(media_filename).stem
-    return f"{stem}.en.ass" if variant == "original" else f"{stem}.ass"
+    return f"{stem}.{source_lang_code}.ass" if variant == "original" else f"{stem}.ass"
 
 
 @router.get("/{project_id}/files/{file_id}/subtitles/{variant}")
@@ -645,9 +645,9 @@ async def download_file_subtitles(
         except BrandingError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    download_name = subtitle_download_name(file.filename, variant)
+    download_name = subtitle_download_name(file.filename, variant, opts.source_lang_code)
     encoded_name = quote(download_name)
-    fallback_name = "subtitles.en.ass" if variant == "original" else "subtitles.ass"
+    fallback_name = f"subtitles.{opts.source_lang_code}.ass" if variant == "original" else "subtitles.ass"
     return Response(
         content=subs.to_string("ass", header_notice=HEADER_NOTICE).encode("utf-8"),
         media_type="text/x-ssa",

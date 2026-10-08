@@ -268,26 +268,44 @@ function SaveOnChangeSwitch({
   );
 }
 
-function LanguageSelect({ defaultCode }: { defaultCode: string | null }) {
+function LanguageSelect({
+  defaultCode,
+  optionPrefix,
+  label,
+  description,
+  testId,
+  clearable = true,
+}: {
+  defaultCode: string | null;
+  optionPrefix: 'SOURCE' | 'TARGET';
+  label: string;
+  description: string;
+  testId?: string;
+  clearable?: boolean;
+}) {
   const { mutate } = useSaveOptions();
   const [code, setCode] = useState<string | null>(defaultCode);
 
   const handleChange = (val: string | null) => {
     setCode(val);
     const lang = LANGUAGES.find((l) => l.code === val);
-    mutate({ TARGET_LANG_CODE: val, TARGET_LANG_NAME: lang?.name ?? null });
+    mutate({
+      [`${optionPrefix}_LANG_CODE`]: val,
+      [`${optionPrefix}_LANG_NAME`]: lang?.name ?? null,
+    });
   };
 
   return (
     <Select
-      label="Target language"
-      description="Language subtitles will be translated into. Sets both the grammar provider language code and the display name used in LLM prompts."
+      label={label}
+      description={description}
       value={code}
       onChange={handleChange}
       data={LANGUAGES.map((l) => ({ value: l.code, label: l.name }))}
       searchable
-      clearable
+      clearable={clearable}
       placeholder="Select a language…"
+      data-testid={testId}
     />
   );
 }
@@ -315,7 +333,21 @@ function OptionsForm({ options }: { options: OptionsMap }) {
   return (
     <Stack gap="xl" pb="xl">
       <Section title="Language">
-        <LanguageSelect defaultCode={options['TARGET_LANG_CODE'] ?? null} />
+        <LanguageSelect
+          defaultCode={options['SOURCE_LANG_CODE'] ?? null}
+          optionPrefix="SOURCE"
+          label="Source language"
+          description="Language of the subtitles being translated (default English). Used in LLM prompts, to pick the embedded subtitle track, and in the original-subtitle download name. Applies to newly imported files; already extracted files keep their subtitles."
+          testId="opt-source-lang"
+          clearable={false}
+        />
+        <LanguageSelect
+          defaultCode={options['TARGET_LANG_CODE'] ?? null}
+          optionPrefix="TARGET"
+          label="Target language"
+          description="Language subtitles will be translated into. Sets both the grammar provider language code and the display name used in LLM prompts."
+          testId="opt-target-lang"
+        />
       </Section>
 
       <Divider />
@@ -498,7 +530,7 @@ function OptionsForm({ options }: { options: OptionsMap }) {
 
       <Section title="Prompts">
         <Text size="xs" c="dimmed">
-          System prompts sent to the LLM. Use <code style={{ fontFamily: 'monospace' }}>{'{TARGET_LANG_NAME}'}</code> as a placeholder for the target language. Clear a prompt to revert to the built-in default.
+          System prompts sent to the LLM. Use <code style={{ fontFamily: 'monospace' }}>{'{TARGET_LANG_NAME}'}</code> as a placeholder for the target language and <code style={{ fontFamily: 'monospace' }}>{'{SOURCE_LANG_NAME}'}</code> for the source language. Clear a prompt to revert to the built-in default.
         </Text>
         <SaveOnBlurTextarea
           optionKey="TRANSLATION_PROMPT"

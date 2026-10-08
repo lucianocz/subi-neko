@@ -24,6 +24,8 @@ def _mask_secret(value: str | None) -> str | None:
 async def get_options() -> dict[str, str | None]:
     opts = await options_store.asnapshot()
     return {
+        "SOURCE_LANG_NAME": opts.source_lang_name,
+        "SOURCE_LANG_CODE": opts.source_lang_code,
         "TARGET_LANG_NAME": opts.target_lang_name,
         "TARGET_LANG_CODE": opts.target_lang_code,
         "CHUNK_SIZE": str(opts.chunk_size),

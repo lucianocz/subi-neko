@@ -679,6 +679,20 @@ async def test_download_routes_follow_build_ass_semantics(qc_env, client, one):
     assert "Hello 0" in orig and "Sign" not in orig
 
 
+@pytest.mark.asyncio
+async def test_download_filenames_follow_source_language(qc_env, client, one):
+    pid, fid = one
+    url = f"/api/projects/{pid}/files/{fid}/subtitles"
+    default = (await client.get(f"{url}/original")).headers["content-disposition"]
+    assert 'filename="subtitles.en.ass"' in default and "ep1.en.ass" in default
+    await options_store.aset("SOURCE_LANG_CODE", "ja")
+    await options_store.aset("SOURCE_LANG_NAME", "Japanese")
+    original = (await client.get(f"{url}/original")).headers["content-disposition"]
+    translated = (await client.get(f"{url}/translated")).headers["content-disposition"]
+    assert 'filename="subtitles.ja.ass"' in original and "ep1.ja.ass" in original
+    assert 'filename="subtitles.ass"' in translated and "ep1.ass" in translated
+
+
 def test_migration_defaults_are_false(qc_env):
     pid = seed_project(qc_env, n_files=1)
     ev = get_event(qc_env, event_id(qc_env, pid, 0))

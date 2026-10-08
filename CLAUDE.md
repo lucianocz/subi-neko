@@ -117,3 +117,15 @@ Project import and series matching are a deliberate manual step (owner decision 
 ### Frontend structure (`frontend/src/`)
 
 Standard Vite/React SPA: `api/client.ts` (axios instance), `hooks/` (React Query hooks per resource — `useProjects`, `useJobStats`, `useCharacterMapping`, etc.), `pages/` (dialogs and full pages), `components/` (shared layout/widgets). Mantine is the UI kit; TanStack Query handles server state.
+
+## Python environment
+
+- Backend uses a dedicated virtual environment at `backend/.venv`.
+- Always use `backend/.venv/Scripts/python.exe` for Python commands on Windows.
+- Run backend tests with:
+  `backend/.venv/Scripts/python.exe -m pytest backend/tests/`
+  from the repository root.
+- Never use global `python`, `py`, `pip`, or `pytest` for backend operations.
+- Never install, upgrade, or modify global Python packages.
+- Respect the dependency versions pinned in `backend/requirements.txt`.
+- If the virtual environment is missing or broken, report the issue instead of silently switching to global Python.

@@ -95,12 +95,14 @@ Only the directory paths and low-level flags are set via environment variables (
 
 | Option key | Default | Description |
 |------------|---------|-------------|
+| `SOURCE_LANG_NAME` | `English` | Source subtitle language name sent to the LLM (`{SOURCE_LANG_NAME}` in prompts) |
+| `SOURCE_LANG_CODE` | `en` | Source language code: picks the embedded subtitle track and names the original download (`<name>.<code>.ass`). An external `<video basename>.ass/.ssa/.srt/.vtt/.sub` next to the MKV always wins over embedded tracks and is assumed to be in this language |
 | `TARGET_LANG_NAME` | *(required)* | Full language name sent to the LLM (e.g. `Czech`) |
 | `TARGET_LANG_CODE` | *(required)* | BCP-47 language code (e.g. `cs`) |
 | `CHUNK_SIZE` | `100` | Subtitle events per translation chunk |
 | `PREPEND_CONTEXT_SIZE` | `10` | Preceding events (with their translations) sent as read-only context |
 | `LOOKAHEAD_CONTEXT_SIZE` | `5` | Following events sent as read-only **untranslated** English, so the tail of a chunk isn't translated blind to what comes next (`0` disables) |
-| `TRANSLATION_PROMPT` | built-in | System prompt for the translation job; `{TARGET_LANG_NAME}` is substituted |
+| `TRANSLATION_PROMPT` | built-in | System prompt for the translation job; `{TARGET_LANG_NAME}` and `{SOURCE_LANG_NAME}` are substituted |
 | `REPAIR_PROMPT` | built-in | System prompt for the repair job |
 | `POLISH_PROMPT` | built-in | System prompt for the polish (naturalness) pass |
 | `FINAL_QA_PROMPT` | built-in | System prompt for the read-only final semantic/language audit |

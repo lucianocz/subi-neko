@@ -29,6 +29,12 @@ from sqlalchemy import select
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 
 from app.core.database import AsyncSessionLocal, SyncSessionLocal
+from app.core.languages import (
+    DEFAULT_SOURCE_LANG_CODE,
+    DEFAULT_SOURCE_LANG_NAME,
+    language_name,
+    normalize_lang_code,
+)
 from app.db.default_prompts import (
     DEFAULT_ANALYZE_PROMPT,
     DEFAULT_FINAL_QA_PROMPT,
@@ -53,6 +59,10 @@ _VALID_STRUCTURED_OUTPUT_MODES = {"auto", "json_schema", "json_object", "text"}
 
 @dataclass
 class AppOptions:
+    # Source (subtitle) language: name for LLM prompts, 639-1 code for track
+    # matching and download filenames. Defaults to English.
+    source_lang_name: str = DEFAULT_SOURCE_LANG_NAME
+    source_lang_code: str = DEFAULT_SOURCE_LANG_CODE
     target_lang_name: str | None = None
     target_lang_code: str | None = None
     chunk_size: int = 100
@@ -115,7 +125,11 @@ class AppOptions:
             # Stored hard limit below the (default) soft one: collapse the
             # warning band instead of mutating either stored value.
             soft_cps_limit = cps_limit
+        source_lang_code, source_lang_name = _validated_source_language(
+            d.get("SOURCE_LANG_CODE"), d.get("SOURCE_LANG_NAME"))
         return cls(
+            source_lang_name=source_lang_name,
+            source_lang_code=source_lang_code,
             target_lang_name=d.get("TARGET_LANG_NAME"),
             target_lang_code=d.get("TARGET_LANG_CODE"),
             chunk_size=int(raw_chunk_size) if raw_chunk_size is not None else 100,
@@ -175,7 +189,9 @@ class AppOptions:
 
     def _resolve(self, prompt: str) -> str:
         lang = self.target_lang_name or "the target language"
-        return prompt.replace("{TARGET_LANG_NAME}", lang)
+        return (prompt
+                .replace("{TARGET_LANG_NAME}", lang)
+                .replace("{SOURCE_LANG_NAME}", self.source_lang_name))
 
     def resolved_translation_prompt(self) -> str:
         return self._resolve(self.translation_prompt)
@@ -213,6 +229,17 @@ class AppOptions:
 # -- Validation helpers --------------------------------------------------------
 
 _logger = logging.getLogger(__name__)
+
+
+def _validated_source_language(code: str | None, name: str | None) -> tuple[str, str]:
+    """(code, name) for the source language; unset or unknown means English."""
+    if not (code or "").strip():
+        return DEFAULT_SOURCE_LANG_CODE, DEFAULT_SOURCE_LANG_NAME
+    normalized = normalize_lang_code(code)
+    if normalized is None:
+        _logger.warning("Invalid SOURCE_LANG_CODE %r, falling back to English", code)
+        return DEFAULT_SOURCE_LANG_CODE, DEFAULT_SOURCE_LANG_NAME
+    return normalized, (name or "").strip() or language_name(normalized) or normalized
 
 
 def _validated_log_level(raw: str | None) -> str:
@@ -369,6 +396,9 @@ def validate_option_changes(changes: dict[str, str | None], current: dict[str, s
     join = number("JOIN_LINES_UNDER", "Join lines under", 45.0)
     if "JOIN_LINES_UNDER" in changes and not join.is_integer():
         problems.append("Join lines under must be a whole number.")
+    source_code = changes.get("SOURCE_LANG_CODE")
+    if source_code and normalize_lang_code(source_code) is None:
+        problems.append(f"Unknown source language code '{source_code}'.")
     if not problems and soft >= hard and {"CPS_LIMIT", "SOFT_CPS_LIMIT"} & changes.keys():
         problems.append(
             f"Soft CPS limit ({soft:g}) must be lower than the hard CPS limit ({hard:g}).")

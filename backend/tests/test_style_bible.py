@@ -104,9 +104,9 @@ def test_update_prompt_supplies_episode_mapping_and_cannot_replace_pair(monkeypa
     assert "honorific_policy: Preserve -sama" in captured["user"]
     assert "[LINE 0]" in captured["user"]
     assert "speaker: LUXION" in captured["user"]
-    assert "EN: Leon." in captured["user"]
+    assert "SOURCE: Leon." in captured["user"]
     assert "CS: Leone." in captured["user"]
-    assert captured["user"].index("EN: Leon.") < captured["user"].index("CS: Leone.")
+    assert captured["user"].index("SOURCE: Leon.") < captured["user"].index("CS: Leone.")
     assert "canonical_name: Luxion" in captured["user"]
     assert "Existing address pairs are authoritative" in captured["user"]
     with factory() as session:

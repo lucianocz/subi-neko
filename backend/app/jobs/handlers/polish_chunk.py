@@ -361,7 +361,7 @@ def polish_chunk(
         )
         budget_part = f" | max {budget} chars" if budget is not None else ""
         lines.append(f"[LINE] {e['line_index']}{suffix}{budget_part}:")
-        lines.append(f"  EN: {plain_text(e['source_text'])}")
+        lines.append(f"  SOURCE: {plain_text(e['source_text'])}")
         lines.append(f"  DRAFT: {masked[e['line_index']].text}")
         for note in fix_notes.get(e["line_index"], []):
             lines.append(f"  fix: {note}")

@@ -100,7 +100,7 @@ def _sample_dialogue(
         fields = [
             f"[LINE {e.line_index}]",
             f"speaker: {speaker}",
-            f"EN: {source}",
+            f"SOURCE: {source}",
         ]
         if with_translation:
             translation = plain_text(e.translated_text) if e.translated_text else ""
