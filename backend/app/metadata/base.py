@@ -30,11 +30,12 @@ class CharacterGender(str, Enum):
 @dataclass
 class SearchResult:
     provider_id: str
-    title: str
+    title: str  # romaji
     title_native: str | None = None
     year: int | None = None
     media_type: MediaType = MediaType.UNKNOWN
     episode_count: int | None = None
+    title_english: str | None = None
 
 
 @dataclass

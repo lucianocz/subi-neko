@@ -383,7 +383,8 @@ export interface ScheduledTask {
 
 export interface SearchResult {
   provider_id: string;
-  title: string;
+  title: string; // romaji
+  title_english?: string | null;
   title_native: string | null;
   year: number | null;
   media_type: string;

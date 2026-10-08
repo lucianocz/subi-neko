@@ -83,7 +83,8 @@ class AniDBProvider(MetadataProvider):
     # ------------------------------------------------------------------
 
     async def _load_titles(self) -> list[dict]:
-        cached = self._cache.get("anidb:titles")
+        # v2: entries now carry "english" (v1 cache entries lack it)
+        cached = self._cache.get("anidb:titles:v2")
         if cached is not None:
             return cached
 
@@ -96,11 +97,19 @@ class AniDBProvider(MetadataProvider):
             raw = gzip.decompress(raw)
 
         root = ET.fromstring(raw.decode("utf-8"))
+        entries = self._parse_titles_dump(root)
+
+        self._cache.set("anidb:titles:v2", entries, ttl=86400)
+        return entries
+
+    @staticmethod
+    def _parse_titles_dump(root: ET.Element) -> list[dict]:
         entries: list[dict] = []
         for anime in root.findall("anime"):
             aid = anime.get("aid", "")
             main_title = ""
             native_title = None
+            english_title = None
             synonyms: list[str] = []
 
             for t in anime.findall("title"):
@@ -111,9 +120,14 @@ class AniDBProvider(MetadataProvider):
                     continue
                 if ttype == "main":
                     main_title = text
-                elif lang == "ja" and ttype == "official" and native_title is None:
+                    continue
+                if ttype == "official" and lang == "ja" and native_title is None:
                     native_title = text
-                elif ttype in ("official", "short", "syn"):
+                    continue
+                # Only official English titles — "syn"/"short" en entries are fan aliases.
+                if ttype == "official" and lang == "en" and english_title is None:
+                    english_title = text
+                if ttype in ("official", "short", "syn"):
                     synonyms.append(text)
 
             if aid and main_title:
@@ -121,10 +135,9 @@ class AniDBProvider(MetadataProvider):
                     "aid": aid,
                     "main": main_title,
                     "native": native_title,
+                    "english": english_title,
                     "synonyms": synonyms,
                 })
-
-        self._cache.set("anidb:titles", entries, ttl=86400)
         return entries
 
     # ------------------------------------------------------------------
@@ -345,8 +358,11 @@ class AniDBProvider(MetadataProvider):
                 provider_id=e["aid"],
                 title=e["main"],
                 title_native=e["native"],
+                # The titles dump has no start date; a year would need one
+                # rate-limited HTTP API call per result, so it stays unknown.
                 year=None,
                 media_type=MediaType.UNKNOWN,
+                title_english=e.get("english"),
             )
             for e in combined
         ]

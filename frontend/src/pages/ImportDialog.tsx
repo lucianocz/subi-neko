@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
 import {
-  Badge,
   Box,
   Button,
   Card,
@@ -13,12 +12,14 @@ import {
   Stack,
   Text,
   TextInput,
+  Tooltip,
   UnstyledButton,
 } from '@mantine/core';
 import { MagnifyingGlass } from '@phosphor-icons/react';
 import { useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
 import type { SearchResult } from '../types';
+import { animeCardRows } from '../utils/animeResultTitles';
 import {
   useImportDirectories,
   useImportProject,
@@ -30,15 +31,31 @@ function normalizeDirName(name: string): string {
   return name.replace(/[-_.]/g, ' ').replace(/\s+/g, ' ').trim();
 }
 
-// "OVA, 12 episodes" — whichever parts the provider knows (AniDB search
-// results carry neither, AniList carries both).
-function showTypeLabel(result: SearchResult): string {
-  const parts: string[] = [];
-  if (result.media_type && result.media_type !== 'Unknown') parts.push(result.media_type);
-  if (result.episode_count) {
-    parts.push(`${result.episode_count} episode${result.episode_count === 1 ? '' : 's'}`);
-  }
-  return parts.join(', ');
+// Same three rows for every provider: romaji, English (or Japanese), year.
+// Titles clamp at two lines; the tooltip carries the full text.
+function ResultCardBody({ result }: { result: SearchResult }) {
+  const rows = animeCardRows(result);
+  return (
+    <Box style={{ minWidth: 0 }}>
+      <Tooltip label={rows.primary} multiline maw={420} openDelay={300} withinPortal>
+        <Text size="sm" fw={500} lineClamp={2}>
+          {rows.primary}
+        </Text>
+      </Tooltip>
+      {rows.secondary && (
+        <Tooltip label={rows.secondary} multiline maw={420} openDelay={300} withinPortal>
+          <Text size="xs" c="dimmed" lineClamp={2}>
+            {rows.secondary}
+          </Text>
+        </Tooltip>
+      )}
+      {rows.year != null && (
+        <Text size="xs" c="dimmed">
+          {rows.year}
+        </Text>
+      )}
+    </Box>
+  );
 }
 
 interface ImportDialogProps {
@@ -128,14 +145,15 @@ export function ImportDialog({ opened, onClose }: ImportDialogProps) {
       opened={opened}
       onClose={handleClose}
       title="Import Project"
-      size="xl"
+      size={1050}
       styles={{ body: { padding: 0 } }}
     >
       <Group align="stretch" gap={0} style={{ minHeight: 420 }}>
         {/* Left: unimported directories */}
         <Box
           style={{
-            width: '42%',
+            width: 300,
+            maxWidth: '42%',
             borderRight: '1px solid var(--mantine-color-dark-4)',
             flexShrink: 0,
           }}
@@ -265,28 +283,7 @@ export function ImportDialog({ opened, onClose }: ImportDialogProps) {
                               cursor: 'pointer',
                             }}
                           >
-                            <Group justify="space-between" gap="xs" wrap="nowrap">
-                              <Box style={{ flex: 1, minWidth: 0 }}>
-                                <Text size="sm" fw={500} truncate>
-                                  {result.title}
-                                </Text>
-                                {result.title_native && (
-                                  <Text size="xs" c="dimmed" truncate>
-                                    {result.title_native}
-                                  </Text>
-                                )}
-                                {showTypeLabel(result) && (
-                                  <Text size="xs" c="dimmed">
-                                    {showTypeLabel(result)}
-                                  </Text>
-                                )}
-                              </Box>
-                              {result.year && (
-                                <Badge size="xs" variant="light" color="gray" style={{ flexShrink: 0 }}>
-                                  {result.year}
-                                </Badge>
-                              )}
-                            </Group>
+                            <ResultCardBody result={result} />
                           </Card>
                         </UnstyledButton>
                       ))}

@@ -27,6 +27,7 @@ query Search($q: String) {
       id
       title { romaji english native }
       startDate { year }
+      seasonYear
       format
       episodes
     }
@@ -178,58 +179,47 @@ class AniListProvider(MetadataProvider):
             "characters": characters,
         }
 
+    @staticmethod
+    def _search_item(media: dict) -> dict:
+        title_obj = media.get("title") or {}
+        # startDate.year is the real premiere; seasonYear only when it is missing.
+        year = (media.get("startDate") or {}).get("year") or media.get("seasonYear") or None
+        fmt = media.get("format") or ""
+        return {
+            "provider_id": str(media["id"]),
+            "title": title_obj.get("romaji") or "",
+            "title_english": title_obj.get("english") or None,
+            "title_native": title_obj.get("native") or None,
+            "year": year,
+            "media_type": _FORMAT_MAP.get(fmt, MediaType.UNKNOWN).value,
+            "episode_count": media.get("episodes"),
+        }
+
+    @staticmethod
+    def _to_result(r: dict) -> SearchResult:
+        return SearchResult(
+            provider_id=r["provider_id"],
+            title=r["title"],
+            title_native=r["title_native"],
+            year=r["year"],
+            media_type=MediaType(r["media_type"]),
+            # older cache entries predate these keys
+            episode_count=r.get("episode_count"),
+            title_english=r.get("title_english"),
+        )
+
     async def search(self, query: str) -> list[SearchResult]:
         cache_key = f"anilist:search:{query.lower()}"
         cached = self._cache.get(cache_key)
         if cached is not None:
-            return [
-                SearchResult(
-                    provider_id=r["provider_id"],
-                    title=r["title"],
-                    title_native=r["title_native"],
-                    year=r["year"],
-                    media_type=MediaType(r["media_type"]),
-                    # older cache entries predate this key
-                    episode_count=r.get("episode_count"),
-                )
-                for r in cached
-            ]
+            return [self._to_result(r) for r in cached]
 
         data = await self._post(_SEARCH_QUERY, {"q": query})
         media_list = (data.get("data") or {}).get("Page", {}).get("media") or []
 
-        results: list[dict] = []
-        for media in media_list:
-            title_obj = media.get("title") or {}
-            romaji = title_obj.get("romaji") or ""
-            native = title_obj.get("native") or None
-            year: int | None = None
-            sd = media.get("startDate") or {}
-            if sd.get("year"):
-                year = sd["year"]
-            fmt = media.get("format") or ""
-            media_type = _FORMAT_MAP.get(fmt, MediaType.UNKNOWN).value
-            results.append({
-                "provider_id": str(media["id"]),
-                "title": romaji,
-                "title_native": native,
-                "year": year,
-                "media_type": media_type,
-                "episode_count": media.get("episodes"),
-            })
-
+        results = [self._search_item(m) for m in media_list]
         self._cache.set(cache_key, results, ttl=3600)
-        return [
-            SearchResult(
-                provider_id=r["provider_id"],
-                title=r["title"],
-                title_native=r["title_native"],
-                year=r["year"],
-                media_type=MediaType(r["media_type"]),
-                episode_count=r.get("episode_count"),
-            )
-            for r in results
-        ]
+        return [self._to_result(r) for r in results]
 
     async def get_details(self, provider_id: str) -> SeriesDetails:
         data = await self._fetch_media(provider_id)
