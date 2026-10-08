@@ -236,9 +236,60 @@
   line-height: 1.35;
 }
 
+.qc-time-input {
+  flex: 1 1 auto;
+  min-width: 92px;
+}
+
 .qc-time-input input {
   font-family: var(--mantine-font-family-monospace);
-  width: 124px;
+  width: 100%;
+  text-align: center;
+}
+
+.qc-duration-input input {
+  font-family: var(--mantine-font-family-monospace);
+  width: 100%;
+  text-align: center;
+}
+
+/* Restore-AI icon sits inside the textarea, top-right; the text keeps clear of it. */
+.qc-translation-text textarea {
+  padding-inline-end: 32px;
+}
+
+.qc-translation-text [data-position='right'] {
+  align-items: flex-start;
+  padding-top: 3px;
+}
+
+/* All issues stay reachable: the list scrolls inside the tab instead of growing the pane. */
+.qc-issues-scroll {
+  max-height: min(40vh, 320px);
+  overflow-y: auto;
+  padding-inline-end: 4px;
+}
+
+.qc-issue {
+  padding: 4px 0;
+  min-width: 0;
+}
+
+.qc-issue + .qc-issue {
+  border-top: 1px solid var(--mantine-color-default-border);
+}
+
+.qc-issue-text {
+  overflow-wrap: anywhere;
+  line-height: 1.35;
+}
+
+.qc-cps-value {
+  display: flex;
+  align-items: center;
+  min-width: 40px;
+  height: 30px;
+  white-space: nowrap;
 }
 
 /* Detail panel: two columns when the panel itself is wide enough (container query,
@@ -259,7 +310,7 @@
 
 @container (min-width: 560px) {
   .qc-detail-grid {
-    grid-template-columns: minmax(0, 7fr) minmax(190px, 3fr);
+    grid-template-columns: minmax(0, 3fr) minmax(0, 2fr);
   }
 }
 
@@ -282,7 +333,7 @@
 
 .qc-meta-row {
   display: grid;
-  grid-template-columns: 6.5em minmax(0, 1fr);
+  grid-template-columns: 4.5em minmax(0, 1fr);
   align-items: baseline;
   column-gap: 8px;
   min-width: 0;
@@ -294,7 +345,7 @@
 
 .qc-meta-sep {
   width: 100%;
-  margin: 3px 0;
+  margin: 6px 0;
   border: 0;
   border-top: 1px solid var(--mantine-color-default-border);
 }

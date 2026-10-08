@@ -1,29 +1,27 @@
 import { useState } from 'react';
-import { Alert, Badge, Box, Button, Group, Loader, NativeSelect, Stack, Text, Textarea, TextInput } from '@mantine/core';
+import {
+  ActionIcon, Alert, Badge, Box, Button, Group, Input, Loader, NativeSelect, Stack, Text, Textarea, TextInput, Tooltip,
+} from '@mantine/core';
 import type { QcEvent, QcEventDetail as QcEventDetailDto } from '../../types/qc';
 import type { EventDraft, NewEventDraft } from '../../utils/qcDraft';
 import { validateNewEvent } from '../../utils/qcDraft';
-import { ArrowCounterClockwise, CheckCircle } from '@phosphor-icons/react';
+import { ArrowCounterClockwise, CheckCircle, Info, Warning, XCircle } from '@phosphor-icons/react';
+import type { Icon } from '@phosphor-icons/react';
 import { CPS_COLORS, cpsSeverity } from '../../utils/cps';
 import type { CpsLimits } from '../../utils/cps';
 import { canRestoreAi } from '../../utils/qcQa';
 import { SEVERITY_COLORS } from '../../utils/qaSeverity';
 import { formatMs } from '../../utils/qcText';
-import { formatTimeField, nudgeBoundary, parseTimeField, setBoundary } from '../../utils/qcTime';
+import { setBoundary } from '../../utils/qcTime';
 import type { Timing } from '../../utils/qcTime';
+import { formatGap, identityLabel, neighbourGaps, unresolvedSeverityCounts } from '../../utils/qcDetail';
+import type { SeverityBucket } from '../../utils/qcDetail';
 import { WatchedWordBadge } from '../WatchedWordBadge';
 import { GENDER_COLORS, NON_BINARY_BADGE_STYLE } from '../../utils/gender';
+import { QcTimeInput } from './QcTimeInput';
 
-const NUDGE_MS = 100;
-
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <Box>
-      <Text size="xs" c="dimmed">{label}</Text>
-      <Text size="sm" component="div">{children}</Text>
-    </Box>
-  );
-}
+const SEVERITY_ICONS: Record<SeverityBucket, Icon> = { blocker: XCircle, warning: Warning, info: Info };
+const SEVERITY_LABELS: Record<SeverityBucket, string> = { blocker: 'Blocker', warning: 'Warning', info: 'Info' };
 
 /** Raw source text in a read-only (selectable, copyable) textarea — never `disabled`. */
 function SourceBlock({ text, matches }: { text: string | null; matches: string[] }) {
@@ -32,6 +30,7 @@ function SourceBlock({ text, matches }: { text: string | null; matches: string[]
       <Textarea
         className="qc-detail-text qc-source-text"
         label="Source"
+        size="xs"
         readOnly
         autosize
         minRows={2}
@@ -57,7 +56,7 @@ function MetaRow({ label, children }: { label: string; children: React.ReactNode
 }
 
 function GenderBadge({ gender }: { gender: string | null }) {
-  if (!gender) return <Text span size="sm" c="dimmed">not set</Text>;
+  if (!gender) return <Badge size="sm" variant="outline" color="gray" data-testid="qc-gender">Not set</Badge>;
   return (
     <Badge
       size="sm"
@@ -71,46 +70,32 @@ function GenderBadge({ gender }: { gender: string | null }) {
   );
 }
 
-/** Read-only facts about the selected event (right column of the detail panel). */
+/** Compact read-only facts about the selected event (top of the right panel). */
 function QcEventMetadata({
-  event, d, cpsLimits, loading,
+  event, d, loading,
 }: {
   event: QcEvent;
   d: QcEventDetailDto | undefined;
-  cpsLimits: CpsLimits;
   loading: boolean;
 }) {
-  const cpsLevel = cpsSeverity(event.cps, cpsLimits);
   const timingChanged = d && (d.original_start_ms !== event.start_ms || d.original_end_ms !== event.end_ms);
   // Same identity rule as the subtitle editor: mapped character's gender, else the speaker's.
   const gender = d ? (d.character_name ? d.character_gender : d.speaker_gender) : null;
   return (
-    <div className="qc-meta" data-testid="qc-meta">
-      <MetaRow label="Character">
-        <Text span fw={600} data-testid="qc-character">{d ? d.character_name ?? '—' : loading ? '…' : '—'}</Text>
-      </MetaRow>
-      <MetaRow label="Gender">{d ? <GenderBadge gender={gender} /> : '…'}</MetaRow>
-      <hr className="qc-meta-sep" />
-      <MetaRow label="Speaker">{event.speaker ?? '—'}</MetaRow>
-      <MetaRow label="Style">{event.style}</MetaRow>
-      <MetaRow label="Content">{event.content_type}</MetaRow>
-      <MetaRow label="Event type">{event.event_type}</MetaRow>
-      {d && <MetaRow label="Layer">{d.layer}</MetaRow>}
-      <hr className="qc-meta-sep" />
-      <MetaRow label="CPS">
-        {event.cps == null ? '—' : (
-          <Text
-            span size="sm" fw={cpsLevel === 'normal' ? 400 : 700} c={CPS_COLORS[cpsLevel]}
-            data-testid="qc-cps" data-cps-over={cpsLevel === 'error' ? 'true' : 'false'}
-            data-cps-level={cpsLevel}
-          >
-            {event.cps.toFixed(1)}
-            {cpsLevel === 'error' ? ` (limit ${cpsLimits.hard})` : cpsLevel === 'warning' ? ` (soft ${cpsLimits.soft})` : ''}
+    <div className="qc-meta-body" data-testid="qc-meta">
+      <Group gap={6} wrap="wrap" className="qc-meta-who">
+        <MetaRow label="Character">
+          <Group gap={8}>
+          <Text span size="sm" fw={600} data-testid="qc-character">
+            {d ? identityLabel(d.character_name, event.speaker) : loading ? '…' : identityLabel(null, event.speaker)}
           </Text>
-        )}
-      </MetaRow>
+          {d && <GenderBadge gender={gender} />}
+          </Group>
+        </MetaRow>
+      </Group>
+      <MetaRow label="Style">{event.style}</MetaRow>
       {d && (
-        <MetaRow label="Original timing">
+        <MetaRow label="Original">
           <code data-testid="qc-original-timing">{formatMs(d.original_start_ms)} → {formatMs(d.original_end_ms)}</code>
           {timingChanged && <Text span size="xs" c="orange" ml={4}>(changed)</Text>}
         </MetaRow>
@@ -119,94 +104,173 @@ function QcEventMetadata({
   );
 }
 
-/** `HH:MM:SS.mmm` input: free typing locally, parsed on blur / Enter. */
-function TimeField({
-  label, valueMs, onCommit, onBlurred, testId,
-}: {
-  label: string;
-  valueMs: number;
-  onCommit: (ms: number) => void;
-  onBlurred: () => void;
-  testId: string;
-}) {
-  const [typed, setTyped] = useState<string | null>(null);
-  const error = typed !== null && parseTimeField(typed) === null;
-
-  const commit = () => {
-    if (typed === null) return;
-    const ms = parseTimeField(typed);
-    if (ms !== null) {
-      setTyped(null);
-      if (ms !== valueMs) onCommit(ms);
-    }
-  };
-
+/** CPS next to Duration: same label-over-value structure, bold threshold-coloured number. */
+function CpsReadout({ cps, limits }: { cps: number | null; limits: CpsLimits }) {
+  const level = cpsSeverity(cps, limits);
   return (
-    <TextInput
-      className="qc-time-input"
+    <Input.Wrapper
+      label="CPS"
       size="xs"
-      label={label}
-      data-testid={testId}
-      value={typed ?? formatTimeField(valueMs)}
-      error={error ? 'h:mm:ss.mmm' : undefined}
-      onFocus={(e) => { setTyped(formatTimeField(valueMs)); e.currentTarget.select(); }}
-      onChange={(e) => setTyped(e.currentTarget.value)}
-      onKeyDown={(e) => { if (e.key === 'Enter') { commit(); e.currentTarget.blur(); } }}
-      onBlur={() => { commit(); setTyped(null); onBlurred(); }}
-    />
+      styles={{ root: { flex: '0 0 auto' } }}
+    >
+      <div className="qc-cps-value">
+        {cps == null ? <Text span size="md" c="dimmed">—</Text> : (
+          <Text
+            span size="lg" fw={700} c={CPS_COLORS[level]}
+            data-testid="qc-cps" data-cps-over={level === 'error' ? 'true' : 'false'} data-cps-level={level}
+          >
+            {cps.toFixed(1)}
+          </Text>
+        )}
+      </div>
+    </Input.Wrapper>
+  );
+}
+
+/** Every QA issue of the event, resolved ones included (bottom of the right panel). */
+function QcIssuesPanel({
+  d, event, loading, onResolveIssue, resolvingIssueId,
+}: {
+  d: QcEventDetailDto | undefined;
+  event: QcEvent;
+  loading: boolean;
+  onResolveIssue: (issueId: number) => void;
+  resolvingIssueId: number | null;
+}) {
+  if (!d) {
+    return (
+      <Text size="xs" c="dimmed" data-testid="qc-qa-heading">
+        QA issues{loading ? ' …' : event.issue_count > 0 ? ` (${event.issue_count} unresolved)` : ''}
+      </Text>
+    );
+  }
+  if (d.issues.length === 0) return <Text size="xs" c="dimmed" data-testid="qc-qa-heading">QA issues: none</Text>;
+  const unresolved = d.issues.filter((i) => !i.is_resolved).length;
+  return (
+    <>
+      <Text size="xs" c="dimmed" mb={2} data-testid="qc-qa-heading">
+        QA issues ({d.issues.length}, {unresolved} unresolved)
+      </Text>
+      <div className="qc-issues-scroll" data-testid="qc-issues-list">
+        {d.issues.map((issue) => (
+          <div
+            key={issue.id} className="qc-issue"
+            data-testid="qc-issue" data-resolved={issue.is_resolved ? 'true' : 'false'}
+            style={{ opacity: issue.is_resolved ? 0.55 : 1 }}
+          >
+            <Group gap={6} wrap="nowrap" justify="space-between">
+              <Group gap={6} wrap="nowrap" style={{ minWidth: 0 }}>
+                <Badge size="xs" variant="light" style={{ flexShrink: 0 }} color={SEVERITY_COLORS[issue.severity.toLowerCase()] ?? 'gray'}>{issue.severity}</Badge>
+                <Text size="xs" c="dimmed" style={{ minWidth: 0, overflowWrap: 'anywhere' }}>{issue.qa_type}</Text>
+              </Group>
+              {issue.is_resolved ? (
+                <Badge
+                  size="xs" color="green" variant="outline" style={{ flexShrink: 0 }}
+                  title={issue.resolution_note ? `Resolved: ${issue.resolution_note}` : 'Resolved'}
+                >
+                  resolved
+                </Badge>
+              ) : (
+                <Button
+                  size="compact-xs" variant="subtle" color="green" style={{ flexShrink: 0 }}
+                  data-testid="qc-resolve-issue"
+                  title="Resolve issue"
+                  leftSection={<CheckCircle size={13} />}
+                  loading={resolvingIssueId === issue.id}
+                  disabled={resolvingIssueId !== null && resolvingIssueId !== issue.id}
+                  onClick={() => onResolveIssue(issue.id)}
+                >
+                  Resolve
+                </Button>
+              )}
+            </Group>
+            <Text size="sm" className="qc-issue-text" data-testid="qc-issue-text">{issue.message}</Text>
+          </div>
+        ))}
+      </div>
+    </>
+  );
+}
+
+/** One icon + plain count per severity that still has unresolved issues. */
+function SeverityIndicators({ issues }: { issues: readonly { severity: string; is_resolved: boolean }[] }) {
+  const groups = unresolvedSeverityCounts(issues);
+  if (groups.length === 0) return null;
+  return (
+    <Group gap={8} wrap="nowrap" data-testid="qc-severity-indicators">
+      {groups.map(({ severity, count }) => {
+        const SeverityIcon = SEVERITY_ICONS[severity];
+        const label = `${SEVERITY_LABELS[severity]}: ${count} unresolved`;
+        return (
+          <Tooltip key={severity} label={label} openDelay={200}>
+            <Group
+              gap={2} wrap="nowrap" aria-label={label} data-testid={`qc-severity-${severity}`} data-count={count}
+              style={{ color: `var(--mantine-color-${SEVERITY_COLORS[severity]}-filled)` }}
+            >
+              <SeverityIcon size={14} weight="fill" />
+              <Text span size="xs" fw={600} c="inherit">{count}</Text>
+            </Group>
+          </Tooltip>
+        );
+      })}
+    </Group>
   );
 }
 
 function TimingEditor({
-  timing, onChange, onBlurred, getVideoTimeMs, prefix,
+  timing, onChange, onBlurred, getVideoTimeMs, prefix, previousGapMs, nextGapMs, cps, extra,
 }: {
   timing: Timing;
   onChange: (t: Timing) => void;
   onBlurred: () => void;
   getVideoTimeMs: () => number | null;
   prefix: string;
+  /** Gap descriptions under Start / End; leave undefined for none (a not-yet-placed event). */
+  previousGapMs?: number | null;
+  nextGapMs?: number | null;
+  /** Rendered after Duration (the CPS readout). */
+  cps?: React.ReactNode;
+  /** Right-aligned action below the timing row. */
+  extra?: React.ReactNode;
 }) {
-  const [hint, setHint] = useState<string | null>(null);
-  const apply = (result: ReturnType<typeof setBoundary>) => {
-    if (result.ok) {
-      setHint(null);
-      onChange(result.timing);
-    } else setHint(result.reason);
+  const apply = (result: ReturnType<typeof setBoundary>): string | null => {
+    if (!result.ok) return result.reason;
+    onChange(result.timing);
+    return null;
   };
-  const toCurrent = (which: 'start' | 'end') => {
-    const ms = getVideoTimeMs();
-    if (ms === null) return setHint('Video is not ready.');
-    apply(setBoundary(timing, which, ms));
+  const gap = (kind: 'Previous' | 'Next', ms: number | null | undefined) => {
+    if (ms === undefined) return {};
+    const g = formatGap(kind, ms);
+    return {
+      description: <span data-testid={`${prefix}-${kind.toLowerCase()}-gap`} data-overlap={g.overlap ? 'true' : 'false'}>{g.text}</span>,
+      descriptionColor: g.overlap ? 'var(--mantine-color-orange-filled)' : undefined,
+    };
   };
-
-  const column = (which: 'start' | 'end', label: string, valueMs: number) => (
-    <Stack gap={4}>
-      <TimeField
-        label={label}
-        valueMs={valueMs}
-        testId={`${prefix}-${which}`}
-        onCommit={(ms) => apply(setBoundary(timing, which, ms))}
-        onBlurred={onBlurred}
-      />
-      <Group gap={4} wrap="nowrap">
-        <Button size="compact-xs" variant="default" title={`${label} −${NUDGE_MS} ms`} data-testid={`${prefix}-${which}-minus`}
-          onClick={() => apply(nudgeBoundary(timing, which, -NUDGE_MS))}>−{NUDGE_MS}</Button>
-        <Button size="compact-xs" variant="default" title={`${label} +${NUDGE_MS} ms`} data-testid={`${prefix}-${which}-plus`}
-          onClick={() => apply(nudgeBoundary(timing, which, NUDGE_MS))}>+{NUDGE_MS}</Button>
-        <Button size="compact-xs" variant="light" data-testid={`${prefix}-${which}-current`}
-          onClick={() => toCurrent(which)}>Set {which} to current</Button>
-      </Group>
-    </Stack>
-  );
 
   return (
     <Stack gap={4}>
-      <Group gap="md" align="flex-start">
-        {column('start', 'Start', timing.startMs)}
-        {column('end', 'End', timing.endMs)}
-        <Field label="Duration">{((timing.endMs - timing.startMs) / 1000).toFixed(2)} s</Field>
+      <Group gap="sm" align="flex-start" wrap="wrap" className="qc-timing-row">
+        <QcTimeInput
+          label="Start" testId={`${prefix}-start`} valueMs={timing.startMs}
+          onChange={(ms) => apply(setBoundary(timing, 'start', ms))}
+          onBlurred={onBlurred} getCurrentMs={getVideoTimeMs}
+          {...gap('Previous', previousGapMs)}
+        />
+        <QcTimeInput
+          label="End" testId={`${prefix}-end`} valueMs={timing.endMs}
+          onChange={(ms) => apply(setBoundary(timing, 'end', ms))}
+          onBlurred={onBlurred} getCurrentMs={getVideoTimeMs}
+          {...gap('Next', nextGapMs)}
+        />
+        <Input.Wrapper label="Duration" size="xs" styles={{ root: { flex: '0 1 88px', minWidth: 76 } }}>
+          <TextInput
+            className="qc-duration-input" size="xs" readOnly aria-label="Duration" data-testid={`${prefix}-duration`}
+            value={`${((timing.endMs - timing.startMs) / 1000).toFixed(2)} s`}
+          />
+        </Input.Wrapper>
+        {cps}
       </Group>
-      {hint && <Text size="xs" c="red">{hint}</Text>}
+      {extra && <Group justify="flex-end">{extra}</Group>}
     </Stack>
   );
 }
@@ -217,6 +281,8 @@ export interface QcEventDetailProps {
   loading: boolean;
   error: boolean;
   cpsLimits: CpsLimits;
+  /** The loaded (chronologically sorted) event list, used for the neighbour gaps. */
+  events: readonly QcEvent[];
   draft: EventDraft | null;
   onDraftChange: (draft: EventDraft) => void;
   dirty: boolean;
@@ -257,6 +323,7 @@ function NewEventEditor(props: QcEventDetailProps & { newDraft: NewEventDraft })
             <Textarea
               className="qc-detail-text"
               label="Translation"
+              size="xs"
               autosize
               minRows={2}
               maxRows={8}
@@ -324,10 +391,9 @@ function NewEventEditor(props: QcEventDetailProps & { newDraft: NewEventDraft })
  */
 export function QcEventDetail(props: QcEventDetailProps) {
   const {
-    event, detail, loading, error, cpsLimits, draft, onDraftChange, dirty, saving, saveError, onFlush,
+    event, detail, loading, error, cpsLimits, events, draft, onDraftChange, dirty, saving, saveError, onFlush,
     onToggleHidden, onResolveIssue, resolvingIssueId, onRestoreAi, actionBusy, getVideoTimeMs, newDraft,
   } = props;
-
   if (newDraft) return <NewEventEditor {...props} newDraft={newDraft} />;
   if (!event) {
     return <Text size="sm" c="dimmed">Select an event in the list to edit it. Double-click to jump the video to it.</Text>;
@@ -339,12 +405,12 @@ export function QcEventDetail(props: QcEventDetailProps) {
     : { startMs: event.start_ms, endMs: event.end_ms };
   const matches = (type: 'original' | 'translated') =>
     (d?.watched_matches ?? []).filter((m) => m.word_type === type).map((m) => m.word);
-  const unresolved = d ? d.issues.filter((i) => !i.is_resolved).length : null;
   const shownText = current ? current.text : event.translated_text ?? '';
   const restorable = canRestoreAi(d?.original_ai_translated_text, shownText);
+  const gaps = neighbourGaps(events, event, timing);
 
   return (
-    <Stack gap="xs" data-testid="qc-detail" data-event-id={event.id}>
+    <Stack gap={6} data-testid="qc-detail" data-event-id={event.id}>
       <Group gap={6} wrap="wrap">
         <Text size="xs" c="dimmed">#{event.line_index}</Text>
         {event.is_hidden && <Badge size="xs" variant="outline" color="gray">hidden</Badge>}
@@ -352,144 +418,115 @@ export function QcEventDetail(props: QcEventDetailProps) {
         {event.is_locked && <Badge size="xs" variant="outline" color="orange">locked</Badge>}
         {event.is_user_edited && <Badge size="xs" variant="outline" color="grape">user-edited</Badge>}
         {loading && !d && <Loader size={12} />}
+        {d && <SeverityIndicators issues={d.issues} />}
         <div style={{ flex: 1 }} />
         <Text size="xs" c={saveError ? 'red' : 'dimmed'} data-testid="qc-save-status">
           {saving ? 'Saving…' : saveError ? 'Not saved' : dirty ? 'Unsaved changes' : 'Saved'}
         </Text>
-        <Button
-          size="compact-xs"
-          variant="default"
-          color={event.is_hidden ? undefined : 'red'}
-          loading={actionBusy}
-          data-testid="qc-hide-toggle"
-          onClick={onToggleHidden}
-        >
-          {event.is_hidden ? 'Restore' : 'Hide'}
-        </Button>
       </Group>
 
-      <div className="qc-detail-wrap">
-        <div className="qc-detail-grid">
-          <Stack gap="xs" className="qc-detail-main">
-          <SourceBlock text={event.source_text} matches={matches('original')} />
+      <Box onBlur={(e) => {
+        // Focus left the whole editor (not just moved between its fields/buttons).
+        if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onFlush();
+      }}>
+        <div className="qc-detail-wrap">
+          <div className="qc-detail-grid">
+            <Stack gap={6} className="qc-detail-main">
+              <SourceBlock text={event.source_text} matches={matches('original')} />
 
-          <Box onBlur={(e) => {
-            // Focus left the whole editor (not just moved between its fields/buttons).
-            if (!e.currentTarget.contains(e.relatedTarget as Node | null)) onFlush();
-          }}>
-            <Box pos="relative">
-            {restorable && (
-              <Button
-                size="compact-xs"
-                variant="subtle"
-                color="gray"
-                data-testid="qc-restore-ai"
-                title="Revert to the original AI translation"
-                leftSection={<ArrowCounterClockwise size={12} />}
-                disabled={actionBusy}
-                style={{ position: 'absolute', top: -2, right: 0, zIndex: 1 }}
-                onClick={onRestoreAi}
-              >
-                Restore AI translation
-              </Button>
-            )}
-            <Textarea
-              className="qc-detail-text"
-              label="Translation"
-              autosize
-              minRows={2}
-              maxRows={8}
-              data-testid="qc-text"
-              data-autofocus
-              value={current ? current.text : event.translated_text ?? ''}
-              onChange={(e) => {
-                const text = e.currentTarget.value;
-                onDraftChange({ id: event.id, startMs: timing.startMs, endMs: timing.endMs, text });
-              }}
-              onBlur={onFlush}
-              onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onFlush(); } }}
-            />
-            </Box>
-            {matches('translated').length > 0 && (
-              <Group gap={4} mt={4}>{matches('translated').map((w) => <WatchedWordBadge key={w} word={w} />)}</Group>
-            )}
-            {saveError && <Alert color="red" p="xs" mt={4} data-testid="qc-save-error">{saveError}</Alert>}
+              <Box>
+                <Textarea
+                  className="qc-detail-text qc-translation-text"
+                  label="Translation"
+                  size="xs"
+                  autosize
+                  minRows={2}
+                  maxRows={8}
+                  data-testid="qc-text"
+                  data-autofocus
+                  value={shownText}
+                  rightSection={(
+                    <Tooltip label="Restore AI translation" openDelay={300}>
+                      <span>
+                        <ActionIcon
+                          size="sm"
+                          variant="subtle"
+                          color="gray"
+                          data-testid="qc-restore-ai"
+                          aria-label="Restore AI translation"
+                          disabled={!restorable || actionBusy}
+                          onClick={onRestoreAi}
+                        >
+                          <ArrowCounterClockwise size={14} />
+                        </ActionIcon>
+                      </span>
+                    </Tooltip>
+                  )}
+                  rightSectionWidth={30}
+                  rightSectionPointerEvents="all"
+                  onChange={(e) => {
+                    const text = e.currentTarget.value;
+                    onDraftChange({ id: event.id, startMs: timing.startMs, endMs: timing.endMs, text });
+                  }}
+                  onBlur={onFlush}
+                  onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); onFlush(); } }}
+                />
+                {matches('translated').length > 0 && (
+                  <Group gap={4} mt={4}>{matches('translated').map((w) => <WatchedWordBadge key={w} word={w} />)}</Group>
+                )}
+                {saveError && <Alert color="red" p="xs" mt={4} data-testid="qc-save-error">{saveError}</Alert>}
+              </Box>
 
-            <Box mt="xs">
+              {d?.original_ai_translated_text != null && d.original_ai_translated_text !== event.translated_text && (
+                <Box>
+                  <Text size="xs" c="dimmed" lh={1.2}>Original AI translation</Text>
+                  <Text size="xs" lh={1.3} style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{d.original_ai_translated_text}</Text>
+                </Box>
+              )}
+
               <TimingEditor
+                key={event.id}
                 prefix="qc"
                 timing={timing}
                 onChange={(t) => onDraftChange({
-                  id: event.id, text: current ? current.text : event.translated_text ?? '',
+                  id: event.id, text: shownText,
                   startMs: t.startMs, endMs: t.endMs,
                 })}
                 onBlurred={onFlush}
                 getVideoTimeMs={getVideoTimeMs}
+                previousGapMs={gaps.previousMs}
+                nextGapMs={gaps.nextMs}
+                cps={<CpsReadout cps={event.cps} limits={cpsLimits} />}
+                extra={(
+                  <Button
+                    size="compact-xs"
+                    variant="subtle"
+                    color="gray"
+                    loading={actionBusy}
+                    data-testid="qc-hide-toggle"
+                    onClick={onToggleHidden}
+                  >
+                    {event.is_hidden ? 'Restore event' : 'Hide event'}
+                  </Button>
+                )}
               />
-            </Box>
-          </Box>
-          </Stack>
-          <QcEventMetadata event={event} d={d} cpsLimits={cpsLimits} loading={loading} />
-        </div>
-      </div>
+            </Stack>
 
-      {d?.original_ai_translated_text != null && d.original_ai_translated_text !== event.translated_text && (
-        <Box>
-          <Text size="xs" c="dimmed">Original AI translation</Text>
-          <Text size="sm" style={{ whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>{d.original_ai_translated_text}</Text>
-        </Box>
-      )}
+            <div className="qc-meta" data-testid="qc-side">
+              <QcEventMetadata event={event} d={d} loading={loading} />
+              <hr className="qc-meta-sep" />
+              <div data-testid="qc-qa">
+                <QcIssuesPanel
+                  d={d} event={event} loading={loading}
+                  onResolveIssue={onResolveIssue} resolvingIssueId={resolvingIssueId}
+                />
+              </div>
+            </div>
+          </div>
+        </div>
+      </Box>
 
       {error && <Alert color="red" p="xs">Could not load the event detail.</Alert>}
-
-      <Box data-testid="qc-qa">
-        {!d || d.issues.length === 0 ? (
-          <Text size="xs" c="dimmed" data-testid="qc-qa-heading">
-            QA issues{!d && event.issue_count > 0 ? ` (${event.issue_count} unresolved)` : !d && loading ? ' …' : d ? ': none' : ''}
-          </Text>
-        ) : (
-          <>
-            <Text size="xs" c="dimmed" mb={2} data-testid="qc-qa-heading">
-              QA issues ({unresolved} unresolved)
-            </Text>
-            <Stack gap={4}>
-              {d.issues.map((issue) => (
-                <Group
-                  key={issue.id} gap={6} wrap="nowrap" align="flex-start"
-                  data-testid="qc-issue" data-resolved={issue.is_resolved ? 'true' : 'false'}
-                  style={{ opacity: issue.is_resolved ? 0.55 : 1 }}
-                >
-                  <Badge size="xs" variant="light" color={SEVERITY_COLORS[issue.severity.toLowerCase()] ?? 'gray'}>{issue.severity}</Badge>
-                  <Text size="xs" c="dimmed" style={{ flex: '0 0 auto' }}>{issue.qa_type}</Text>
-                  <Text size="sm" style={{ minWidth: 0, flex: 1, wordBreak: 'break-word' }}>
-                    {issue.message}
-                  </Text>
-                  {issue.is_resolved ? (
-                    <Badge
-                      size="xs" color="green" variant="outline" style={{ flexShrink: 0 }}
-                      title={issue.resolution_note ? `Resolved: ${issue.resolution_note}` : 'Resolved'}
-                    >
-                      resolved
-                    </Badge>
-                  ) : (
-                    <Button
-                      size="compact-xs" variant="subtle" color="green" style={{ flexShrink: 0 }}
-                      data-testid="qc-resolve-issue"
-                      title="Resolve issue"
-                      leftSection={<CheckCircle size={13} />}
-                      loading={resolvingIssueId === issue.id}
-                      disabled={resolvingIssueId !== null && resolvingIssueId !== issue.id}
-                      onClick={() => onResolveIssue(issue.id)}
-                    >
-                      Resolve
-                    </Button>
-                  )}
-                </Group>
-              ))}
-            </Stack>
-          </>
-        )}
-      </Box>
     </Stack>
   );
 }

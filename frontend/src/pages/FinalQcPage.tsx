@@ -388,6 +388,7 @@ function FinalQcWorkspace({
               loading={detail.isFetching}
               error={detail.isError}
               cpsLimits={cpsLimits}
+              events={events}
               draft={editing.draft}
               onDraftChange={editing.changeDraft}
               dirty={editing.dirty}
