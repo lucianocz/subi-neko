@@ -295,6 +295,18 @@ class SubtitleEventPageOut(BaseModel):
     summary: SubtitleEventsSummaryOut
 
 
+class SubtitleIssueTargetOut(BaseModel):
+    event_id: int
+    line_index: int
+    # 0-based rank in the listing the editor paginates under the same filters.
+    position: int
+
+
+class SubtitleIssueIndexOut(BaseModel):
+    # Events with >= 1 unresolved issue, ordered by line_index.
+    items: list[SubtitleIssueTargetOut]
+
+
 class SubtitleEventUpdateIn(BaseModel):
     translated_text: str | None = None
 
@@ -1951,6 +1963,61 @@ async def list_file_subtitle_events(
             total_pages=total_pages,
             summary=summary,
         )
+
+
+@router.get(
+    "/{project_id}/files/{file_id}/subtitle-events/issue-index",
+    response_model=SubtitleIssueIndexOut,
+)
+async def get_file_subtitle_issue_index(
+    project_id: int,
+    file_id: int,
+    show_resolved: bool = False,
+    issues_only: bool = False,
+):
+    """Lightweight navigation index: one row per event with an unresolved issue.
+
+    No text is loaded. ``position`` is the event's rank in the listing
+    ``list_file_subtitle_events`` paginates under the same ``show_resolved`` /
+    ``issues_only`` filters, so the client derives the page without fetching
+    every page.
+    """
+    async with AsyncSessionLocal() as session:
+        file = await session.get(File, file_id)
+        if file is None or file.project_id != project_id:
+            raise HTTPException(status_code=404, detail="File not found")
+
+        conditions = [SubtitleEvent.file_id == file_id]
+        if issues_only:
+            visible = _visible_issue_conditions(True, show_resolved)
+            conditions.append(
+                SubtitleEvent.qa_items.any(and_(*visible) if visible else None))
+        ranked = (
+            select(
+                SubtitleEvent.id.label("id"),
+                SubtitleEvent.line_index.label("line_index"),
+                (func.row_number().over(order_by=SubtitleEvent.line_index) - 1).label("position"),
+            )
+            .where(*conditions)
+            .subquery()
+        )
+        unresolved_ids = (
+            select(QaItem.subtitle_event_id)
+            .where(
+                QaItem.file_id == file_id,
+                QaItem.subtitle_event_id.is_not(None),
+                QaItem.is_resolved == 0,
+            )
+        )
+        rows = (await session.execute(
+            select(ranked.c.id, ranked.c.line_index, ranked.c.position)
+            .where(ranked.c.id.in_(unresolved_ids))
+            .order_by(ranked.c.line_index)
+        )).all()
+        return SubtitleIssueIndexOut(items=[
+            SubtitleIssueTargetOut(event_id=r.id, line_index=r.line_index, position=r.position)
+            for r in rows
+        ])
 
 
 async def _sync_tm_after_edit(project_id: int, event_id: int, file_status: str) -> None:

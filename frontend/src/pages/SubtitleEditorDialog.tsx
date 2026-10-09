@@ -20,11 +20,14 @@ import {
 } from '@mantine/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { notifications } from '@mantine/notifications';
-import { ArrowCounterClockwise, CheckCircle, NotePencil, WarningCircle } from '@phosphor-icons/react';
+import { ArrowCounterClockwise, ArrowDown, ArrowUp, CheckCircle, NotePencil, WarningCircle } from '@phosphor-icons/react';
 import type { ProjectWatchedWord, QaIssue, SubtitleEventEditorRow, VideoFile } from '../types';
 import {
   adjustWatchedOccurrences,
+  removeSubtitleIssueIndex,
+  SUBTITLE_EVENTS_PAGE_SIZE,
   subtitleEventsKey,
+  useSubtitleIssueIndex,
   useResolveQaIssue,
   useRevertSubtitleEvent,
   useSubtitleEvents,
@@ -34,38 +37,12 @@ import { useProjectWatchedWords } from '../hooks/useProjects';
 import { WatchedWordBadge } from '../components/WatchedWordBadge';
 import { WATCHED_ROW_BACKGROUND } from '../utils/watchedWords';
 import { SEVERITY_COLORS } from '../utils/qaSeverity';
+import { SEVERITY_RANK, filterIssues, sortIssues } from '../utils/editorIssues';
+import { centeredScrollTop, findNextIssue, findPrevIssue, pageForPosition } from '../utils/issueNav';
+import type { IssueTarget } from '../utils/issueNav';
+import './subtitleEditor.css';
 import { CPS_COLORS, cpsLimitsFrom, cpsSeverity } from '../utils/cps';
 import type { CpsLimits } from '../utils/cps';
-
-const SEVERITY_RANK: Record<string, number> = {
-  blocker: 0,
-  critical: 0,
-  error: 0,
-  high: 0,
-  warning: 1,
-  medium: 1,
-  info: 2,
-  low: 2,
-};
-
-function sortIssues(issues: QaIssue[]) {
-  return [...issues].sort((a, b) => {
-    if (a.is_resolved !== b.is_resolved) return a.is_resolved ? 1 : -1;
-    const ar = SEVERITY_RANK[a.severity.toLowerCase()] ?? 99;
-    const br = SEVERITY_RANK[b.severity.toLowerCase()] ?? 99;
-    if (ar !== br) return ar - br;
-    return a.id - b.id;
-  });
-}
-
-// Blockers are always shown; warnings/info and resolved issues are togglable.
-function filterIssues(issues: QaIssue[], showWarnings: boolean, showResolved: boolean) {
-  return issues.filter((issue) => {
-    if (!showResolved && issue.is_resolved) return false;
-    if (!showWarnings && (SEVERITY_RANK[issue.severity.toLowerCase()] ?? 99) > 0) return false;
-    return true;
-  });
-}
 
 function matchingWatchedWords(text: string | null | undefined, words: ProjectWatchedWord[]) {
   const haystack = (text ?? '').toLocaleLowerCase();
@@ -76,7 +53,7 @@ function matchingWatchedWords(text: string | null | undefined, words: ProjectWat
 function WatchedWordBadges({ words }: { words: ProjectWatchedWord[] }) {
   if (words.length === 0) return null;
   return (
-    <Group gap={4} mt={5}>
+    <Group gap={4} mt={2}>
       {words.map((word) => (
         <WatchedWordBadge key={word.id} word={word.word} />
       ))}
@@ -92,7 +69,7 @@ function IdentityBadges({
   gender: string | null;
 }) {
   return (
-    <Group gap={4} mt={8} wrap="nowrap" style={{ minWidth: 0 }}>
+    <Group gap={4} mt={4} wrap="nowrap" style={{ minWidth: 0 }}>
       <Badge size="xs" variant="light" color="blue" style={{ maxWidth: 112, minWidth: 0 }}>
         <Text size="xs" truncate title={name}>{name}</Text>
       </Badge>
@@ -113,6 +90,8 @@ function IdentityBadges({
   );
 }
 
+const EDITOR_INPUT_CLASSES = { input: 'se-input' };
+
 function IssueRow({
   issue,
   onResolve,
@@ -130,7 +109,7 @@ function IssueRow({
       wrap="nowrap"
       align="flex-start"
       px="xs"
-      py={6}
+      py={3}
       style={{
         border: '1px solid var(--mantine-color-dark-5)',
         borderRadius: 6,
@@ -185,13 +164,14 @@ interface SubtitleRowProps {
   cpsLimits: CpsLimits;
   originalWatchedWords: ProjectWatchedWord[];
   translatedWatchedWords: ProjectWatchedWord[];
-  showInfo: boolean;
   showResolved: boolean;
   /** Persist an edit; resolves to the authoritative row, or null on failure. */
   onSave: (row: SubtitleEventEditorRow, text: string) => Promise<SubtitleEventEditorRow | null>;
   onRevert: (row: SubtitleEventEditorRow) => Promise<SubtitleEventEditorRow | null>;
   onResolve: (issueId: number) => Promise<void>;
   onDirtyChange: (eventId: number, dirty: boolean) => void;
+  /** Focus entered the row: it becomes the issue-navigation anchor. */
+  onActivate: (lineIndex: number) => void;
 }
 
 // Every prop is referentially stable between unrelated renders (callbacks are
@@ -203,12 +183,12 @@ const SubtitleRow = memo(function SubtitleRow({
   cpsLimits,
   originalWatchedWords,
   translatedWatchedWords,
-  showInfo,
   showResolved,
   onSave,
   onRevert,
   onResolve,
   onDirtyChange,
+  onActivate,
 }: SubtitleRowProps) {
   const serverText = row.translated_text ?? '';
   // The draft lives here, not in the dialog: keystrokes touch this row only.
@@ -232,8 +212,8 @@ const SubtitleRow = memo(function SubtitleRow({
   useEffect(() => () => onDirtyChange(row.id, false), [onDirtyChange, row.id]);
 
   const issues = useMemo(
-    () => sortIssues(filterIssues(row.issues, showInfo, showResolved)),
-    [row.issues, showInfo, showResolved],
+    () => sortIssues(filterIssues(row.issues, showResolved)),
+    [row.issues, showResolved],
   );
   const canRevert = row.original_ai_translated_text !== null
     && text !== row.original_ai_translated_text;
@@ -283,6 +263,8 @@ const SubtitleRow = memo(function SubtitleRow({
 
   return (
     <Table.Tr
+      data-event-id={row.id}
+      onFocusCapture={() => onActivate(row.line_index)}
       style={{
         backgroundColor: hasWatchedMatch
           ? WATCHED_ROW_BACKGROUND
@@ -305,11 +287,11 @@ const SubtitleRow = memo(function SubtitleRow({
       <Table.Td style={{ width: '28%', verticalAlign: 'top' }}>
         <Textarea
           autosize
-          minRows={2}
+          minRows={1}
           maxRows={8}
           value={row.source_text}
           readOnly
-          styles={{ input: { fontSize: 13, lineHeight: 1.35 } }}
+          classNames={EDITOR_INPUT_CLASSES}
         />
         <WatchedWordBadges words={originalMatches} />
       </Table.Td>
@@ -317,7 +299,7 @@ const SubtitleRow = memo(function SubtitleRow({
         <Group gap={6} align="flex-start" wrap="nowrap">
           <Textarea
             autosize
-            minRows={2}
+            minRows={1}
             maxRows={8}
             value={text}
             onChange={(e) => setText(e.currentTarget.value)}
@@ -325,7 +307,8 @@ const SubtitleRow = memo(function SubtitleRow({
             // readOnly (not disabled) while saving: a disabled textarea drops
             // focus, which moved the caret away mid-save.
             readOnly={saving || reverting}
-            styles={{ root: { flex: 1 }, input: { fontSize: 13, lineHeight: 1.35 } }}
+            classNames={EDITOR_INPUT_CLASSES}
+            style={{ flex: 1 }}
           />
           <Tooltip label="Revert to AI translation" withArrow>
             <ActionIcon
@@ -359,7 +342,7 @@ const SubtitleRow = memo(function SubtitleRow({
             data-testid="cps-cell"
             data-cps-over={cpsLevel === 'error' ? 'true' : 'false'}
             data-cps-level={cpsLevel}
-            style={{ paddingTop: 8 }}
+            style={{ paddingTop: 4 }}
           >
             {row.cps === null ? '—' : Math.round(row.cps)}
           </Text>
@@ -369,7 +352,7 @@ const SubtitleRow = memo(function SubtitleRow({
         {issues.length === 0 ? (
           <Text size="xs" c="dimmed">No issues</Text>
         ) : (
-          <Stack gap={6}>
+          <Stack gap={4}>
             {issues.map((issue) => (
               <IssueRow
                 key={issue.id}
@@ -397,11 +380,10 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
   const [issuesOnly, setIssuesOnly] = useState(false);
-  const [showInfo, setShowInfo] = useState(true);
   const [showResolved, setShowResolved] = useState(false);
   const filters = useMemo(
-    () => ({ showInfo, showResolved, issuesOnly }),
-    [showInfo, showResolved, issuesOnly],
+    () => ({ showResolved, issuesOnly }),
+    [showResolved, issuesOnly],
   );
   const { data, isLoading, isPlaceholderData } = useSubtitleEvents(
     projectId, fileId, opened, page, filters);
@@ -418,6 +400,14 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
   const pendingSavesRef = useRef<Set<Promise<unknown>>>(new Set());
   const discardArmedRef = useRef(false);
 
+  // Issue navigation. The anchor is the line_index of the event last focused or
+  // jumped to; the index is sorted, so lookups are binary searches.
+  const [anchor, setAnchor] = useState<number | null>(null);
+  const pendingJumpRef = useRef<number | null>(null);
+  const { data: issueIndex } = useSubtitleIssueIndex(projectId, fileId, opened, filters);
+  const prevIssue = useMemo(() => (issueIndex ? findPrevIssue(issueIndex, anchor) : null), [issueIndex, anchor]);
+  const nextIssue = useMemo(() => (issueIndex ? findNextIssue(issueIndex, anchor) : null), [issueIndex, anchor]);
+
   const items = data?.items;
   const summary = data?.summary;
   const rows = items ?? [];
@@ -428,7 +418,41 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
   // Back to the top of the list on every page/filter change.
   useEffect(() => {
     scrollViewport.current?.scrollTo({ top: 0 });
-  }, [page, issuesOnly, showInfo, showResolved]);
+  }, [page, issuesOnly, showResolved]);
+
+  // One-shot: centre the row in the editor's own scroll container and flash it.
+  const scrollToEvent = useCallback((eventId: number) => {
+    const viewport = scrollViewport.current;
+    const row = viewport?.querySelector<HTMLElement>(`tr[data-event-id="${eventId}"]`);
+    if (!viewport || !row) return;
+    const vp = viewport.getBoundingClientRect();
+    const rect = row.getBoundingClientRect();
+    const header = viewport.querySelector('thead');
+    viewport.scrollTo({
+      top: centeredScrollTop({
+        scrollTop: viewport.scrollTop,
+        viewportTop: vp.top,
+        viewportHeight: vp.height,
+        headerHeight: header?.getBoundingClientRect().height ?? 0,
+        rowTop: rect.top,
+        rowHeight: rect.height,
+      }),
+      behavior: 'instant',
+    });
+    row.classList.remove('se-row-flash');
+    void row.offsetWidth; // restart the animation on repeated jumps
+    row.classList.add('se-row-flash');
+    row.addEventListener('animationend', () => row.classList.remove('se-row-flash'), { once: true });
+  }, []);
+
+  // A cross-page jump waits here for the target page's rows to be rendered
+  // (declared after the scroll-to-top effect so it wins on a page change).
+  useEffect(() => {
+    const eventId = pendingJumpRef.current;
+    if (eventId === null || !data || isPlaceholderData || data.page !== page) return;
+    pendingJumpRef.current = null;
+    scrollToEvent(eventId);
+  }, [data, isPlaceholderData, page, scrollToEvent]);
 
   const watchedWordsByType = useMemo(() => ({
     original: watchedWords.filter((word) => word.word_type === 'original'),
@@ -540,6 +564,21 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
     });
   };
 
+  const goToIssue = (target: IssueTarget | null) => {
+    if (!target) return;
+    setAnchor(target.line_index);
+    const targetPage = pageForPosition(target.position, SUBTITLE_EVENTS_PAGE_SIZE);
+    if (targetPage === page) {
+      scrollToEvent(target.event_id);
+      return;
+    }
+    // Paging remounts the rows, so edits are flushed first, like the pager.
+    void guarded(() => {
+      pendingJumpRef.current = target.event_id;
+      setPage(targetPage);
+    });
+  };
+
   async function handleClose() {
     const clean = await flushEdits();
     if (!clean && !discardArmedRef.current) {
@@ -557,9 +596,11 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
     setDirtyCount(0);
     setPage(1);
     setIssuesOnly(false);
-    setShowInfo(true);
     setShowResolved(false);
+    setAnchor(null);
+    pendingJumpRef.current = null;
     if (fileId !== null) {
+      removeSubtitleIssueIndex(queryClient, projectId, fileId);
       // Pages are only a snapshot; reopening must start from the server.
       queryClient.removeQueries({ queryKey: subtitleEventsKey(projectId, fileId) });
     }
@@ -647,15 +688,36 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
               )}
             </Group>
             <Group gap="md" wrap="nowrap" style={{ flexShrink: 0 }}>
-              <Checkbox
-                size="xs"
-                checked={showInfo}
-                label="Info"
-                onChange={(e) => {
-                  const checked = e.currentTarget.checked;
-                  changeFilter(() => setShowInfo(checked));
-                }}
-              />
+              <Group gap={4} wrap="nowrap">
+                <Tooltip label={prevIssue ? 'Previous event with an unresolved issue' : 'No earlier unresolved issue'} withArrow>
+                  <Box component="span">
+                    <Button
+                      size="compact-xs"
+                      variant="default"
+                      aria-label="Previous issue"
+                      disabled={!prevIssue}
+                      leftSection={<ArrowUp size={13} />}
+                      onClick={() => goToIssue(prevIssue)}
+                    >
+                      Previous issue
+                    </Button>
+                  </Box>
+                </Tooltip>
+                <Tooltip label={nextIssue ? 'Next event with an unresolved issue' : 'No later unresolved issue'} withArrow>
+                  <Box component="span">
+                    <Button
+                      size="compact-xs"
+                      variant="default"
+                      aria-label="Next issue"
+                      disabled={!nextIssue}
+                      leftSection={<ArrowDown size={13} />}
+                      onClick={() => goToIssue(nextIssue)}
+                    >
+                      Next issue
+                    </Button>
+                  </Box>
+                </Tooltip>
+              </Group>
               <Checkbox
                 size="xs"
                 checked={showResolved}
@@ -684,9 +746,12 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
           ) : (
             <ScrollArea h="70vh" type="auto" viewportRef={scrollViewport}>
               <Table
+                className="se-table"
                 striped
                 highlightOnHover
                 withColumnBorders
+                verticalSpacing={3}
+                horizontalSpacing="xs"
                 style={{ tableLayout: 'fixed', opacity: isPlaceholderData ? 0.6 : 1 }}
               >
                 <Table.Thead style={{ position: 'sticky', top: 0, zIndex: 1, backgroundColor: 'var(--mantine-color-dark-7)' }}>
@@ -706,12 +771,12 @@ export function SubtitleEditorDialog({ projectId, file, opened, onClose }: Subti
                       cpsLimits={cpsLimits}
                       originalWatchedWords={watchedWordsByType.original}
                       translatedWatchedWords={watchedWordsByType.translated}
-                      showInfo={showInfo}
                       showResolved={showResolved}
                       onSave={handleSave}
                       onRevert={handleRevert}
                       onResolve={handleResolve}
                       onDirtyChange={handleDirtyChange}
+                      onActivate={setAnchor}
                     />
                   ))}
                 </Table.Tbody>

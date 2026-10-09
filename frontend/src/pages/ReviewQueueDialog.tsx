@@ -4,7 +4,6 @@ import {
   Button,
   Center,
   Group,
-  Kbd,
   Loader,
   Modal,
   ScrollArea,
@@ -46,7 +45,6 @@ function QueueRow({
   const [draft, setDraft] = useState(item.translated_text ?? '');
   const [syncedText, setSyncedText] = useState(item.translated_text);
   const rowRef = useRef<HTMLDivElement | null>(null);
-  const textRef = useRef<HTMLTextAreaElement | null>(null);
 
   // Render-phase sync: refresh the draft when the server text changes.
   if (item.translated_text !== syncedText) {
@@ -119,19 +117,12 @@ function QueueRow({
       )}
       {item.event_id !== null ? (
         <Textarea
-          ref={textRef}
           size="sm"
           autosize
           minRows={1}
           maxRows={4}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-              e.preventDefault();
-              void handleSaveAndResolve();
-            }
-          }}
         />
       ) : null}
       <Group gap="xs" justify="flex-end">
@@ -175,14 +166,6 @@ export function ReviewQueueDialog({ projectId, opened, onClose }: ReviewQueueDia
   // Clamp at usage time — the list shrinks as items get resolved.
   const clampedIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
 
-  // j/k keyboard navigation on the dialog body (not while typing).
-  function handleKeyDown(e: React.KeyboardEvent) {
-    const tag = (e.target as HTMLElement).tagName;
-    if (tag === 'TEXTAREA' || tag === 'INPUT') return;
-    if (e.key === 'j') setActiveIndex(Math.min(clampedIndex + 1, items.length - 1));
-    if (e.key === 'k') setActiveIndex(Math.max(clampedIndex - 1, 0));
-  }
-
   const warningCount = items.filter((i) => i.severity !== 'blocker').length;
 
   return (
@@ -198,11 +181,10 @@ export function ReviewQueueDialog({ projectId, opened, onClose }: ReviewQueueDia
       }
       size="60rem"
     >
-      <Stack gap="sm" onKeyDown={handleKeyDown}>
+      <Stack gap="sm">
         <Group justify="space-between">
           <Text size="xs" c="dimmed">
-            Most severe and least confident first. <Kbd size="xs">j</Kbd>/<Kbd size="xs">k</Kbd> to move,{' '}
-            <Kbd size="xs">Ctrl</Kbd>+<Kbd size="xs">Enter</Kbd> in the text box to save & resolve.
+            Most severe and least confident first.
           </Text>
           {warningCount > 0 && (
             <Button

@@ -1,6 +1,8 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import type { QueryClient, QueryKey } from '@tanstack/react-query';
 import client from '../api/client';
+import { withoutIssueEvent } from '../utils/issueNav';
+import type { IssueTarget } from '../utils/issueNav';
 import type {
   ProjectStats,
   SubtitleEventEditorRow,
@@ -11,7 +13,6 @@ import type {
 export const SUBTITLE_EVENTS_PAGE_SIZE = 1000;
 
 export interface SubtitleEventFilters {
-  showInfo: boolean;
   showResolved: boolean;
   issuesOnly: boolean;
 }
@@ -52,7 +53,6 @@ export function useSubtitleEvents(
           params: {
             page,
             page_size: pageSize,
-            show_info: filters.showInfo,
             show_resolved: filters.showResolved,
             issues_only: filters.issuesOnly,
           },
@@ -68,6 +68,40 @@ export function useSubtitleEvents(
     refetchOnWindowFocus: false,
     refetchOnReconnect: false,
   });
+}
+
+// Separate prefix from the page cache: page queries are parsed positionally
+// by updateCachedPages, and the index is patched on its own.
+function issueIndexKey(projectId: number, fileId: number | null): QueryKey {
+  return ['subtitle-event-issue-index', projectId, fileId];
+}
+
+/** Events with an unresolved issue (id/line/position only — no text). */
+export function useSubtitleIssueIndex(
+  projectId: number,
+  fileId: number | null,
+  enabled: boolean,
+  filters: SubtitleEventFilters,
+) {
+  return useQuery<IssueTarget[]>({
+    queryKey: [...issueIndexKey(projectId, fileId), filters],
+    queryFn: async () => {
+      const { data } = await client.get<{ items: IssueTarget[] }>(
+        `/projects/${projectId}/files/${fileId}/subtitle-events/issue-index`,
+        { params: { show_resolved: filters.showResolved, issues_only: filters.issuesOnly } },
+      );
+      return data.items;
+    },
+    enabled: enabled && fileId !== null,
+    // Patched in place on resolve; dropped on close like the page cache.
+    staleTime: Infinity,
+    refetchOnWindowFocus: false,
+    refetchOnReconnect: false,
+  });
+}
+
+export function removeSubtitleIssueIndex(queryClient: QueryClient, projectId: number, fileId: number) {
+  queryClient.removeQueries({ queryKey: issueIndexKey(projectId, fileId) });
 }
 
 /** Apply `update` to every cached page of one file, with that page's params. */
@@ -98,6 +132,14 @@ export function patchSubtitleEventRow(
       ? { ...data, items: data.items.map((item) => (item.id === row.id ? row : item)) }
       : data
   ));
+  // An event whose last unresolved issue is gone stops being a destination.
+  // Other positions stay as fetched: they match the page snapshots.
+  if (!row.issues.some((issue) => !issue.is_resolved)) {
+    queryClient.setQueriesData<IssueTarget[]>(
+      { queryKey: issueIndexKey(projectId, fileId) },
+      (items) => (items ? withoutIssueEvent(items, row.id) : items),
+    );
+  }
 }
 
 /** Shift the header's watched-word total after a local text change. */

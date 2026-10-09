@@ -298,3 +298,52 @@ async def test_no_watched_words_means_zero(db_session):
     project, file, _ = await _setup(db_session, 3)
     page = await list_file_subtitle_events(project.id, file.id)
     assert page.summary.watched_occurrences == 0
+
+
+# ---------------------------------------------------------------------------
+# Issue-navigation index
+# ---------------------------------------------------------------------------
+
+async def _issue_index(project_id, file_id, show_resolved=False, issues_only=False):
+    from app.api.routes.projects import get_file_subtitle_issue_index
+    out = await get_file_subtitle_issue_index(
+        project_id, file_id, show_resolved=show_resolved, issues_only=issues_only)
+    return [(i.line_index, i.position) for i in out.items]
+
+
+@pytest.mark.asyncio
+async def test_issue_index_lists_only_unresolved_events_in_order(db_session):
+    project, file, events = await _issue_fixture(db_session)
+    # event 25 has only a resolved issue -> excluded; 3, 12, 28 qualify (any severity)
+    await _add_qa(db_session, file.id, events[12].id, severity="blocker", qa_type="dup")
+    assert await _issue_index(project.id, file.id) == [(3, 3), (12, 12), (28, 28)]
+
+
+@pytest.mark.asyncio
+async def test_issue_index_one_entry_per_event_and_ignores_resolved(db_session):
+    project, file, events = await _setup(db_session, 5)
+    await _add_qa(db_session, file.id, events[2].id, qa_type="a")
+    await _add_qa(db_session, file.id, events[2].id, qa_type="b")
+    await _add_qa(db_session, file.id, events[4].id, qa_type="c", resolved=1)
+    assert await _issue_index(project.id, file.id) == [(2, 2)]
+
+
+@pytest.mark.asyncio
+async def test_issue_index_position_follows_issues_only_listing(db_session):
+    project, file, events = await _issue_fixture(db_session)
+    # issues_only + resolved hidden: visible events are 3, 12, 28 -> ranks 0, 1, 2
+    assert await _issue_index(project.id, file.id, issues_only=True) == [(3, 0), (12, 1), (28, 3 - 1)]
+    # resolved shown: event 25 joins the listing and shifts 28 to rank 3
+    assert await _issue_index(
+        project.id, file.id, issues_only=True, show_resolved=True) == [(3, 0), (12, 1), (28, 3)]
+
+
+@pytest.mark.asyncio
+async def test_issue_index_is_scoped_to_file_and_404s_on_mismatch(db_session):
+    from fastapi import HTTPException
+    project, file, events = await _issue_fixture(db_session)
+    other = await _create_file(db_session, project.id, status="review_required", relative_path="b.mkv")
+    assert await _issue_index(project.id, other.id) == []
+    with pytest.raises(HTTPException) as exc:
+        await _issue_index(project.id + 99, file.id)
+    assert exc.value.status_code == 404
