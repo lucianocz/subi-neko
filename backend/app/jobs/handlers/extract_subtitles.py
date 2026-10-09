@@ -226,10 +226,13 @@ def extract_subtitles(
         if sidecar.format == "srt":
             _apply_plaintext_defaults(subs)
     else:
-        subs = _extract_embedded_track(
+        extracted = _extract_embedded_track(
             file_id, source_path, track_id, subtitle_format, now, progress)
-        if isinstance(subs, JobResult):
-            return subs
+        # JobResult is a TypedDict (a plain dict at runtime) and can't be used
+        # with isinstance(); the success value is the parsed SSAFile.
+        if not isinstance(extracted, pysubs2.SSAFile):
+            return extracted
+        subs = extracted
 
     progress(0.55, "Building rows")
 

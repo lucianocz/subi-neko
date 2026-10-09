@@ -312,3 +312,62 @@ def test_sidecar_is_not_modified_or_copied(env, monkeypatch):
     _extract(env)
     assert sidecar.read_bytes() == before
     assert sorted(p.name for p in env.video.parent.iterdir()) == ["Episode.mkv", "Episode.srt"]
+
+
+# -- embedded track extraction (real handler path, mkvextract faked) ------------------------
+
+def _fake_mkvextract(monkeypatch, *, content: str = ASS, returncode: int = 0, stderr: str = ""):
+    """Replace mkvextract: write ``content`` to the requested output path."""
+    class FakePopen:
+        def __init__(self, cmd, **kw):
+            self.returncode = returncode
+            self.stdout = iter(["Progress: 50%\n", "Progress: 100%\n"])
+            self.stderr = SimpleNamespace(read=lambda: stderr)
+            if returncode == 0:
+                Path(cmd[-1].split(":", 1)[1]).write_text(content, encoding="utf-8")
+
+        def wait(self):
+            return self.returncode
+
+    monkeypatch.setattr(extract_handler.subprocess, "Popen", FakePopen)
+
+
+def _set_embedded_track(env, fmt: str = "ass") -> None:
+    with env.factory() as s:
+        f = s.get(File, env.file_id)
+        f.subtitle_track_index, f.detected_subtitle_format = 3, fmt
+        s.commit()
+
+
+def test_embedded_track_extraction_succeeds(env, monkeypatch):
+    _set_embedded_track(env)
+    _fake_mkvextract(monkeypatch)
+    result = _extract(env)
+    assert result["status"] == "succeeded"
+    assert result["result"] == {"events": 1, "styles": 1}
+    with env.factory() as s:
+        ev = s.scalar(select(SubtitleEvent).where(SubtitleEvent.file_id == env.file_id))
+        assert ev.source_text == "Hello there"
+
+
+def test_embedded_mkvextract_failure_is_returned_not_raised(env, monkeypatch):
+    _set_embedded_track(env)
+    _fake_mkvextract(monkeypatch, returncode=2, stderr="boom\n")
+    result = _extract(env)
+    assert result["status"] == "failed"
+    assert result["error_code"] == "MKVEXTRACT_FAILED"
+    assert result["error_message"] == "boom"
+    with env.factory() as s:
+        assert s.scalar(select(SubtitleEvent).where(SubtitleEvent.file_id == env.file_id)) is None
+
+
+def test_embedded_parse_failure_sets_blocking_reason(env, monkeypatch):
+    _set_embedded_track(env)
+    _fake_mkvextract(monkeypatch, content="\x00garbage")
+
+    def boom(*a, **k):
+        raise ValueError("bad subs")
+    monkeypatch.setattr(extract_handler.pysubs2, "load", boom)
+    result = _extract(env)
+    assert result["status"] == "failed" and result["error_code"] == "subtitle_parse_failed"
+    assert _file(env).blocking_reason == "subtitle_parse_failed"
