@@ -51,3 +51,26 @@ export function nudgeBoundary(timing: Timing, which: 'start' | 'end', deltaMs: n
   const current = which === 'start' ? timing.startMs : timing.endMs;
   return setBoundary(timing, which, current + deltaMs);
 }
+
+/** Replay lead-in: playback starts this long before the event's Start. */
+export const REPLAY_LEAD_IN_MS = 500;
+
+export function replaySeekMs(startMs: number): number {
+  return Math.max(0, startMs - REPLAY_LEAD_IN_MS);
+}
+
+/**
+ * Seek the shared video to `Start − 500 ms` and play normally (no End boundary, no
+ * timer, no state). Returns false when there is no video; a rejected `play()` is swallowed.
+ */
+export function replayFromStart(
+  video: Pick<HTMLVideoElement, 'currentTime' | 'play'> | null | undefined,
+  startMs: number,
+): boolean {
+  if (!video || !Number.isFinite(startMs)) return false;
+  video.currentTime = replaySeekMs(startMs) / 1000;
+  try {
+    void Promise.resolve(video.play()).catch(() => { /* autoplay blocked / interrupted: nothing to do */ });
+  } catch { /* play() threw synchronously */ }
+  return true;
+}

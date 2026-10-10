@@ -8,7 +8,7 @@ from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.orm import selectinload
 
@@ -1125,18 +1125,23 @@ class GlossaryTermUpdateIn(BaseModel):
 
 
 class CharacterVoiceApiOut(BaseModel):
+    # JSON field stays "register"; the attribute name avoids shadowing BaseModel.register.
+    model_config = ConfigDict(validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
+
     id: int
     character_id: int
     character_name: str
     voice_note: str | None
-    register: str | None
+    speech_register: str | None = Field(alias="register")
     origin: str
     locked: bool
 
 
 class CharacterVoiceUpdateIn(BaseModel):
+    model_config = ConfigDict(validate_by_name=True, validate_by_alias=True, serialize_by_alias=True)
+
     voice_note: str | None = None
-    register: str | None = None
+    speech_register: str | None = Field(default=None, alias="register")
 
 
 class AddressPairApiOut(BaseModel):
@@ -1305,7 +1310,7 @@ async def get_style_guide(project_id: int):
                     character_id=style.project_character_id,
                     character_name=name,
                     voice_note=style.voice_note,
-                    register=style.register,
+                    speech_register=style.register,
                     origin=style.origin,
                     locked=bool(style.locked),
                 )
@@ -1375,8 +1380,8 @@ async def update_character_style(project_id: int, style_id: int, body: Character
         style, name = row
         if body.voice_note is not None:
             style.voice_note = body.voice_note or None
-        if body.register is not None:
-            style.register = body.register or None
+        if body.speech_register is not None:
+            style.register = body.speech_register or None
         style.origin = "manual"
         style.locked = 1
         style.updated_at = now
@@ -1386,7 +1391,7 @@ async def update_character_style(project_id: int, style_id: int, body: Character
             character_id=style.project_character_id,
             character_name=name,
             voice_note=style.voice_note,
-            register=style.register,
+            speech_register=style.register,
             origin=style.origin,
             locked=bool(style.locked),
         )

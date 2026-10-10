@@ -5,9 +5,9 @@ import {
 import type { QcEvent, QcEventDetail as QcEventDetailDto } from '../../types/qc';
 import type { EventDraft, NewEventDraft } from '../../utils/qcDraft';
 import { validateNewEvent } from '../../utils/qcDraft';
-import { ArrowCounterClockwise, CheckCircle, Info, Warning, XCircle } from '@phosphor-icons/react';
+import { ArrowCounterClockwise, CheckCircle, Info, Play, Warning, XCircle } from '@phosphor-icons/react';
 import type { Icon } from '@phosphor-icons/react';
-import { CPS_COLORS, cpsSeverity } from '../../utils/cps';
+import { CPS_COLORS, computeCps, cpsSeverity } from '../../utils/cps';
 import type { CpsLimits } from '../../utils/cps';
 import { canRestoreAi } from '../../utils/qcQa';
 import { SEVERITY_COLORS } from '../../utils/qaSeverity';
@@ -29,12 +29,11 @@ function SourceBlock({ text, matches }: { text: string | null; matches: string[]
     <Box>
       <Textarea
         className="qc-detail-text qc-source-text"
-        label="Source"
         size="xs"
         readOnly
         autosize
         minRows={2}
-        maxRows={8}
+        maxRows={3}
         placeholder="(empty)"
         data-testid="qc-source"
         value={text ?? ''}
@@ -218,7 +217,7 @@ function SeverityIndicators({ issues }: { issues: readonly { severity: string; i
 }
 
 function TimingEditor({
-  timing, onChange, onBlurred, getVideoTimeMs, prefix, previousGapMs, nextGapMs, cps, extra,
+  timing, onChange, onBlurred, getVideoTimeMs, prefix, previousGapMs, nextGapMs, cps, replay,
 }: {
   timing: Timing;
   onChange: (t: Timing) => void;
@@ -230,8 +229,8 @@ function TimingEditor({
   nextGapMs?: number | null;
   /** Rendered after Duration (the CPS readout). */
   cps?: React.ReactNode;
-  /** Right-aligned action below the timing row. */
-  extra?: React.ReactNode;
+  /** Replay button, between Duration and CPS. */
+  replay?: React.ReactNode;
 }) {
   const apply = (result: ReturnType<typeof setBoundary>): string | null => {
     if (!result.ok) return result.reason;
@@ -268,9 +267,9 @@ function TimingEditor({
             value={`${((timing.endMs - timing.startMs) / 1000).toFixed(2)} s`}
           />
         </Input.Wrapper>
+        {replay}
         {cps}
       </Group>
-      {extra && <Group justify="flex-end">{extra}</Group>}
     </Stack>
   );
 }
@@ -298,6 +297,8 @@ export interface QcEventDetailProps {
   onRestoreAi: () => void;
   actionBusy: boolean;
   getVideoTimeMs: () => number | null;
+  /** Seek the shared video to `startMs − 500` and play on (current, possibly unsaved Start). */
+  onReplay: (startMs: number) => void;
   newDraft: NewEventDraft | null;
   newError: string | null;
   styles: readonly string[];
@@ -322,11 +323,10 @@ function NewEventEditor(props: QcEventDetailProps & { newDraft: NewEventDraft })
             <Text size="xs" c="dimmed" className="qc-empty-text">No source text — manual event</Text>
             <Textarea
               className="qc-detail-text"
-              label="Translation"
               size="xs"
               autosize
               minRows={2}
-              maxRows={8}
+              maxRows={3}
               data-testid="qc-new-text"
               value={d.text}
               onChange={(e) => onNewDraftChange({ ...d, text: e.currentTarget.value })}
@@ -392,7 +392,7 @@ function NewEventEditor(props: QcEventDetailProps & { newDraft: NewEventDraft })
 export function QcEventDetail(props: QcEventDetailProps) {
   const {
     event, detail, loading, error, cpsLimits, events, draft, onDraftChange, dirty, saving, saveError, onFlush,
-    onToggleHidden, onResolveIssue, resolvingIssueId, onRestoreAi, actionBusy, getVideoTimeMs, newDraft,
+    onToggleHidden, onResolveIssue, resolvingIssueId, onRestoreAi, actionBusy, getVideoTimeMs, onReplay, newDraft,
   } = props;
   if (newDraft) return <NewEventEditor {...props} newDraft={newDraft} />;
   if (!event) {
@@ -408,6 +408,9 @@ export function QcEventDetail(props: QcEventDetailProps) {
   const shownText = current ? current.text : event.translated_text ?? '';
   const restorable = canRestoreAi(d?.original_ai_translated_text, shownText);
   const gaps = neighbourGaps(events, event, timing);
+  // Unsaved draft → live CPS from the draft itself (a late save response can't flicker it);
+  // otherwise the backend's persisted value.
+  const liveCps = current ? computeCps(current.text, current.startMs, current.endMs) : event.cps;
 
   return (
     <Stack gap={6} data-testid="qc-detail" data-event-id={event.id}>
@@ -437,11 +440,10 @@ export function QcEventDetail(props: QcEventDetailProps) {
               <Box>
                 <Textarea
                   className="qc-detail-text qc-translation-text"
-                  label="Translation"
                   size="xs"
                   autosize
                   minRows={2}
-                  maxRows={8}
+                  maxRows={3}
                   data-testid="qc-text"
                   data-autofocus
                   value={shownText}
@@ -496,32 +498,48 @@ export function QcEventDetail(props: QcEventDetailProps) {
                 getVideoTimeMs={getVideoTimeMs}
                 previousGapMs={gaps.previousMs}
                 nextGapMs={gaps.nextMs}
-                cps={<CpsReadout cps={event.cps} limits={cpsLimits} />}
-                extra={(
-                  <Button
-                    size="compact-xs"
-                    variant="subtle"
-                    color="gray"
-                    loading={actionBusy}
-                    data-testid="qc-hide-toggle"
-                    onClick={onToggleHidden}
-                  >
-                    {event.is_hidden ? 'Restore event' : 'Hide event'}
-                  </Button>
+                cps={<CpsReadout cps={liveCps} limits={cpsLimits} />}
+                replay={(
+                  <Input.Wrapper label={'\u00a0'} size="xs" styles={{ root: { flex: '0 0 auto' }, label: { visibility: 'hidden' } }}>
+                    <Box>
+                      <Tooltip label="Replay event" openDelay={300}>
+                      <ActionIcon
+                        size={30} variant="default" aria-label="Replay event" data-testid="qc-replay"
+                        onClick={() => onReplay(timing.startMs)}
+                      >
+                        <Play size={14} weight="fill" />
+                      </ActionIcon>
+                    </Tooltip>
+                    </Box>
+                  </Input.Wrapper>
                 )}
               />
             </Stack>
 
-            <div className="qc-meta" data-testid="qc-side">
-              <QcEventMetadata event={event} d={d} loading={loading} />
-              <hr className="qc-meta-sep" />
-              <div data-testid="qc-qa">
-                <QcIssuesPanel
-                  d={d} event={event} loading={loading}
-                  onResolveIssue={onResolveIssue} resolvingIssueId={resolvingIssueId}
-                />
+            <Stack gap={6} style={{ minWidth: 0, alignSelf: 'start' }}>
+              <div className="qc-meta" data-testid="qc-side" style={{ alignSelf: 'stretch' }}>
+                <QcEventMetadata event={event} d={d} loading={loading} />
+                <hr className="qc-meta-sep" />
+                <div data-testid="qc-qa">
+                  <QcIssuesPanel
+                    d={d} event={event} loading={loading}
+                    onResolveIssue={onResolveIssue} resolvingIssueId={resolvingIssueId}
+                  />
+                </div>
               </div>
-            </div>
+              <Group justify="flex-end">
+                <Button
+                  size="compact-xs"
+                  variant="subtle"
+                  color="gray"
+                  loading={actionBusy}
+                  data-testid="qc-hide-toggle"
+                  onClick={onToggleHidden}
+                >
+                  {event.is_hidden ? 'Restore event' : 'Hide event'}
+                </Button>
+              </Group>
+            </Stack>
           </div>
         </div>
       </Box>

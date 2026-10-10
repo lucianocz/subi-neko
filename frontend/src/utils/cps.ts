@@ -46,3 +46,29 @@ export function cpsLimitsFrom(
   const soft = source.soft_cps_limit != null && source.soft_cps_limit < hard ? source.soft_cps_limit : hard;
   return { soft, hard };
 }
+
+/**
+ * Live (client-side) CPS — a port of `compute_cps` in backend `app/subs/readability.py`,
+ * used only to give instant feedback for an unsaved draft. The backend value stays
+ * authoritative for persisted data and QA.
+ *
+ * Visible text = text split on literal `\N`, each row stripped of `{...}` blocks with
+ * `\N`/`\n`/`\h` turned into spaces and trimmed, empty rows dropped, rows joined by one
+ * space. Length counts code points (like Python `len`), not UTF-16 units.
+ */
+export function visibleLength(text: string | null | undefined): number {
+  if (!text) return 0;
+  const rows = text.split('\\N')
+    .map((row) => row.replace(/\{[^}]*\}/g, '').replace(/\\[Nnh]/g, ' ').trim())
+    .filter((row) => row !== '');
+  return Array.from(rows.join(' ')).length;
+}
+
+/** Raw characters per second, or null when meaningless (empty text, duration <= 0). */
+export function computeCps(text: string | null | undefined, startMs: number, endMs: number): number | null {
+  const durationMs = endMs - startMs;
+  if (!Number.isFinite(durationMs) || durationMs <= 0) return null;
+  const length = visibleLength(text);
+  if (length === 0) return null;
+  return length / (durationMs / 1000);
+}

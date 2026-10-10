@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TranslationItem(BaseModel):
@@ -117,7 +117,9 @@ class CharacterVoiceOut(BaseModel):
 
     name: str
     voice_note: str
-    register: str
+    # "register" is the wire name (prompt + JSON schema); the Python attribute
+    # avoids shadowing BaseModel.register.
+    speech_register: str = Field(validation_alias="register", serialization_alias="register")
 
 
 class AddressPairOut(BaseModel):

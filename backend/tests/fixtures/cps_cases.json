@@ -1,0 +1,79 @@
+[
+ {
+  "name": "plain",
+  "text": "Ahoj světe",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 10.0
+ },
+ {
+  "name": "override tags stripped",
+  "text": "{\\i1}Ahoj{\\i0} světe",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 10.0
+ },
+ {
+  "name": "hard break joins rows with one space",
+  "text": "Ahoj\\Nsvěte",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 10.0
+ },
+ {
+  "name": "empty rows dropped",
+  "text": "\\NAhoj\\N\\N{\\b1}{\\b0}\\Nsvěte\\N",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 10.0
+ },
+ {
+  "name": "soft break and nbsp escape become interior spaces",
+  "text": "a\\nb\\hc",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 5.0
+ },
+ {
+  "name": "non-BMP counts as one char",
+  "text": "a😀b",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": 3.0
+ },
+ {
+  "name": "diacritics",
+  "text": "Příliš žluťoučký kůň",
+  "start_ms": 500,
+  "end_ms": 2500,
+  "cps": 10.0
+ },
+ {
+  "name": "empty text",
+  "text": "",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": null
+ },
+ {
+  "name": "tags only",
+  "text": "{\\an8}",
+  "start_ms": 0,
+  "end_ms": 1000,
+  "cps": null
+ },
+ {
+  "name": "zero duration",
+  "text": "Ahoj",
+  "start_ms": 1000,
+  "end_ms": 1000,
+  "cps": null
+ },
+ {
+  "name": "negative duration",
+  "text": "Ahoj",
+  "start_ms": 2000,
+  "end_ms": 1000,
+  "cps": null
+ }
+]

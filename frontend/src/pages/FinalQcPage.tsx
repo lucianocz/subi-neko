@@ -16,6 +16,7 @@ import { useQcFonts } from '../hooks/useQcFonts';
 import { useQcPreview } from '../hooks/useQcPreview';
 import type { QcBrandingSave, QcEvent, QcEventList as QcEventListData } from '../types/qc';
 import { cpsLimitsFrom } from '../utils/cps';
+import { replayFromStart } from '../utils/qcTime';
 import { brandingIndicator, brandingNeedsFontRefresh } from '../utils/qcBranding';
 import { spaceBelongsToTarget } from '../utils/qcKeyboard';
 import '../components/qc/qc.css';
@@ -205,6 +206,7 @@ function FinalQcWorkspace({
     // that shows it.
     if (el) el.currentTime = (event.start_ms + Math.min(SEEK_NUDGE_MS, (event.end_ms - event.start_ms) / 2)) / 1000;
   }, [select]);
+  const handleReplay = useCallback((startMs: number) => { replayFromStart(videoRef.current, startMs); }, []);
   const handleUserScroll = useCallback(() => setFollow(false), []);
 
   // Space = play/pause, except where Space already means something (text entry,
@@ -401,6 +403,7 @@ function FinalQcWorkspace({
               onRestoreAi={() => { void editing.restoreAi(); }}
               actionBusy={editing.action.state === 'busy'}
               getVideoTimeMs={editing.getVideoTimeMs}
+              onReplay={handleReplay}
               newDraft={editing.newDraft}
               newError={editing.newError}
               styles={list.styles}

@@ -274,7 +274,7 @@ def upsert_character_voices(
             style = ProjectCharacterStyle(
                 project_character_id=character.id,
                 voice_note=voice.voice_note or None,
-                register=voice.register or None,
+                register=voice.speech_register or None,
                 origin=origin,
                 locked=0,
                 created_at=now,
@@ -285,7 +285,7 @@ def upsert_character_voices(
             written += 1
         elif not style.locked:
             style.voice_note = voice.voice_note or style.voice_note
-            style.register = voice.register or style.register
+            style.register = voice.speech_register or style.register
             style.origin = origin
             style.updated_at = now
             written += 1
