@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Literal
 
@@ -55,6 +56,56 @@ def effective_font(
     return font_name, font_size
 
 
+@dataclass(frozen=True)
+class EffectiveStyle:
+    """Base-style properties a style renders with (``None`` colours = default white)."""
+
+    font_name: str
+    font_size: float
+    bold: bool
+    italic: bool
+    outline: float
+    shadow: float
+    primary_colour: str | None
+    outline_colour: str | None
+    back_colour: str | None
+
+
+def effective_style(
+    style: SubtitleStyle,
+    *,
+    text_variant: TextVariant,
+    use_font_replacements: bool = True,
+) -> EffectiveStyle:
+    """The single authority for which style values an output renders with.
+
+    ``original`` output is always the imported source style. ``translated``
+    output overlays each non-NULL ``replacement_*`` onto its source value
+    independently (``False``/``0`` are real overrides, NULL inherits). Font name
+    and size additionally honour ``use_font_replacements`` (the
+    REPLACE_INCOMPATIBLE_FONTS option); the other overrides are deliberate
+    user choices and apply regardless. Stored values are never modified.
+    """
+    font_name, font_size = effective_font(
+        style, text_variant=text_variant, use_font_replacements=use_font_replacements)
+    translated = text_variant == "translated"
+
+    def pick(replacement, source):
+        return replacement if translated and replacement is not None else source
+
+    return EffectiveStyle(
+        font_name=font_name,
+        font_size=float(font_size),
+        bold=bool(pick(style.replacement_bold, style.bold) or False),
+        italic=bool(pick(style.replacement_italic, style.italic) or False),
+        outline=float(pick(style.replacement_outline, style.outline if style.outline is not None else 2.0)),
+        shadow=float(pick(style.replacement_shadow, style.shadow if style.shadow is not None else 0.0)),
+        primary_colour=pick(style.replacement_primary_colour, style.primary_colour),
+        outline_colour=pick(style.replacement_outline_colour, style.outline_colour),
+        back_colour=pick(style.replacement_back_colour, style.back_colour),
+    )
+
+
 def build_ass(
     subtitle: Subtitle,
     styles: Iterable[SubtitleStyle],
@@ -105,17 +156,17 @@ def build_ass(
 
     subs.styles.clear()
     for style in styles:
-        font_name, font_size = effective_font(
+        eff = effective_style(
             style, text_variant=text_variant, use_font_replacements=use_font_replacements)
         subs.styles[style.style_name] = pysubs2.SSAStyle(
-            fontname=font_name,
-            fontsize=float(font_size),
-            primarycolor=_str_to_color(style.primary_colour),
+            fontname=eff.font_name,
+            fontsize=eff.font_size,
+            primarycolor=_str_to_color(eff.primary_colour),
             secondarycolor=_str_to_color(style.secondary_colour),
-            outlinecolor=_str_to_color(style.outline_colour),
-            backcolor=_str_to_color(style.back_colour),
-            bold=bool(style.bold) if style.bold is not None else False,
-            italic=bool(style.italic) if style.italic is not None else False,
+            outlinecolor=_str_to_color(eff.outline_colour),
+            backcolor=_str_to_color(eff.back_colour),
+            bold=eff.bold,
+            italic=eff.italic,
             underline=bool(style.underline) if style.underline is not None else False,
             strikeout=bool(style.strikeout) if style.strikeout is not None else False,
             scalex=float(style.scale_x) if style.scale_x is not None else 100.0,
@@ -123,8 +174,8 @@ def build_ass(
             spacing=float(style.spacing) if style.spacing is not None else 0.0,
             angle=float(style.angle) if style.angle is not None else 0.0,
             borderstyle=int(style.border_style) if style.border_style is not None else 1,
-            outline=float(style.outline) if style.outline is not None else 2.0,
-            shadow=float(style.shadow) if style.shadow is not None else 0.0,
+            outline=eff.outline,
+            shadow=eff.shadow,
             alignment=int(style.alignment) if style.alignment is not None else 2,
             marginl=int(style.margin_l) if style.margin_l is not None else 10,
             marginr=int(style.margin_r) if style.margin_r is not None else 10,

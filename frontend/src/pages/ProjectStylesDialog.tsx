@@ -1,7 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useCallback, useMemo, useState } from 'react';
 import {
   Alert,
-  Autocomplete,
   Badge,
   Box,
   Button,
@@ -9,7 +8,6 @@ import {
   Group,
   Loader,
   Modal,
-  NumberInput,
   Paper,
   Stack,
   Text,
@@ -18,9 +16,22 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { TextAa } from '@phosphor-icons/react';
-import { FONT_PREVIEW_LINES, REPLACEMENT_FONT_GROUPS } from '../constants/replacementFonts';
+import { StylePropertyGrid } from '../components/Project/StylePropertyGrid';
+import { FONT_PREVIEW_LINES } from '../constants/replacementFonts';
 import { useProjectStyles, useUpdateProjectStyle } from '../hooks/useProjectStyles';
 import type { ProjectStyle } from '../hooks/useProjectStyles';
+import {
+  draftFromStyle,
+  draftToUpdate,
+  formatDecimal,
+  hasAnyOverride,
+  hasStoredOverride,
+  isDraftDirty,
+  isDraftValid,
+  previewCss,
+  resolveEffective,
+} from '../utils/styleOverrides.ts';
+import type { StyleDraft } from '../utils/styleOverrides.ts';
 
 interface ProjectStylesDialogProps {
   projectId: number;
@@ -28,43 +39,32 @@ interface ProjectStylesDialogProps {
   onClose: () => void;
 }
 
-function formatSize(size: number) {
-  return Number.isInteger(size) ? String(size) : size.toFixed(1);
-}
-
 /** "Arial 42 → Noto Sans 40"; falls back to the source value per field. */
 function fontSummary(style: ProjectStyle) {
-  const source = `${style.font_name} ${formatSize(style.font_size)}`;
-  if (!style.replacement_font_name && style.replacement_font_size == null) return source;
+  const source = `${style.font_name} ${formatDecimal(style.font_size)}`;
+  const restyled = hasStoredOverride(style);
+  if (!restyled) return source;
   const name = style.replacement_font_name || style.font_name;
   const size = style.replacement_font_size ?? style.font_size;
-  return `${source} → ${name} ${formatSize(size)}`;
-}
-
-function cssFamily(name: string) {
-  return `"${name.replace(/["\\]/g, '')}", sans-serif`;
+  const fontChanged = Boolean(style.replacement_font_name) || style.replacement_font_size != null;
+  return fontChanged ? `${source} → ${name} ${formatDecimal(size)} · restyled` : `${source} · restyled`;
 }
 
 function StyleEditor({ projectId, style }: { projectId: number; style: ProjectStyle }) {
   const update = useUpdateProjectStyle(projectId);
-  const [fontName, setFontName] = useState(style.replacement_font_name ?? '');
-  const [fontSize, setFontSize] = useState<number | ''>(style.replacement_font_size ?? '');
+  // Edits stay local until Save (one PUT), like the font/size fields always did.
+  const [draft, setDraft] = useState<StyleDraft>(() => draftFromStyle(style));
+  const patch = useCallback((p: Partial<StyleDraft>) => setDraft((d) => ({ ...d, ...p })), []);
 
-  // Same fallback semantics as translated ASS export.
-  const effectiveName = fontName.trim() || style.font_name;
-  const effectiveSize = fontSize === '' ? style.font_size : fontSize;
-
-  const dirty =
-    (fontName.trim() || null) !== style.replacement_font_name
-    || (fontSize === '' ? null : fontSize) !== style.replacement_font_size;
+  // Same fallback semantics as translated ASS export (backend `effective_style`).
+  const effective = resolveEffective(style, draft);
+  const css = previewCss(effective);
+  const dirty = isDraftDirty(draft, style);
+  const valid = isDraftValid(draft);
 
   async function save() {
     try {
-      await update.mutateAsync({
-        styleId: style.id,
-        replacement_font_name: fontName.trim() || null,
-        replacement_font_size: fontSize === '' ? null : fontSize,
-      });
+      await update.mutateAsync({ styleId: style.id, ...draftToUpdate(draft) });
       notifications.show({
         color: 'green',
         message: `Style "${style.style_name}" updated for ${style.file_count} file${style.file_count === 1 ? '' : 's'}.`,
@@ -75,40 +75,16 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
   }
 
   return (
-    <Stack gap="md" h="100%" style={{ minHeight: 0 }}>
-      <Group grow align="flex-start" style={{ flex: '0 0 auto' }}>
-        <TextInput label="Style name" value={style.style_name} readOnly />
-        <TextInput label="Source font" value={style.font_name} readOnly />
-        <TextInput label="Source size" value={formatSize(style.font_size)} readOnly />
-      </Group>
-
+    <Stack gap="sm" h="100%" style={{ minHeight: 0 }}>
       <Text size="xs" c="dimmed" style={{ flex: '0 0 auto' }}>
-        The replacement applies to translated subtitles in all {style.file_count} file
-        {style.file_count === 1 ? '' : 's'} using this style. Source subtitles keep the original font.
-        Leave a field empty to fall back to the source value.
+        Replacements apply to translated subtitles in all {style.file_count} file
+        {style.file_count === 1 ? '' : 's'} using this style. Source subtitles always keep the original style.
+        Empty / dashed controls inherit the source value; the &times; or &ldquo;Reset to source&rdquo; clears one override.
       </Text>
 
-      <Group grow align="flex-start" style={{ flex: '0 0 auto' }}>
-        <Autocomplete
-          label="Replacement font"
-          placeholder={style.font_name}
-          data={REPLACEMENT_FONT_GROUPS}
-          value={fontName}
-          onChange={setFontName}
-          limit={60}
-          renderOption={({ option }) => <span style={{ fontFamily: cssFamily(option.value) }}>{option.value}</span>}
-        />
-        <NumberInput
-          label="Replacement size"
-          placeholder={formatSize(style.font_size)}
-          value={fontSize}
-          onChange={(v) => setFontSize(typeof v === 'number' ? v : '')}
-          min={1}
-          max={1000}
-          decimalScale={1}
-          allowNegative={false}
-        />
-      </Group>
+      <Box style={{ flex: '0 0 auto' }}>
+        <StylePropertyGrid style={style} draft={draft} onPatch={patch} />
+      </Box>
 
       {/* Bounded: the sample keeps its real size and scrolls here instead of growing the dialog. */}
       <Paper
@@ -118,18 +94,20 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
         style={{ flex: '1 1 0', minHeight: 80, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}
       >
         <Group justify="space-between" mb="xs" style={{ flex: '0 0 auto' }}>
-          <Text size="xs" c="dimmed">Preview (translated)</Text>
-          <Badge size="sm" variant="light" tt="none">{effectiveName} {formatSize(effectiveSize)}</Badge>
+          <Text size="xs" c="dimmed">Preview (translated, approximate)</Text>
+          <Badge size="sm" variant="light" tt="none">{effective.fontName} {formatDecimal(effective.fontSize)}</Badge>
         </Group>
         <Box
+          className="sg-preview-stage"
+          p="sm"
           style={{
             flex: '1 1 0',
             minHeight: 0,
             overflow: 'auto',
             overflowWrap: 'anywhere',
-            fontFamily: cssFamily(effectiveName),
-            fontSize: Math.max(effectiveSize, 10),
+            borderRadius: 4,
             lineHeight: 1.3,
+            ...css,
           }}
         >
           {FONT_PREVIEW_LINES.map((line) => <div key={line}>{line}</div>)}
@@ -140,12 +118,17 @@ function StyleEditor({ projectId, style }: { projectId: number; style: ProjectSt
         <Button
           variant="subtle"
           color="gray"
-          disabled={!fontName && fontSize === ''}
-          onClick={() => { setFontName(''); setFontSize(''); }}
+          disabled={!hasAnyOverride(draft)}
+          onClick={() => setDraft(draftFromStyle({
+            ...style,
+            replacement_font_name: null, replacement_font_size: null, replacement_bold: null,
+            replacement_italic: null, replacement_outline: null, replacement_shadow: null,
+            replacement_primary_colour: null, replacement_outline_colour: null, replacement_back_colour: null,
+          }))}
         >
-          Use source font
+          Use source style
         </Button>
-        <Button onClick={() => void save()} disabled={!dirty} loading={update.isPending}>
+        <Button onClick={() => void save()} disabled={!dirty || !valid} loading={update.isPending}>
           Save
         </Button>
       </Group>
@@ -172,7 +155,7 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
     <Modal
       opened={opened}
       onClose={onClose}
-      size="min(1120px, 94vw)"
+      size="min(1280px, 96vw)"
       styles={{
         content: { height: 'min(82vh, 860px)', display: 'flex', flexDirection: 'column' },
         body: { flex: '1 1 0', minHeight: 0, display: 'flex', flexDirection: 'column' },
@@ -192,7 +175,7 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
         <Text c="dimmed" size="sm">No styles yet — subtitles have not been extracted.</Text>
       ) : (
         <Group align="stretch" wrap="nowrap" gap="md" style={{ flex: '1 1 0', minHeight: 0 }}>
-          <Stack gap="xs" w={340} miw={300} maw={340} style={{ flexShrink: 0, minHeight: 0 }}>
+          <Stack gap="xs" w={300} miw={260} maw={300} style={{ flexShrink: 0, minHeight: 0 }}>
             <TextInput
               placeholder="Search styles"
               value={search}
@@ -238,7 +221,7 @@ export function ProjectStylesDialog({ projectId, opened, onClose }: ProjectStyle
             </Box>
           </Stack>
 
-          <Box style={{ flex: 1, minWidth: 380, minHeight: 0 }}>
+          <Box style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
             {selected && <StyleEditor key={selected.id} projectId={projectId} style={selected} />}
           </Box>
         </Group>

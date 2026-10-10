@@ -148,7 +148,9 @@ _EVENT_OUTPUT_COLUMNS = (
 )
 _STYLE_OUTPUT_COLUMNS = (
     "style_name", "font_name", "font_size", "replacement_font_name",
-    "replacement_font_size", "primary_colour", "secondary_colour",
+    "replacement_font_size", "replacement_bold", "replacement_italic",
+    "replacement_outline", "replacement_shadow", "replacement_primary_colour",
+    "replacement_outline_colour", "replacement_back_colour", "primary_colour", "secondary_colour",
     "outline_colour", "back_colour", "bold", "italic", "underline", "strikeout",
     "scale_x", "scale_y", "spacing", "angle", "border_style", "outline",
     "shadow", "alignment", "margin_l", "margin_r", "margin_v", "encoding",

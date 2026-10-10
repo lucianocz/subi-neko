@@ -384,6 +384,16 @@ class SubtitleStyle(Base):
     encoding: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
     replacement_font_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     replacement_font_size: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    # Optional per-property overrides of the translated output (NULL = inherit the
+    # source value; 0 / false are real overrides). Colours use the same
+    # ``&HAABBGGRR&`` text as the source columns, so alpha is preserved verbatim.
+    replacement_bold: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    replacement_italic: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    replacement_outline: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    replacement_shadow: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    replacement_primary_colour: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    replacement_outline_colour: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    replacement_back_colour: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     font_check_status: Mapped[str] = mapped_column(Text, nullable=False, server_default="unchecked")
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())

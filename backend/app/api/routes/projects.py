@@ -1,13 +1,14 @@
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select
 from sqlalchemy.orm import selectinload
 
@@ -807,20 +808,70 @@ class SubtitleStyleOut(BaseModel):
     id: int
     project_id: int
     style_name: str
+    # Immutable imported (source) style — never derived from the replacements.
     font_name: str
     font_size: float
+    bold: bool
+    italic: bool
+    outline: float
+    shadow: float
+    primary_colour: str | None
+    outline_colour: str | None
+    back_colour: str | None
+    # Optional translated-output overrides (null = inherit the source value).
     replacement_font_name: str | None
     replacement_font_size: float | None
+    replacement_bold: bool | None
+    replacement_italic: bool | None
+    replacement_outline: float | None
+    replacement_shadow: float | None
+    replacement_primary_colour: str | None
+    replacement_outline_colour: str | None
+    replacement_back_colour: str | None
     font_check_status: str
     file_count: int
     event_count: int
 
 
+_ASS_COLOUR_RE = re.compile(r"^&[Hh][0-9A-Fa-f]{8}&$")
+_STYLE_COLOUR_FIELDS = (
+    "replacement_primary_colour", "replacement_outline_colour", "replacement_back_colour",
+)
+
+
 class SubtitleStyleUpdateIn(BaseModel):
-    """v1 editor surface: only the translated-output font override (null = use source)."""
+    """Translated-output overrides (null = inherit the source value).
+
+    The two font fields are always applied (omitted = cleared, the original
+    contract). The newer overrides are applied only when present in the body,
+    so a client that predates them cannot wipe them by omission.
+    """
 
     replacement_font_name: str | None = Field(default=None, max_length=200)
     replacement_font_size: float | None = Field(default=None, gt=0, le=1000)
+    replacement_bold: bool | None = None
+    replacement_italic: bool | None = None
+    replacement_outline: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    replacement_shadow: float | None = Field(default=None, ge=0, le=1000, allow_inf_nan=False)
+    replacement_primary_colour: str | None = None
+    replacement_outline_colour: str | None = None
+    replacement_back_colour: str | None = None
+
+    @field_validator(*_STYLE_COLOUR_FIELDS)
+    @classmethod
+    def _canonical_colour(cls, value: str | None) -> str | None:
+        """Canonical ``&HAABBGGRR&`` (upper-case hex, ASS alpha: 00 = opaque)."""
+        if value is None:
+            return None
+        if not _ASS_COLOUR_RE.match(value):
+            raise ValueError("colour must look like &HAABBGGRR&")
+        return "&H" + value[2:10].upper() + "&"
+
+
+_NEW_OVERRIDE_FIELDS = (
+    "replacement_bold", "replacement_italic", "replacement_outline", "replacement_shadow",
+    *_STYLE_COLOUR_FIELDS,
+)
 
 
 def _style_event_count_subquery():
@@ -845,8 +896,22 @@ def _style_out(style: SubtitleStyle, file_count: int, event_count: int) -> Subti
         style_name=style.style_name,
         font_name=style.font_name,
         font_size=style.font_size,
+        bold=bool(style.bold),
+        italic=bool(style.italic),
+        outline=style.outline if style.outline is not None else 2.0,
+        shadow=style.shadow if style.shadow is not None else 0.0,
+        primary_colour=style.primary_colour,
+        outline_colour=style.outline_colour,
+        back_colour=style.back_colour,
         replacement_font_name=style.replacement_font_name,
         replacement_font_size=style.replacement_font_size,
+        replacement_bold=None if style.replacement_bold is None else bool(style.replacement_bold),
+        replacement_italic=None if style.replacement_italic is None else bool(style.replacement_italic),
+        replacement_outline=style.replacement_outline,
+        replacement_shadow=style.replacement_shadow,
+        replacement_primary_colour=style.replacement_primary_colour,
+        replacement_outline_colour=style.replacement_outline_colour,
+        replacement_back_colour=style.replacement_back_colour,
         font_check_status=style.font_check_status,
         file_count=file_count,
         event_count=event_count,
@@ -886,7 +951,14 @@ async def update_project_style(project_id: int, style_id: int, body: SubtitleSty
         # source_style_hash and the source font/size are deliberately untouched.
         style.replacement_font_name = (body.replacement_font_name or "").strip() or None
         style.replacement_font_size = body.replacement_font_size
-        style.updated_at = datetime.utcnow().isoformat()
+        for field in _NEW_OVERRIDE_FIELDS:
+            if field in body.model_fields_set:
+                value = getattr(body, field)
+                if field in ("replacement_bold", "replacement_italic") and value is not None:
+                    value = int(value)
+                setattr(style, field, value)
+        if session.is_modified(style):
+            style.updated_at = datetime.utcnow().isoformat()
         await session.commit()
         file_count = await session.scalar(
             select(func.count()).select_from(file_subtitle_styles)

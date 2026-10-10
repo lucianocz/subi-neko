@@ -1,23 +1,18 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
+import type { StyleSource, StyleUpdate } from '../utils/styleOverrides.ts';
 
-export interface ProjectStyle {
+/** Imported (immutable) source style + the optional translated-output overrides. */
+export interface ProjectStyle extends StyleSource {
   id: number;
   project_id: number;
   style_name: string;
-  font_name: string;
-  font_size: number;
-  replacement_font_name: string | null;
-  replacement_font_size: number | null;
   font_check_status: string;
   file_count: number;
   event_count: number;
 }
 
-export interface ProjectStyleUpdate {
-  replacement_font_name: string | null;
-  replacement_font_size: number | null;
-}
+export type ProjectStyleUpdate = StyleUpdate;
 
 const key = (projectId: number) => ['projects', projectId, 'styles'] as const;
 
