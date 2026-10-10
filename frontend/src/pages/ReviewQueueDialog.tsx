@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   Badge,
   Button,
@@ -20,6 +20,7 @@ import {
   useReviewQueue,
   useSaveQueueTranslation,
 } from '../hooks/useReviewQueue';
+import './reviewQueue.css';
 
 const SEVERITY_COLORS: Record<string, string> = {
   blocker: 'red',
@@ -29,22 +30,15 @@ const SEVERITY_COLORS: Record<string, string> = {
 
 function QueueRow({
   item,
-  active,
   projectId,
-  onActivate,
-  onResolved,
 }: {
   item: ReviewQueueItem;
-  active: boolean;
   projectId: number;
-  onActivate: () => void;
-  onResolved: () => void;
 }) {
   const resolve = useResolveQueueItem(projectId);
   const save = useSaveQueueTranslation(projectId);
   const [draft, setDraft] = useState(item.translated_text ?? '');
   const [syncedText, setSyncedText] = useState(item.translated_text);
-  const rowRef = useRef<HTMLDivElement | null>(null);
 
   // Render-phase sync: refresh the draft when the server text changes.
   if (item.translated_text !== syncedText) {
@@ -52,14 +46,9 @@ function QueueRow({
     setDraft(item.translated_text ?? '');
   }
 
-  useEffect(() => {
-    if (active) rowRef.current?.scrollIntoView({ block: 'nearest' });
-  }, [active]);
-
   async function handleResolve() {
     try {
       await resolve.mutateAsync({ fileId: item.file_id, issueId: item.id });
-      onResolved();
     } catch {
       notifications.show({ color: 'red', message: 'Could not resolve the issue.' });
     }
@@ -81,19 +70,7 @@ function QueueRow({
   }
 
   return (
-    <Stack
-      ref={rowRef}
-      gap={6}
-      p="sm"
-      onClick={onActivate}
-      style={{
-        border: `1px solid var(--mantine-color-${active ? 'blue' : 'dark'}-${active ? 7 : 5})`,
-        outline: active ? '1px solid var(--mantine-color-blue-5)' : undefined,
-        borderRadius: 8,
-        cursor: 'pointer',
-        backgroundColor: active ? 'var(--mantine-color-dark-6)' : undefined,
-      }}
-    >
+    <Stack gap={6} p="sm" className="rq-card">
       <Group gap="xs" wrap="nowrap">
         <Badge size="xs" variant="filled" color={SEVERITY_COLORS[item.severity] ?? 'gray'}>
           {item.severity}
@@ -104,14 +81,14 @@ function QueueRow({
             conf {Math.round(item.translation_confidence * 100)}%
           </Badge>
         )}
-        <Text size="xs" c="dimmed" truncate style={{ flex: 1 }}>
+        <Text size="xs" c="dimmed" truncate className="rq-meta" style={{ flex: 1 }}>
           {item.filename}{item.line_index !== null ? ` · line ${item.line_index + 1}` : ''}
           {item.speaker ? ` · ${item.speaker}` : ''}
         </Text>
       </Group>
-      <Text size="xs" c="dimmed">{item.message}</Text>
+      <Text size="xs" c="dimmed" className="rq-text">{item.message}</Text>
       {item.source_text !== null && (
-        <Text size="sm" c="dimmed" style={{ whiteSpace: 'pre-wrap' }}>
+        <Text size="sm" c="dimmed" className="rq-text">
           {item.source_text}
         </Text>
       )}
@@ -121,6 +98,7 @@ function QueueRow({
           autosize
           minRows={1}
           maxRows={4}
+          classNames={{ input: 'rq-textarea' }}
           value={draft}
           onChange={(e) => setDraft(e.currentTarget.value)}
         />
@@ -130,7 +108,7 @@ function QueueRow({
           size="compact-xs"
           variant="subtle"
           loading={resolve.isPending}
-          onClick={(e) => { e.stopPropagation(); void handleResolve(); }}
+          onClick={() => void handleResolve()}
         >
           Resolve
         </Button>
@@ -140,7 +118,7 @@ function QueueRow({
             variant="light"
             color="green"
             loading={save.isPending}
-            onClick={(e) => { e.stopPropagation(); void handleSaveAndResolve(); }}
+            onClick={() => void handleSaveAndResolve()}
           >
             Save & resolve
           </Button>
@@ -159,12 +137,8 @@ interface ReviewQueueDialogProps {
 export function ReviewQueueDialog({ projectId, opened, onClose }: ReviewQueueDialogProps) {
   const { data, isLoading } = useReviewQueue(projectId, opened);
   const bulkResolve = useBulkResolve(projectId);
-  const [activeIndex, setActiveIndex] = useState(0);
 
   const items = useMemo(() => data?.items ?? [], [data]);
-
-  // Clamp at usage time — the list shrinks as items get resolved.
-  const clampedIndex = Math.min(activeIndex, Math.max(0, items.length - 1));
 
   const warningCount = items.filter((i) => i.severity !== 'blocker').length;
 
@@ -210,17 +184,10 @@ export function ReviewQueueDialog({ projectId, opened, onClose }: ReviewQueueDia
             <Text size="sm" c="dimmed">Nothing to review — all clear.</Text>
           </Center>
         ) : (
-          <ScrollArea.Autosize mah="65vh">
+          <ScrollArea.Autosize mah="65vh" scrollbars="y">
             <Stack gap="xs">
-              {items.map((item, index) => (
-                <QueueRow
-                  key={item.id}
-                  item={item}
-                  active={index === clampedIndex}
-                  projectId={projectId}
-                  onActivate={() => setActiveIndex(index)}
-                  onResolved={() => setActiveIndex(Math.max(0, Math.min(clampedIndex, items.length - 2)))}
-                />
+              {items.map((item) => (
+                <QueueRow key={item.id} item={item} projectId={projectId} />
               ))}
             </Stack>
           </ScrollArea.Autosize>

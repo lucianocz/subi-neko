@@ -75,7 +75,7 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
       size="62rem"
     >
       <Text size="xs" c="dimmed" mb="sm">
-        Computed when a file completes. <b>Human edits</b> is the mean edit distance between the
+        <b>Human edits</b> is the mean edit distance between the
         AI output and what shipped — falling across episodes means the glossary, translation
         memory, and style bible are working. <b>Polish edits</b> shows how many lines the polish
         pass rewrote (and how heavily, as mean edit distance). QA counts are lifetime
@@ -96,8 +96,8 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
                 <Table.Th style={{ width: 60 }}>Lines</Table.Th>
                 <Table.Th style={{ width: 110 }}>Human edits</Table.Th>
                 <Table.Th style={{ width: 70 }}>Edited</Table.Th>
-                <Table.Th style={{ width: 90 }}>Polish edits</Table.Th>
-                <Table.Th style={{ width: 90 }}>QA (b/w/i)</Table.Th>
+                <Table.Th style={{ width: 110 }}>Polish edits</Table.Th>
+                <Table.Th style={{ width: 110 }}>QA (b/w/i)</Table.Th>
                 <Table.Th style={{ width: 100 }}>Confidence</Table.Th>
                 <Table.Th style={{ width: 80 }}>Cost</Table.Th>
                 <Table.Th style={{ width: 70 }}>Tokens</Table.Th>

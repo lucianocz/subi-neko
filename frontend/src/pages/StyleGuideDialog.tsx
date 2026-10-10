@@ -10,7 +10,6 @@ import {
   ScrollArea,
   Select,
   Stack,
-  Table,
   Tabs,
   Text,
   Textarea,
@@ -34,6 +33,7 @@ import {
 } from '../hooks/useStyleGuide';
 import type { GlossaryTerm, TmEntry } from '../hooks/useStyleGuide';
 import { CharactersTab } from './CharactersTab';
+import './styleGuide.css';
 
 interface StyleGuideDialogProps {
   projectId: number;
@@ -65,60 +65,65 @@ function BibleTab({ projectId }: { projectId: number }) {
     };
 
   return (
-    <Stack gap="md" pt="sm">
-      {data.version === null && (
-        <Text size="xs" c="dimmed">
-          No style bible yet — it is generated automatically before the first file translates.
-          Fields saved here are kept and never overwritten by the generator.
-        </Text>
-      )}
-      <Textarea
-        label="Tone"
-        description="Overall tone of the series and how the translation should read."
-        defaultValue={data.tone_summary ?? ''}
-        onBlur={saveField('tone_summary')}
-        autosize minRows={2} maxRows={8}
-      />
-      <Textarea
-        label="Register"
-        description="Formality/slang/profanity rules for this series."
-        defaultValue={data.register_notes ?? ''}
-        onBlur={saveField('register_notes')}
-        autosize minRows={2} maxRows={8}
-      />
-      <Textarea
-        label="Honorifics"
-        description="How Japanese honorifics are handled."
-        defaultValue={data.honorific_policy ?? ''}
-        onBlur={saveField('honorific_policy')}
-        autosize minRows={2} maxRows={6}
-      />
+    <ScrollArea.Autosize mah="60vh" offsetScrollbars scrollbars="y" mt="sm">
+      <Stack gap="md">
+        {data.version === null && (
+          <Text size="xs" c="dimmed">
+            No style bible yet — it is generated automatically before the first file translates.
+            Fields saved here are kept and never overwritten by the generator.
+          </Text>
+        )}
+        <Textarea
+          label="Tone"
+          description="Overall tone of the series and how the translation should read."
+          defaultValue={data.tone_summary ?? ''}
+          onBlur={saveField('tone_summary')}
+          autosize minRows={2} maxRows={8}
+        />
+        <Textarea
+          label="Register"
+          description="Formality/slang/profanity rules for this series."
+          defaultValue={data.register_notes ?? ''}
+          onBlur={saveField('register_notes')}
+          autosize minRows={2} maxRows={8}
+        />
+        <Textarea
+          label="Honorifics"
+          description="How Japanese honorifics are handled."
+          defaultValue={data.honorific_policy ?? ''}
+          onBlur={saveField('honorific_policy')}
+          autosize minRows={2} maxRows={6}
+        />
 
-      {data.address_pairs.length > 0 && (
-        <Stack gap="xs">
-          <Text size="sm" fw={700}>Address pairs (T–V)</Text>
-          {data.address_pairs.map((pair) => (
-            <Group key={pair.id} gap="xs" wrap="nowrap">
-              <Text size="sm" style={{ flex: 1 }} truncate>
-                {pair.speaker_name} → {pair.addressee_name}
-              </Text>
-              {pair.origin === 'manual' && <Badge size="xs" variant="light">manual</Badge>}
-              <Select
-                size="xs"
-                w={110}
-                data={MODE_OPTIONS}
-                value={pair.mode}
-                onChange={(mode) => {
-                  if (mode && mode !== pair.mode) {
-                    updatePair.mutate({ pairId: pair.id, mode: mode as typeof pair.mode });
-                  }
-                }}
-              />
-            </Group>
-          ))}
-        </Stack>
-      )}
-    </Stack>
+        {data.address_pairs.length > 0 && (
+          <Stack gap="xs">
+            <Text size="sm" fw={700}>Address pairs (T–V)</Text>
+            <div className="sgd-zebra">
+              {data.address_pairs.map((pair) => (
+                <div key={pair.id} className="sgd-row sgd-pair">
+                  <Text size="sm" className="sgd-wrap" title={`${pair.speaker_name} → ${pair.addressee_name}`}>
+                    {pair.speaker_name} → {pair.addressee_name}
+                  </Text>
+                  <div>
+                    {pair.origin === 'manual' && <Badge size="xs" variant="light">manual</Badge>}
+                  </div>
+                  <Select
+                    size="xs"
+                    data={MODE_OPTIONS}
+                    value={pair.mode}
+                    onChange={(mode) => {
+                      if (mode && mode !== pair.mode) {
+                        updatePair.mutate({ pairId: pair.id, mode: mode as typeof pair.mode });
+                      }
+                    }}
+                  />
+                </div>
+              ))}
+            </div>
+          </Stack>
+        )}
+      </Stack>
+    </ScrollArea.Autosize>
   );
 }
 
@@ -140,14 +145,14 @@ function GlossaryRow({
     };
 
   return (
-    <Table.Tr opacity={term.is_active ? 1 : 0.45}>
-      <Table.Td>
-        <Text size="sm" truncate title={term.source_term}>{term.source_term}</Text>
-      </Table.Td>
-      <Table.Td>
+    <div className="sgd-row sgd-glossary" style={{ opacity: term.is_active ? 1 : 0.45 }}>
+      <Text size="sm" className="sgd-wrap sgd-cell sgd-full" data-label="Source" title={term.source_term}>
+        {term.source_term}
+      </Text>
+      <div className="sgd-cell" data-label="Translation">
         <TextInput size="xs" defaultValue={term.target_term} onBlur={blurUpdate('target_term')} />
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div className="sgd-cell" data-label="Category">
         <Select
           size="xs"
           data={CATEGORY_OPTIONS}
@@ -158,19 +163,19 @@ function GlossaryRow({
             }
           }}
         />
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div className="sgd-cell" data-label="Vocative">
         <TextInput size="xs" defaultValue={term.vocative ?? ''} placeholder="—" onBlur={blurUpdate('vocative')} />
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div className="sgd-cell" data-label="Note">
         <TextInput size="xs" defaultValue={term.note ?? ''} placeholder="—" onBlur={blurUpdate('note')} />
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div className="sgd-cell" data-label="Origin">
         <Badge size="xs" variant="light" color={term.origin === 'manual' ? 'blue' : term.origin === 'metadata' ? 'grape' : 'gray'}>
           {term.origin}
         </Badge>
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div>
         <Tooltip label="Delete term" withArrow>
           <ActionIcon
             size="sm" variant="subtle" color="red"
@@ -180,8 +185,8 @@ function GlossaryRow({
             <Trash size={14} />
           </ActionIcon>
         </Tooltip>
-      </Table.Td>
-    </Table.Tr>
+      </div>
+    </div>
   );
 }
 
@@ -217,60 +222,58 @@ function GlossaryTab({ projectId }: { projectId: number }) {
 
   return (
     <Stack gap="sm" pt="sm">
-      <Group gap="xs" align="flex-end" wrap="nowrap">
+      <div className="sgd-row sgd-glossary sgd-add">
         <TextInput
-          size="xs" label="English term" value={source} style={{ flex: 1 }}
+          size="xs" label="English term" value={source} className="sgd-full"
           onChange={(e) => setSource(e.currentTarget.value)}
         />
         <TextInput
-          size="xs" label="Translation" value={target} style={{ flex: 1 }}
+          size="xs" label="Translation" value={target}
           onChange={(e) => setTarget(e.currentTarget.value)}
         />
         <Select size="xs" label="Category" data={CATEGORY_OPTIONS} value={category}
-          onChange={(v) => v && setCategory(v)} w={130} />
+          onChange={(v) => v && setCategory(v)} />
         <TextInput
-          size="xs" label="Vocative" value={vocative} w={110}
+          size="xs" label="Vocative" value={vocative}
           onChange={(e) => setVocative(e.currentTarget.value)}
         />
         <TextInput
-          size="xs" label="Note" value={note} style={{ flex: 1 }}
+          size="xs" label="Note" value={note}
           onChange={(e) => setNote(e.currentTarget.value)}
         />
         <Button
-          size="xs" leftSection={<Plus size={14} />}
+          size="xs" leftSection={<Plus size={14} />} className="sgd-add-button"
           loading={createTerm.isPending}
           disabled={!source.trim() || !target.trim()}
           onClick={() => void handleAdd()}
         >
           Add
         </Button>
-      </Group>
+      </div>
 
       {terms.length === 0 ? (
         <Text size="xs" c="dimmed">
           No glossary terms yet — the style bible generator and script analysis fill this in automatically.
         </Text>
       ) : (
-        <ScrollArea.Autosize mah={420}>
-          <Table verticalSpacing={4} withRowBorders={false}>
-            <Table.Thead>
-              <Table.Tr>
-                <Table.Th>Source</Table.Th>
-                <Table.Th>Translation</Table.Th>
-                <Table.Th style={{ width: 130 }}>Category</Table.Th>
-                <Table.Th style={{ width: 110 }}>Vocative</Table.Th>
-                <Table.Th>Note</Table.Th>
-                <Table.Th style={{ width: 80 }}>Origin</Table.Th>
-                <Table.Th style={{ width: 40 }} />
-              </Table.Tr>
-            </Table.Thead>
-            <Table.Tbody>
+        <>
+          <div className="sgd-head sgd-glossary">
+            <span>Source</span>
+            <span>Translation</span>
+            <span>Category</span>
+            <span>Vocative</span>
+            <span>Note</span>
+            <span>Origin</span>
+            <span />
+          </div>
+          <ScrollArea.Autosize mah={420} scrollbars="y">
+            <div className="sgd-zebra">
               {terms.map((term) => (
                 <GlossaryRow key={term.id} term={term} projectId={projectId} />
               ))}
-            </Table.Tbody>
-          </Table>
-        </ScrollArea.Autosize>
+            </div>
+          </ScrollArea.Autosize>
+        </>
       )}
     </Stack>
   );
@@ -281,11 +284,9 @@ function TmRow({ entry, projectId }: { entry: TmEntry; projectId: number }) {
   const deleteEntry = useDeleteTmEntry(projectId);
 
   return (
-    <Table.Tr>
-      <Table.Td>
-        <Text size="sm" style={{ whiteSpace: 'pre-wrap' }}>{entry.source_text}</Text>
-      </Table.Td>
-      <Table.Td>
+    <div className="sgd-row sgd-tm">
+      <Text size="sm" className="sgd-wrap sgd-cell sgd-full" data-label="Source">{entry.source_text}</Text>
+      <div className="sgd-cell sgd-full" data-label="Translation">
         <TextInput
           size="xs"
           defaultValue={entry.target_text}
@@ -296,14 +297,14 @@ function TmRow({ entry, projectId }: { entry: TmEntry; projectId: number }) {
             }
           }}
         />
-      </Table.Td>
-      <Table.Td>
+      </div>
+      <div className="sgd-cell" data-label="Origin">
         <Badge size="xs" variant="light" color={entry.origin === 'human' ? 'blue' : 'gray'}>
           {entry.origin}
         </Badge>
-      </Table.Td>
-      <Table.Td><Text size="xs" c="dimmed">{entry.use_count}</Text></Table.Td>
-      <Table.Td>
+      </div>
+      <Text size="xs" c="dimmed" className="sgd-cell" data-label="Uses">{entry.use_count}</Text>
+      <div>
         <Tooltip label="Delete entry" withArrow>
           <ActionIcon
             size="sm" variant="subtle" color="red"
@@ -313,8 +314,8 @@ function TmRow({ entry, projectId }: { entry: TmEntry; projectId: number }) {
             <Trash size={14} />
           </ActionIcon>
         </Tooltip>
-      </Table.Td>
-    </Table.Tr>
+      </div>
+    </div>
   );
 }
 
@@ -348,23 +349,19 @@ function TranslationMemoryTab({ projectId }: { projectId: number }) {
         </Text>
       ) : (
         <>
-          <ScrollArea.Autosize mah={420}>
-            <Table verticalSpacing={4} withRowBorders={false}>
-              <Table.Thead>
-                <Table.Tr>
-                  <Table.Th>Source</Table.Th>
-                  <Table.Th>Translation</Table.Th>
-                  <Table.Th style={{ width: 80 }}>Origin</Table.Th>
-                  <Table.Th style={{ width: 60 }}>Uses</Table.Th>
-                  <Table.Th style={{ width: 40 }} />
-                </Table.Tr>
-              </Table.Thead>
-              <Table.Tbody>
-                {entries.map((entry) => (
-                  <TmRow key={entry.id} entry={entry} projectId={projectId} />
-                ))}
-              </Table.Tbody>
-            </Table>
+          <div className="sgd-head sgd-tm">
+            <span>Source</span>
+            <span>Translation</span>
+            <span>Origin</span>
+            <span>Uses</span>
+            <span />
+          </div>
+          <ScrollArea.Autosize mah={420} scrollbars="y">
+            <div className="sgd-zebra">
+              {entries.map((entry) => (
+                <TmRow key={entry.id} entry={entry} projectId={projectId} />
+              ))}
+            </div>
           </ScrollArea.Autosize>
           <Group justify="space-between">
             <Text size="xs" c="dimmed">{entries.length} of {total} entries</Text>

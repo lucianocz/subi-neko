@@ -1,0 +1,32 @@
+/*
+ * Review queue: issue text (QA message, source, translation) routinely contains long runs of ASS
+ * override tags with no whitespace. Wrapping is visual only — the strings are rendered verbatim.
+ */
+.rq-card {
+  min-width: 0;
+  max-width: 100%;
+  border: 1px solid var(--mantine-color-dark-5);
+  border-radius: 8px;
+}
+
+:root[data-mantine-color-scheme='light'] .rq-card {
+  border-color: var(--mantine-color-gray-3);
+}
+
+.rq-meta {
+  min-width: 0;
+}
+
+.rq-text {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+/* Textarea keeps native editing; only the wrapping of unbroken strings is adjusted. */
+.rq-textarea {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}

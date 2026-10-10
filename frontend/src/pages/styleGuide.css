@@ -1,0 +1,163 @@
+/*
+ * Style guide dialog: every tab lays its rows out on an explicit grid so a single long value
+ * (e.g. hundreds of characters of ASS override tags) can never widen a column. Flexible tracks
+ * are always minmax(0, …) — a bare `fr` track has an automatic minimum of min-content and would
+ * let the content win. Header and data rows of a tab share one --sgd-cols definition.
+ */
+.sgd-head,
+.sgd-row {
+  display: grid;
+  grid-template-columns: var(--sgd-cols);
+  column-gap: 8px;
+  align-items: center;
+  min-width: 0;
+}
+
+.sgd-head {
+  padding: 0 6px 2px;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.2;
+  color: var(--mantine-color-dimmed);
+}
+
+.sgd-row {
+  padding: 3px 6px;
+}
+
+.sgd-head > *,
+.sgd-row > * {
+  min-width: 0;
+}
+
+/* Long text is wrapped visually only; the underlying string is never touched. */
+.sgd-wrap {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.sgd-num {
+  text-align: right;
+}
+
+/* Column templates ------------------------------------------------------------------------- */
+
+/* source | translation | category | vocative | note | origin | delete */
+.sgd-glossary {
+  --sgd-cols:
+    minmax(0, 1.2fr) minmax(0, 1.2fr) 124px 104px minmax(0, 1fr) 68px 32px;
+}
+
+/* source | translation | origin | uses | delete */
+.sgd-tm {
+  --sgd-cols: minmax(0, 1fr) minmax(0, 1fr) 68px 44px 32px;
+}
+
+/* name | gender | voice note | register | lines */
+.sgd-char {
+  --sgd-cols:
+    minmax(120px, 1.1fr) 120px minmax(0, 2fr) minmax(0, 1fr) 64px;
+}
+
+/* speaker | lines | confidence / tag | gender | character | retranslate */
+.sgd-speaker {
+  --sgd-cols:
+    minmax(0, 1fr) 44px 104px 120px minmax(140px, 220px) max-content;
+}
+
+/* speaker | lines | character */
+.sgd-extra {
+  --sgd-cols: minmax(0, 1fr) 44px minmax(140px, 220px);
+}
+
+/* speaker → addressee | manual badge | mode */
+.sgd-pair {
+  --sgd-cols: minmax(0, 1fr) 56px 110px;
+}
+
+/* Add-row of the glossary uses the same tracks; its button spans origin + delete. */
+.sgd-add {
+  align-items: end;
+}
+
+.sgd-add-button {
+  grid-column: span 2;
+}
+
+/* Alternating row backgrounds --------------------------------------------------------------- */
+
+.sgd-zebra {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  --sgd-stripe: rgba(0, 0, 0, 0.03);
+}
+
+:root[data-mantine-color-scheme='dark'] .sgd-zebra {
+  --sgd-stripe: rgba(255, 255, 255, 0.035);
+}
+
+.sgd-zebra > :nth-child(even) {
+  background-color: var(--sgd-stripe);
+}
+
+.sgd-zebra > * {
+  border-radius: 4px;
+}
+
+/* A character block is one logical row: header line plus its speaker lines share one stripe. */
+.sgd-block {
+  padding: 4px 6px;
+  min-width: 0;
+}
+
+.sgd-block > .sgd-row,
+.sgd-block .sgd-speakers > .sgd-row {
+  padding: 0;
+}
+
+.sgd-speakers {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-top: 4px;
+  padding-left: 16px;
+}
+
+/* Narrow dialogs: controlled two-column cards instead of squeezed columns --------------------- */
+
+.sgd-cell::before {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .sgd-glossary,
+  .sgd-tm,
+  .sgd-char,
+  .sgd-speaker,
+  .sgd-extra {
+    --sgd-cols: repeat(2, minmax(0, 1fr));
+  }
+
+  .sgd-head {
+    display: none;
+  }
+
+  .sgd-row {
+    row-gap: 4px;
+  }
+
+  .sgd-full {
+    grid-column: 1 / -1;
+  }
+
+  .sgd-cell::before {
+    display: block;
+    content: attr(data-label);
+    font-size: 10px;
+    line-height: 1.2;
+    color: var(--mantine-color-dimmed);
+  }
+}

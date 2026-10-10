@@ -4,7 +4,6 @@ import {
   Button,
   Center,
   Collapse,
-  Divider,
   Group,
   Loader,
   ScrollArea,
@@ -27,6 +26,7 @@ import {
 } from '../hooks/useCharacterMapping';
 import { useStyleGuide, useUpdateCharacterVoice } from '../hooks/useStyleGuide';
 import type { CharacterVoice } from '../hooks/useStyleGuide';
+import './styleGuide.css';
 
 const GENDER_OPTIONS = [
   { value: 'male', label: 'Male' },
@@ -154,14 +154,14 @@ function SpeakerRow({
   }
 
   return (
-    <Group gap="xs" wrap="nowrap" opacity={speaker.is_extra ? 0.55 : 1}>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <div className="sgd-row sgd-speaker" style={{ opacity: speaker.is_extra ? 0.55 : 1 }}>
+      <div className="sgd-full">
         <SpeakerName speaker={speaker} />
       </div>
-      <Text size="xs" c="dimmed" w={48} ta="right" style={{ flexShrink: 0 }}>
+      <Text size="xs" c="dimmed" className="sgd-num">
         {speaker.line_count}
       </Text>
-      <div style={{ width: 110, flexShrink: 0 }}>
+      <div>
         {speaker.content_tag ? (
           <Badge size="xs" variant="light" color={CONTENT_TAG_COLORS[speaker.content_tag]}>
             {speaker.content_tag}
@@ -173,7 +173,6 @@ function SpeakerRow({
       <Tooltip label="Overrides the character's gender in translation prompts" withArrow>
         <Select
           size="xs"
-          w={120}
           placeholder="inherit"
           clearable
           data={GENDER_OPTIONS}
@@ -188,7 +187,6 @@ function SpeakerRow({
       </Tooltip>
       <Select
         size="xs"
-        w={220}
         data={[
           { value: NONE_VALUE, label: '— unmapped —' },
           { value: EXTRA_VALUE, label: 'Extra / non-character' },
@@ -217,7 +215,7 @@ function SpeakerRow({
           Retranslate
         </Button>
       </Tooltip>
-    </Group>
+    </div>
   );
 }
 
@@ -245,16 +243,15 @@ function ExtraRow({
   }
 
   return (
-    <Group gap="xs" wrap="nowrap" opacity={0.55}>
-      <div style={{ flex: 1, minWidth: 0 }}>
+    <div className="sgd-row sgd-extra" style={{ opacity: 0.55 }}>
+      <div>
         <SpeakerName speaker={speaker} />
       </div>
-      <Text size="xs" c="dimmed" w={48} ta="right" style={{ flexShrink: 0 }}>
+      <Text size="xs" c="dimmed" className="sgd-num">
         {speaker.line_count}
       </Text>
       <Select
         size="xs"
-        w={220}
         data={[
           { value: NONE_VALUE, label: '— unmapped —' },
           { value: EXTRA_VALUE, label: 'Extra / non-character' },
@@ -265,7 +262,7 @@ function ExtraRow({
         searchable
         disabled={updateSpeaker.isPending}
       />
-    </Group>
+    </div>
   );
 }
 
@@ -288,14 +285,13 @@ function CharacterBlock({
   const totalLines = speakers.reduce((s, sp) => s + sp.line_count, 0);
 
   return (
-    <Stack gap={6}>
-      <Group gap="xs" wrap="nowrap">
-        <Text size="sm" fw={600} w={180} truncate title={character.name} style={{ flexShrink: 0 }}>
+    <div className="sgd-block">
+      <div className="sgd-row sgd-char">
+        <Text size="sm" fw={600} truncate title={character.name}>
           {character.name}
         </Text>
         <Select
           size="xs"
-          w={120}
           placeholder="Gender"
           clearable
           data={GENDER_OPTIONS}
@@ -311,7 +307,6 @@ function CharacterBlock({
           <>
             <TextInput
               size="xs"
-              style={{ flex: 2 }}
               defaultValue={voice.voice_note ?? ''}
               placeholder="Voice note"
               onBlur={(e) => {
@@ -322,7 +317,6 @@ function CharacterBlock({
             />
             <TextInput
               size="xs"
-              style={{ flex: 1 }}
               defaultValue={voice.register ?? ''}
               placeholder="Register"
               onBlur={(e) => {
@@ -334,16 +328,16 @@ function CharacterBlock({
           </>
         ) : (
           <>
-            <div style={{ flex: 2 }} />
-            <div style={{ flex: 1 }} />
+            <div />
+            <div />
           </>
         )}
-        <Text size="xs" c="dimmed" w={70} ta="right" style={{ flexShrink: 0 }}>
+        <Text size="xs" c="dimmed" className="sgd-num">
           {totalLines > 0 ? `${totalLines} lines` : ''}
         </Text>
-      </Group>
+      </div>
       {speakers.length > 0 && (
-        <Stack gap={4} pl="md">
+        <div className="sgd-speakers">
           {speakers.map((speaker) => (
             <SpeakerRow
               key={speaker.id}
@@ -352,9 +346,9 @@ function CharacterBlock({
               characterOptions={characterOptions}
             />
           ))}
-        </Stack>
+        </div>
       )}
-    </Stack>
+    </div>
   );
 }
 
@@ -481,43 +475,45 @@ export function CharactersTab({ projectId }: { projectId: number }) {
       {speakers.length === 0 && characters.length === 0 ? (
         <Text size="sm" c="dimmed">No speakers discovered in this project's subtitles.</Text>
       ) : (
-        <ScrollArea.Autosize mah="60vh" offsetScrollbars>
+        <ScrollArea.Autosize mah="60vh" offsetScrollbars scrollbars="y">
           <Stack gap="sm">
             {unmapped.length > 0 && (
               <Stack gap={4}>
                 <Text size="sm" fw={700}>Unmapped speakers</Text>
-                {unmapped.map((speaker) => (
-                  <SpeakerRow
-                    key={speaker.id}
-                    speaker={speaker}
-                    projectId={projectId}
-                    characterOptions={characterOptions}
-                  />
-                ))}
+                <div className="sgd-zebra">
+                  {unmapped.map((speaker) => (
+                    <SpeakerRow
+                      key={speaker.id}
+                      speaker={speaker}
+                      projectId={projectId}
+                      characterOptions={characterOptions}
+                    />
+                  ))}
+                </div>
               </Stack>
             )}
             {sortedCharacters.length > 0 && (
               <Stack gap="xs">
                 <Text size="sm" fw={700}>Characters</Text>
-                <Group gap="xs" wrap="nowrap">
-                  <Text size="xs" c="dimmed" w={180} style={{ flexShrink: 0 }}>Name</Text>
-                  <Text size="xs" c="dimmed" w={120} style={{ flexShrink: 0 }}>Gender</Text>
-                  <Text size="xs" c="dimmed" style={{ flex: 2 }}>Voice note</Text>
-                  <Text size="xs" c="dimmed" style={{ flex: 1 }}>Register</Text>
-                  <Text size="xs" c="dimmed" w={70} ta="right" style={{ flexShrink: 0 }}>Lines</Text>
-                </Group>
-                {sortedCharacters.map((character, i) => (
-                  <Stack gap={6} key={character.id}>
-                    {i > 0 && <Divider />}
+                <div className="sgd-head sgd-char">
+                  <span>Name</span>
+                  <span>Gender</span>
+                  <span>Voice note</span>
+                  <span>Register</span>
+                  <span className="sgd-num">Lines</span>
+                </div>
+                <div className="sgd-zebra">
+                  {sortedCharacters.map((character) => (
                     <CharacterBlock
+                      key={character.id}
                       character={character}
                       speakers={speakersByCharacter.get(character.id) ?? []}
                       voice={voiceByCharacter.get(character.id)}
                       projectId={projectId}
                       characterOptions={characterOptions}
                     />
-                  </Stack>
-                ))}
+                  ))}
+                </div>
               </Stack>
             )}
             {extras.length > 0 && (
@@ -533,7 +529,7 @@ export function CharactersTab({ projectId }: { projectId: number }) {
                   Extras ({extras.length})
                 </Button>
                 <Collapse expanded={extrasOpen}>
-                  <Stack gap={4}>
+                  <div className="sgd-zebra">
                     {extras.map((speaker) => (
                       <ExtraRow
                         key={speaker.id}
@@ -542,7 +538,7 @@ export function CharactersTab({ projectId }: { projectId: number }) {
                         characterOptions={characterOptions}
                       />
                     ))}
-                  </Stack>
+                  </div>
                 </Collapse>
               </Stack>
             )}

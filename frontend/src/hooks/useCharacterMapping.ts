@@ -1,5 +1,6 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
+import { invalidateMappingQueries } from '../utils/mappingInvalidation';
 import type {
   ProjectCharacterWithSpeakers,
   ProjectSpeaker,
@@ -63,12 +64,7 @@ export function useUpdateCharacter() {
       return data;
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['projects', variables.projectId, 'characters'],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ['projects', variables.projectId, 'speakers'],
-      });
+      invalidateMappingQueries(queryClient, variables.projectId);
     },
   });
 }
@@ -85,12 +81,7 @@ export function useUpdateSpeaker() {
       return data;
     },
     onSuccess: (_data, variables) => {
-      queryClient.invalidateQueries({
-        queryKey: ['projects', variables.projectId, 'speakers'],
-      });
-      queryClient.invalidateQueries({
-        queryKey: ['projects', variables.projectId, 'characters'],
-      });
+      invalidateMappingQueries(queryClient, variables.projectId);
     },
   });
 }
