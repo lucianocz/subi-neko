@@ -12,14 +12,19 @@ fresh run even though the job framework skips completed jobs with an old key.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from sqlalchemy import case, func, or_, select, update
 
 from app.core.database import AsyncSessionLocal
+from app.core.media_paths import SourcePathError, resolve_source_path_parts
+from app.db.archive_state import ProjectArchived, ProjectNotFound
 from app.db.models import File, JobRecord, JobStatus, Project
 from app.db.output_state import ACCEPTED_FOR_OUTPUT, PublishState
 
@@ -34,8 +39,7 @@ def publish_dedupe_key(project_id: int, attempt: int) -> str:
     return f"{PUBLISH_JOB_TYPE}:{project_id}:{attempt}"
 
 
-class ProjectNotFound(Exception):
-    pass
+__all__ = ["ProjectNotFound", "ProjectArchived"]  # re-exported for callers of start_publish
 
 
 class PublishNotReady(Exception):
@@ -43,6 +47,86 @@ class PublishNotReady(Exception):
         super().__init__(f"{accepted}/{total} files accepted")
         self.accepted = accepted
         self.total = total
+
+
+class PublishSourcesMissing(Exception):
+    def __init__(self, message: str, missing: list[str]) -> None:
+        super().__init__(message)
+        self.message = message
+        self.missing = missing
+
+
+_MAX_LISTED_MISSING = 20
+
+
+def find_missing_sources(
+    source_directory: str, relative_paths: list[str], import_root: Path | None = None,
+) -> tuple[str | None, list[str]]:
+    """Filesystem check shared by the preflight, the Publish request and the job.
+
+    Returns ``(reason, missing_relative_paths)``; ``reason`` is None when the
+    source directory and every media file are present and readable. Paths go
+    through ``resolve_source_path_parts`` so nothing outside IMPORT_ROOT is probed.
+    """
+    try:
+        directory = resolve_source_path_parts(
+            source_directory, ".", import_root=import_root, must_exist=False,
+        )
+    except SourcePathError as exc:
+        return f"Source folder is not valid: {exc}", []
+    if not directory.is_dir() or not os.access(directory, os.R_OK | os.X_OK):
+        return f"The source folder '{source_directory}' is missing or not accessible.", []
+
+    missing: list[str] = []
+    for rel in relative_paths:
+        try:
+            path = resolve_source_path_parts(
+                source_directory, rel, import_root=import_root, must_exist=True,
+            )
+        except SourcePathError:
+            missing.append(rel)
+            continue
+        if not os.access(path, os.R_OK):
+            missing.append(rel)
+    if missing:
+        shown = ", ".join(missing[:3]) + (", …" if len(missing) > 3 else "")
+        return f"{len(missing)} source media file(s) are missing or not accessible ({shown}).", missing
+    return None, []
+
+
+@dataclass
+class PublishPreflight:
+    reason: str | None
+    missing: list[str]
+
+
+async def _source_check(source_directory: str, relative_paths: list[str]) -> tuple[str | None, list[str]]:
+    from app.core.config import settings
+    reason, missing = await asyncio.to_thread(
+        find_missing_sources, source_directory, relative_paths, settings.import_root,
+    )
+    return reason, missing[:_MAX_LISTED_MISSING]
+
+
+async def publish_preflight(project_id: int) -> PublishPreflight:
+    """Everything the Publish button depends on, in one cheap answer."""
+    async with AsyncSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise ProjectNotFound()
+        if project.archived_at is not None:
+            return PublishPreflight("The project is archived. Unarchive it to publish.", [])
+        accepted, total = (await accepted_counts(session, [project_id]))[project_id]
+        if total == 0 or accepted < total:
+            return PublishPreflight(
+                f"All files must be accepted before publishing ({accepted}/{total}).", [],
+            )
+        source_directory = project.source_directory
+        relative_paths = list((await session.scalars(
+            select(File.relative_path).where(File.project_id == project_id).order_by(File.relative_path)
+        )).all())
+    reason, missing = await _source_check(source_directory, relative_paths)
+    return PublishPreflight(reason, missing)
 
 
 @dataclass
@@ -84,9 +168,21 @@ async def start_publish(project_id: int, enqueue_fn: EnqueueFn) -> PublishStart:
             project = await session.get(Project, project_id)
             if project is None:
                 raise ProjectNotFound()
+            if project.archived_at is not None:
+                raise ProjectArchived()
             accepted, total = (await accepted_counts(session, [project_id]))[project_id]
             if total == 0 or accepted < total:
                 raise PublishNotReady(accepted, total)
+            # Re-validated here (not trusted from an earlier preflight): the
+            # media may have been removed since the page last checked.
+            reason, missing = await _source_check(
+                project.source_directory,
+                list((await session.scalars(
+                    select(File.relative_path).where(File.project_id == project_id)
+                )).all()),
+            )
+            if reason is not None:
+                raise PublishSourcesMissing(reason, missing)
 
             claimed = await session.execute(
                 update(Project)

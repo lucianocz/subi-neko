@@ -1,8 +1,11 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
+import { invalidationKeys, type ArchiveMutation } from '../utils/projectArchive';
 import type {
+  ArchivedProject,
   ContextStatus,
   Project,
+  PublishPreflight,
   ProjectStats,
   ProjectWatchedWord,
   SubtitleChunk,
@@ -17,6 +20,75 @@ export function useProjects() {
       const { data } = await client.get<Project[]>('/projects');
       return data;
     },
+  });
+}
+
+/** Single project, archived or not — the direct-URL view needs to know which. */
+export function useProject(projectId: number | null) {
+  return useQuery<Project>({
+    queryKey: ['projects', projectId, 'detail'],
+    queryFn: async () => {
+      const { data } = await client.get<Project>(`/projects/${projectId}`);
+      return data;
+    },
+    enabled: projectId !== null,
+    retry: false,
+  });
+}
+
+/** Lightweight archived list; searching/sorting happens client-side over all of it. */
+export function useArchivedProjects() {
+  return useQuery<ArchivedProject[]>({
+    queryKey: ['archived-projects'],
+    queryFn: async () => {
+      const { data } = await client.get<ArchivedProject[]>('/projects/archived');
+      return data;
+    },
+  });
+}
+
+function invalidateFor(queryClient: ReturnType<typeof useQueryClient>, kind: ArchiveMutation) {
+  for (const queryKey of invalidationKeys(kind)) {
+    queryClient.invalidateQueries({ queryKey });
+  }
+}
+
+export function useArchiveProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (projectId: number) => {
+      const { data } = await client.post<Project>(`/projects/${projectId}/archive`);
+      return data;
+    },
+    onSuccess: () => invalidateFor(queryClient, 'archive'),
+  });
+}
+
+export function useUnarchiveProject() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (projectId: number) => {
+      const { data } = await client.post<Project>(`/projects/${projectId}/unarchive`);
+      return data;
+    },
+    onSuccess: () => invalidateFor(queryClient, 'unarchive'),
+  });
+}
+
+/** Source folder / media / prerequisite check behind the Publish button. Fetched
+ * when a project is opened and whenever its output state changes (via the key);
+ * `refetch()` is called explicitly right before a publish attempt. Deliberately
+ * outside the ['projects'] prefix so websocket invalidations don't re-scan disk. */
+export function usePublishPreflight(projectId: number, outputState: string, enabled = true) {
+  return useQuery<PublishPreflight>({
+    queryKey: ['publish-preflight', projectId, outputState],
+    queryFn: async () => {
+      const { data } = await client.get<PublishPreflight>(`/projects/${projectId}/publish-preflight`);
+      return data;
+    },
+    enabled,
+    staleTime: 0,
+    gcTime: 60_000,
   });
 }
 
@@ -37,10 +109,7 @@ export function useDeleteProject() {
     mutationFn: async (projectId: number) => {
       await client.delete(`/projects/${projectId}`);
     },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['import', 'directories'] });
-    },
+    onSuccess: () => invalidateFor(queryClient, 'delete'),
   });
 }
 

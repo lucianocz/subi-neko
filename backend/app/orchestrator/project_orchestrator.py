@@ -61,6 +61,10 @@ async def orchestrate_project(project_id: int, enqueue_fn: EnqueueFn) -> None:
         project_id, status, project.is_paused, len(files),
     )
 
+    if project.archived_at is not None:
+        logger.debug("orchestrate_project: id=%d is archived, skipping", project_id)
+        return
+
     if status in (ProjectStatus.COMPLETED.value, ProjectStatus.FAILED.value):
         return
 

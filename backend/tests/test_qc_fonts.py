@@ -25,6 +25,7 @@ from tests.test_qc import add_chunks, add_event, file_row
 @pytest.fixture
 def fenv(env, monkeypatch, tmp_path):  # noqa: F811
     monkeypatch.setattr("app.api.routes.qc.AsyncSessionLocal", env.asess)
+    monkeypatch.setattr("app.api.archive_guard.AsyncSessionLocal", env.asess)
     monkeypatch.setattr("app.api.routes.media.AsyncSessionLocal", env.asess)
     monkeypatch.setattr(settings, "import_root", env.import_root)
     monkeypatch.setattr(settings, "config_root", tmp_path / "config")

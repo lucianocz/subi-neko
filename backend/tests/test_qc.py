@@ -41,6 +41,7 @@ def _now() -> str:
 @pytest.fixture
 def qc_env(env, monkeypatch):  # noqa: F811
     monkeypatch.setattr("app.api.routes.qc.AsyncSessionLocal", env.asess)
+    monkeypatch.setattr("app.api.archive_guard.AsyncSessionLocal", env.asess)
     return env
 
 

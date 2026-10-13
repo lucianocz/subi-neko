@@ -36,13 +36,14 @@ import logging
 from datetime import datetime
 from typing import Literal
 
-from fastapi import APIRouter, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload
 
+from app.api.archive_guard import reject_if_archived
 from app.api.routes.projects import (
     QaIssueOut,
     _broadcast_project_updated,
@@ -84,7 +85,7 @@ from app.subs.watched_words import matching_watched_words
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["qc"])
+router = APIRouter(prefix="/projects", tags=["qc"], dependencies=[Depends(reject_if_archived)])
 
 TIMING_QUANTUM_MS = 10
 

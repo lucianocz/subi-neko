@@ -10,13 +10,33 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import ProjectCharacter, ProjectEpisode
+from app.db.models import Project, ProjectCharacter, ProjectEpisode
 from app.metadata.base import Character, Episode
 
 logger = logging.getLogger(__name__)
+
+
+async def set_english_title(
+    session: AsyncSession, project_id: int, title_english: str | None,
+) -> bool:
+    """Persist the provider's English title. A missing/blank provider value never
+    clears or replaces an existing one. Returns True when the column changed.
+
+    Core UPDATE, not an ORM flush: ``updated_at`` is left alone so a metadata
+    top-up doesn't masquerade as project activity."""
+    title = (title_english or "").strip()
+    if not title:
+        return False
+    result = await session.execute(
+        update(Project)
+        .where(Project.id == project_id, or_(Project.name_english.is_(None), Project.name_english != title))
+        .values(name_english=title, updated_at=Project.updated_at)
+        .execution_options(synchronize_session=False)
+    )
+    return bool(result.rowcount)
 
 
 async def upsert_characters(

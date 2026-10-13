@@ -113,10 +113,12 @@ export function useRefreshMetadata() {
         characters_updated: number;
         episodes_created: number;
         episodes_updated: number;
+        title_english_updated: boolean;
       }>(`/projects/${projectId}/refresh-metadata`);
       return data;
     },
     onSuccess: (_data, projectId) => {
+      queryClient.invalidateQueries({ queryKey: ['projects'], exact: true });   // titles may have changed
       queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'characters'] });
       queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'speakers'] });
     },

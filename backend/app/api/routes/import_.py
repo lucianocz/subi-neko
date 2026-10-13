@@ -11,7 +11,7 @@ from app.core.database import AsyncSessionLocal
 from app.db.models import Project
 from app.jobs.manager import job_manager
 from app.metadata.registry import get_provider
-from app.metadata.sync import upsert_characters, upsert_episodes
+from app.metadata.sync import set_english_title, upsert_characters, upsert_episodes
 from app.orchestrator.orchestrator import orchestrate_project
 
 router = APIRouter(prefix="/import", tags=["import"])
@@ -29,6 +29,7 @@ class ImportRequest(BaseModel):
     provider_id: str
     anime_title: str
     anime_title_native: str | None = None
+    anime_title_english: str | None = None
     anime_year: int | None = None
 
 
@@ -91,6 +92,21 @@ async def import_project(body: ImportRequest) -> ImportResultOut:
             await session.refresh(project)
     except IntegrityError:
         raise HTTPException(status_code=409, detail="Directory already imported")
+
+    # English title: the search result's value when the client sent one, else
+    # the provider's details. Best-effort and never synthesized.
+    try:
+        english = body.anime_title_english
+        if not (english and english.strip()):
+            english = (await get_provider(body.provider).get_details(body.provider_id)).title_english
+        async with AsyncSessionLocal() as session:
+            await set_english_title(session, project.id, english)
+            await session.commit()
+    except Exception:
+        logger.warning(
+            "Could not fetch English title for %s/%s (project %d)",
+            body.provider, body.provider_id, project.id, exc_info=True,
+        )
 
     # Fetch + store characters and episode metadata in a separate
     # transaction (best-effort — the project works without them).

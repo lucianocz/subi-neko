@@ -26,6 +26,7 @@ class SeriesDetailsOut(BaseModel):
     media_type: MediaType
     description: str | None
     episode_count: int | None
+    title_english: str | None = None
 
 
 class CharacterOut(BaseModel):
@@ -88,6 +89,7 @@ async def get_details(provider: str, provider_id: str) -> SeriesDetailsOut:
         media_type=d.media_type,
         description=d.description,
         episode_count=d.episode_count,
+        title_english=d.title_english,
     )
 
 

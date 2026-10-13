@@ -198,6 +198,7 @@ class AniDBProvider(MetadataProvider):
         # Titles
         main_title = ""
         native_title = None
+        english_title = None
         synonyms: list[str] = []
         titles_el = root.find("titles")
         if titles_el is not None:
@@ -212,6 +213,10 @@ class AniDBProvider(MetadataProvider):
                 elif lang == "ja" and ttype == "official" and native_title is None:
                     native_title = text
                 elif ttype in ("official", "short", "syn"):
+                    # Only an *official* English title counts; "syn"/"short" en
+                    # entries are fan aliases (same rule as the titles dump).
+                    if ttype == "official" and lang == "en" and english_title is None:
+                        english_title = text
                     synonyms.append(text)
 
         # Year
@@ -325,6 +330,7 @@ class AniDBProvider(MetadataProvider):
         details = {
             "provider_id": root.get("id", ""),
             "title": main_title,
+            "title_english": english_title,
             "title_native": native_title,
             "title_synonyms": synonyms,
             "year": year,
@@ -379,7 +385,19 @@ class AniDBProvider(MetadataProvider):
             media_type=MediaType(d["media_type"]),
             description=d["description"],
             episode_count=d["episode_count"],
+            title_english=d.get("title_english") or await self._english_from_dump(provider_id),
         )
+
+    async def _english_from_dump(self, provider_id: str) -> str | None:
+        """Anime XML cached before ``title_english`` existed lacks the key; the
+        (daily-cached) titles dump carries the same official English title."""
+        try:
+            for entry in await self._load_titles():
+                if str(entry.get("aid")) == str(provider_id):
+                    return entry.get("english")
+        except Exception:
+            logger.debug("AniDB titles dump lookup failed for %s", provider_id, exc_info=True)
+        return None
 
     async def get_characters(self, provider_id: str) -> list[Character]:
         data = await self._fetch_anime(provider_id)

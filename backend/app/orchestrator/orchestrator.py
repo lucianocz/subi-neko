@@ -94,6 +94,7 @@ async def sweep_all_projects(enqueue_fn: EnqueueFn) -> None:
             select(Project.id).where(
                 Project.status.in_(_ACTIVE_PROJECT_STATUSES),
                 Project.is_paused == False,  # noqa: E712
+                Project.archived_at.is_(None),
             )
         )).all()
 

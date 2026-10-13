@@ -169,6 +169,7 @@ class AniListProvider(MetadataProvider):
             "details": {
                 "provider_id": str(media["id"]),
                 "title": romaji,
+                "title_english": english or None,
                 "title_native": native,
                 "title_synonyms": synonyms,
                 "year": year,
@@ -233,6 +234,7 @@ class AniListProvider(MetadataProvider):
             media_type=MediaType(d["media_type"]),
             description=d["description"],
             episode_count=d["episode_count"],
+            title_english=d.get("title_english"),
         )
 
     async def get_characters(self, provider_id: str) -> list[Character]:

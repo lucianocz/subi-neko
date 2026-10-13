@@ -48,6 +48,7 @@ class SeriesDetails:
     media_type: MediaType = MediaType.UNKNOWN
     description: str | None = None
     episode_count: int | None = None
+    title_english: str | None = None
 
 
 @dataclass

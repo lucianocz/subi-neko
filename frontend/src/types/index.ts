@@ -28,9 +28,34 @@ export interface ProjectOutput {
   error: string | null;
 }
 
-export interface Project {
+export interface ProjectArchive {
+  /** Whether Archive is currently allowed; `reason` says why not. */
+  eligible: boolean;
+  reason: string | null;
+}
+
+/** Row of the lightweight archived-projects list. */
+export interface ArchivedProject {
   id: number;
   name: string;
+  name_english: string | null;
+  source_directory: string;
+  archived_at: string;
+  file_count: number;
+}
+
+export interface PublishPreflight {
+  available: boolean;
+  reason: string | null;
+  missing_files: string[];
+}
+
+export interface Project {
+  id: number;
+  /** Romanized title. */
+  name: string;
+  /** Provider-supplied English title; null when none exists. */
+  name_english: string | null;
   source_directory: string;
   anime_provider: string;
   anime_external_id: string;
@@ -38,9 +63,12 @@ export interface Project {
   status: ProjectStatus;
   is_paused: boolean;
   context_approved_at: string | null;
+  /** Non-null = archived (read-only until unarchived). */
+  archived_at: string | null;
   created_at: string;
   updated_at: string;
   output: ProjectOutput;
+  archive: ProjectArchive;
 }
 
 // ─── Translation context (gate 1) ────────────────────────────────────────────

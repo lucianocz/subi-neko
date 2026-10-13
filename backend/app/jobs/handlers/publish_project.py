@@ -46,6 +46,7 @@ from app.db.models import (
 from app.db.output_state import ACCEPTED_FOR_OUTPUT, PublishState
 from app.jobs.context import JobContext, JobResult, ProgressFn
 from app.jobs.registry import register_job_handler
+from app.orchestrator.publish import find_missing_sources
 from app.subs.ass_rendering import build_ass, save_ass
 from app.subs.branding import BrandingError, spec_from_row
 
@@ -145,6 +146,9 @@ def _publish(
             return JobResult(status="succeeded", result={"skipped": "superseded"},
                              error_code=None, error_message=None)
 
+        if project.archived_at is not None:
+            raise PublishError("PROJECT_ARCHIVED", "The project is archived; unarchive it to publish")
+
         target_revision = project.output_revision
         source_directory = project.source_directory
         project.publish_target_revision = target_revision
@@ -161,6 +165,15 @@ def _publish(
                 "FILES_NOT_ACCEPTED",
                 f"{len(not_accepted)} file(s) are not accepted (e.g. {not_accepted[0]})",
             )
+
+        # Re-check the source media right before anything is staged, so a run
+        # whose sources vanished after the request fails early with a clear
+        # reason instead of part-way through muxing.
+        reason, _missing = find_missing_sources(
+            source_directory, [f.relative_path for f in files], ctx.import_root,
+        )
+        if reason is not None:
+            raise PublishError("SOURCE_MISSING", reason)
 
         staged: list[_StagedFile] = []
         for f in files:

@@ -66,6 +66,8 @@ async def env(tmp_path, monkeypatch):
     for target in (
         "app.core.database.AsyncSessionLocal",
         "app.api.routes.projects.AsyncSessionLocal",
+        "app.api.archive_guard.AsyncSessionLocal",
+        "app.db.archive_state.AsyncSessionLocal",
         "app.orchestrator.publish.AsyncSessionLocal",
         "app.orchestrator.file_orchestrator.AsyncSessionLocal",
         "app.orchestrator.project_orchestrator.AsyncSessionLocal",
@@ -84,6 +86,7 @@ async def env(tmp_path, monkeypatch):
     import_root, output_root = tmp_path / "import", tmp_path / "output"
     import_root.mkdir()
     output_root.mkdir()
+    monkeypatch.setattr("app.core.config.settings.import_root", import_root)
 
     enqueue = AsyncMock()
     fake_manager = SimpleNamespace(enqueue=enqueue, cancel_queued_project_jobs=AsyncMock())
@@ -533,8 +536,11 @@ async def test_mkvmerge_exit_code_1_is_success_with_warnings(env, mux):
 @pytest.mark.asyncio
 async def test_missing_source_or_unaccepted_file_fails_the_run(env, mux):
     pid = seed_project(env)
+    await click_publish(env, pid)
+    # The media disappears between the (passing) request check and the job:
+    # the handler re-checks before staging and fails the run, writing nothing.
     (env.import_root / "series" / "ep2.mkv").unlink()
-    result = await publish_once(env, pid)
+    result = run_job(env)
     assert result["error_code"] == "SOURCE_MISSING"
     assert project_row(env, pid).publish_state == "failed"
     assert not list((env.output_root / "series").glob("*.mkv"))    # nothing promoted

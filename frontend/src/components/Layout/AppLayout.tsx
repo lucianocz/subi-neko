@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useState, type ReactNode } from 'react';
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import {
   ActionIcon,
   AppShell,
@@ -14,6 +14,7 @@ import {
   Loader,
   Menu,
   Modal,
+  NavLink,
   ScrollArea,
   Stack,
   Table,
@@ -25,6 +26,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import {
+  ArchiveIcon,
   ArrowClockwiseIcon,
   ArrowCounterClockwise,
   BookOpen,
@@ -53,9 +55,10 @@ import {
   XCircle,
 } from '@phosphor-icons/react';
 import type { ChunkJob, FileStatus, Project, SubtitleChunk, VideoFile } from '../../types';
-import { useProjects, useProjectFiles, useFileChunks, useDeleteProject, usePauseProject, useResumeProject, useRetryChunk, useAcceptFileReview, useTranslateFile, useRetranslateFile } from '../../hooks/useProjects';
+import { useProjects, useProject, useProjectFiles, useFileChunks, useArchiveProject, useUnarchiveProject, usePauseProject, useResumeProject, useRetryChunk, useAcceptFileReview, useTranslateFile, useRetranslateFile } from '../../hooks/useProjects';
 import { useRefreshMetadata } from '../../hooks/useCharacterMapping';
 import { OptionsDrawer } from '../../pages/OptionsDrawer';
+import { ArchivedProjectsPage } from '../../pages/ArchivedProjectsPage';
 import { ImportDialog } from '../../pages/ImportDialog';
 import { MetricsDialog } from '../../pages/MetricsDialog';
 import { ProjectStylesDialog } from '../../pages/ProjectStylesDialog';
@@ -66,6 +69,8 @@ import { WatchedWordsDialog } from '../../pages/WatchedWordsDialog';
 import { ActiveJobsPanel } from '../Jobs/ActiveJobsPanel';
 import { ContextReviewPanel } from '../Project/ContextReviewPanel';
 import { ProjectPipeline } from '../Project/ProjectPipeline';
+import { RemoveProjectModal } from '../Project/RemoveProjectModal';
+import { apiErrorMessage, archiveMenuState, secondaryTitle } from '../../utils/projectArchive';
 import posterUrl from '../../assets/poster.png';
 
 // ─── Status dot colors ────────────────────────────────────────────────────────
@@ -103,11 +108,6 @@ const PROJECT_STATUS_COLORS: Record<string, string> = {
   completed: 'green',
   failed: 'red',
 };
-
-function directoryName(path: string): string {
-  const normalized = path.replace(/\\/g, '/').replace(/\/+$/, '');
-  return normalized.split('/').pop() || path;
-}
 
 function seriesUrl(project: Project): string | null {
   if (project.anime_provider === 'anilist') return `https://anilist.co/anime/${project.anime_external_id}`;
@@ -772,6 +772,7 @@ function ProjectCard({
   onClick: () => void;
 }) {
   const theme = useMantineTheme();
+  const english = secondaryTitle(project);
 
   return (
     <UnstyledButton onClick={onClick} w="100%">
@@ -786,7 +787,7 @@ function ProjectCard({
         }}
       >
         <Group justify="space-between" gap="xs">
-          <Text size="sm" fw={600} truncate style={{ flex: 1 }}>
+          <Text size="sm" fw={600} truncate style={{ flex: 1 }} title={project.name}>
             {project.name}
           </Text>
           <Box
@@ -799,9 +800,11 @@ function ProjectCard({
             }}
           />
         </Group>
-        <Text size="xs" c="dimmed" truncate mt={2}>
-          {directoryName(project.source_directory)}
-        </Text>
+        {english && (
+          <Text size="xs" c="dimmed" truncate mt={2} title={english}>
+            {english}
+          </Text>
+        )}
       </Card>
     </UnstyledButton>
   );
@@ -810,11 +813,13 @@ function ProjectCard({
 function ProjectSidebar({
   projects,
   selectedId,
+  archivedActive,
   onSelect,
   onImport,
 }: {
   projects: Project[];
   selectedId: number | null;
+  archivedActive: boolean;
   onSelect: (id: number) => void;
   onImport: () => void;
 }) {
@@ -824,7 +829,9 @@ function ProjectSidebar({
         Import
       </Button>
 
-      <ScrollArea style={{ flex: 1 }}>
+      {/* Shrinks (and scrolls) only when the list is taller than the sidebar, so
+          the Archived link sits directly under the list and stays reachable. */}
+      <ScrollArea style={{ flex: '0 1 auto', minHeight: 0 }}>
         <Stack gap="xs" w="100%">
           {projects.map((p) => (
             <ProjectCard
@@ -836,6 +843,18 @@ function ProjectSidebar({
           ))}
         </Stack>
       </ScrollArea>
+
+      <NavLink
+        component={Link}
+        to="/archived"
+        label="Archived projects"
+        leftSection={<ArchiveIcon size={16} />}
+        active={archivedActive}
+        variant="light"
+        style={{ borderRadius: 'var(--mantine-radius-md)', flexShrink: 0 }}
+      />
+
+      <Box style={{ flex: 1 }} />
 
       <ActiveJobsPanel />
     </Stack>
@@ -890,14 +909,23 @@ function EmptyProjectLanding({ isLoading }: { isLoading: boolean }) {
   );
 }
 
-function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: () => void }) {
+function ProjectDetails({
+  project,
+  onDeleted,
+  onArchived,
+}: {
+  project: Project;
+  onDeleted: () => void;
+  onArchived: () => void;
+}) {
   const { data: files = [], isLoading } = useProjectFiles(project.id);
-  const deleteMutation = useDeleteProject();
+  const archiveMutation = useArchiveProject();
   const pauseMutation = usePauseProject();
   const resumeMutation = useResumeProject();
   const refreshMetadata = useRefreshMetadata();
   const retranslateMutation = useRetranslateFile(project.id);
   const [confirmOpen, setConfirmOpen] = useState(false);
+  const [archiveConfirmOpen, setArchiveConfirmOpen] = useState(false);
   const [watchedWordsOpen, setWatchedWordsOpen] = useState(false);
   const [stylesOpen, setStylesOpen] = useState(false);
   const [styleGuideOpen, setStyleGuideOpen] = useState(false);
@@ -911,6 +939,8 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   const isTerminal = project.status === 'completed' || project.status === 'failed';
   const allFilesExpanded = files.length > 0 && files.every((file) => expandedFileIds.has(file.id));
   const infoUrl = seriesUrl(project);
+  const englishTitle = secondaryTitle(project);
+  const archiveState = archiveMenuState(project);
 
   function handleToggleFileExpanded(fileId: number) {
     setExpandedFileIds((prev) => {
@@ -943,10 +973,24 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
     ));
   }
 
-  async function handleDelete() {
-    await deleteMutation.mutateAsync(project.id);
-    setConfirmOpen(false);
-    onDeleted();
+  async function handleArchive() {
+    try {
+      await archiveMutation.mutateAsync(project.id);
+    } catch (err) {
+      setArchiveConfirmOpen(false);
+      notifications.show({
+        color: 'red',
+        title: 'Could not archive the project',
+        message: apiErrorMessage(err, 'Unexpected error.'),
+      });
+      return;
+    }
+    setArchiveConfirmOpen(false);
+    notifications.show({
+      color: 'green',
+      message: `“${project.name}” was archived. Find it under Archived projects.`,
+    });
+    onArchived();
   }
 
   async function handlePauseResume() {
@@ -959,22 +1003,32 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
 
   return (
     <>
-      <Modal
-        opened={confirmOpen}
+      <RemoveProjectModal
+        project={confirmOpen ? project : null}
         onClose={() => setConfirmOpen(false)}
-        title="Remove project"
+        onRemoved={onDeleted}
+      />
+
+      <Modal
+        opened={archiveConfirmOpen}
+        onClose={() => setArchiveConfirmOpen(false)}
+        title="Archive project"
         size="sm"
       >
-        <Text size="sm" mb="lg">
-          Remove <strong>{project.name}</strong>? All project data (files, jobs, characters) will be
-          deleted from the database. Files on disk will not be touched.
+        <Text size="sm" mb="xs">
+          Archive <strong>{project.name}</strong>? It will disappear from the active project list.
+        </Text>
+        <Text size="sm" c="dimmed" mb="lg">
+          All data is preserved (translations, QC edits, glossary, style guide, history). Nothing on
+          disk is touched. The project is read-only while archived; unarchive it from Archived
+          projects to make corrections.
         </Text>
         <Group justify="flex-end" gap="sm">
-          <Button variant="default" onClick={() => setConfirmOpen(false)}>
+          <Button variant="default" onClick={() => setArchiveConfirmOpen(false)}>
             Cancel
           </Button>
-          <Button color="red" loading={deleteMutation.isPending} onClick={handleDelete}>
-            Remove
+          <Button loading={archiveMutation.isPending} onClick={handleArchive}>
+            Archive
           </Button>
         </Group>
       </Modal>
@@ -1061,9 +1115,11 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
         {/* Project header */}
         <Box>
           <Group justify="space-between" align="flex-start">
-            <Box>
-              <Group gap="xs" align="center">
-                <Title order={3}>{project.name}</Title>
+            <Box style={{ minWidth: 0, flex: 1 }}>
+              <Group gap="xs" align="center" wrap="nowrap">
+                <Title order={3} fz="1.35rem" lh={1.25} lineClamp={2} title={project.name}>
+                  {project.name}
+                </Title>
                 {infoUrl && (
                   <ActionIcon
                     component="a"
@@ -1080,6 +1136,12 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
                   </ActionIcon>
                 )}
               </Group>
+              {englishTitle && (
+                <Text size="sm" c="dimmed" truncate title={englishTitle}>{englishTitle}</Text>
+              )}
+              <Text size="xs" ff="monospace" c="dimmed" truncate title={project.source_directory}>
+                {project.source_directory}
+              </Text>
               <Group gap="sm" mt={4}>
                 <Badge
                   color={PROJECT_STATUS_COLORS[project.status] ?? 'gray'}
@@ -1091,12 +1153,9 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
                 {project.is_paused && (
                   <Badge variant="outline" color="yellow" size="sm">paused</Badge>
                 )}
-                <Text size="xs" c="dimmed">
-                  {project.source_directory}
-                </Text>
               </Group>
             </Box>
-            <Group gap="xs">
+            <Group gap="xs" wrap="nowrap" style={{ flexShrink: 0 }}>
               <Button
                 variant="subtle"
                 color="teal"
@@ -1142,50 +1201,64 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
               >
                 Styles &amp; fonts
               </Button>
-              <Tooltip label={`Re-fetch characters and episode titles from ${project.anime_provider}`} withArrow>
-                <Button
-                  variant="subtle"
-                  color="cyan"
-                  size="xs"
-                  leftSection={<ArrowClockwiseIcon size={14} />}
-                  loading={refreshMetadata.isPending}
-                  onClick={() => {
-                    refreshMetadata.mutate(project.id, {
-                      onSuccess: (r) => notifications.show({
-                        color: 'green',
-                        message: `Metadata refreshed — ${r.characters_created + r.characters_updated} character and ${r.episodes_created + r.episodes_updated} episode change(s).`,
-                      }),
-                      onError: () => notifications.show({
-                        color: 'red',
-                        message: 'Metadata refresh failed (provider unreachable?).',
-                      }),
-                    });
-                  }}
-                >
-                  Refresh metadata
-                </Button>
-              </Tooltip>
-              {!isTerminal && (
-                <Button
-                  variant="subtle"
-                  color={project.is_paused ? 'green' : 'yellow'}
-                  size="xs"
-                  leftSection={project.is_paused ? <Play size={14} /> : <Pause size={14} />}
-                  loading={pauseMutation.isPending || resumeMutation.isPending}
-                  onClick={handlePauseResume}
-                >
-                  {project.is_paused ? 'Resume' : 'Pause'}
-                </Button>
-              )}
-              <Button
-                variant="subtle"
-                color="red"
-                size="xs"
-                leftSection={<Trash size={14} />}
-                onClick={() => setConfirmOpen(true)}
-              >
-                Remove
-              </Button>
+              <Menu position="bottom-end" width={270} withinPortal>
+                <Menu.Target>
+                  <ActionIcon variant="subtle" color="gray" aria-label="Project actions" size="lg">
+                    <DotsThreeVertical size={20} weight="bold" />
+                  </ActionIcon>
+                </Menu.Target>
+                <Menu.Dropdown>
+                  <Menu.Item
+                    leftSection={<ArchiveIcon size={14} />}
+                    disabled={archiveState.disabled}
+                    onClick={() => setArchiveConfirmOpen(true)}
+                  >
+                    <Text size="sm" inherit>Archive project</Text>
+                    {archiveState.reason && (
+                      <Text size="xs" c="dimmed" style={{ whiteSpace: 'normal' }}>
+                        {archiveState.reason}
+                      </Text>
+                    )}
+                  </Menu.Item>
+                  <Menu.Item
+                    leftSection={<ArrowClockwiseIcon size={14} />}
+                    disabled={refreshMetadata.isPending}
+                    title={`Re-fetch characters, episode titles and the English title from ${project.anime_provider}`}
+                    onClick={() => {
+                      refreshMetadata.mutate(project.id, {
+                        onSuccess: (r) => notifications.show({
+                          color: 'green',
+                          message: `Metadata refreshed — ${r.characters_created + r.characters_updated} character and ${r.episodes_created + r.episodes_updated} episode change(s)${r.title_english_updated ? ', English title updated' : ''}.`,
+                        }),
+                        onError: () => notifications.show({
+                          color: 'red',
+                          message: 'Metadata refresh failed (provider unreachable?).',
+                        }),
+                      });
+                    }}
+                  >
+                    {refreshMetadata.isPending ? 'Refreshing metadata…' : 'Refresh metadata'}
+                  </Menu.Item>
+                  {!isTerminal && (
+                    <Menu.Item
+                      leftSection={project.is_paused ? <Play size={14} /> : <Pause size={14} />}
+                      color={project.is_paused ? 'green' : undefined}
+                      disabled={pauseMutation.isPending || resumeMutation.isPending}
+                      onClick={handlePauseResume}
+                    >
+                      {project.is_paused ? 'Resume' : 'Pause'}
+                    </Menu.Item>
+                  )}
+                  <Menu.Divider />
+                  <Menu.Item
+                    color="red"
+                    leftSection={<Trash size={14} />}
+                    onClick={() => setConfirmOpen(true)}
+                  >
+                    Remove project
+                  </Menu.Item>
+                </Menu.Dropdown>
+              </Menu>
             </Group>
           </Group>
         </Box>
@@ -1254,22 +1327,114 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   );
 }
 
+// ─── Archived-project landing ────────────────────────────────────────────────
+
+function ArchivedProjectNotice({ project }: { project: Project }) {
+  const navigate = useNavigate();
+  const unarchive = useUnarchiveProject();
+
+  return (
+    <Center py={64}>
+      <Stack gap="md" align="center" maw={520} ta="center">
+        <ArchiveIcon size={40} color="var(--mantine-color-dimmed)" />
+        <Title order={3}>This project is archived</Title>
+        <Text c="dimmed">
+          Unarchive this project to access its files, translations and editing tools.
+        </Text>
+        <Text size="sm" fw={600} truncate maw="100%" title={project.name}>{project.name}</Text>
+        <Group gap="sm">
+          <Button
+            leftSection={<ArrowCounterClockwise size={16} />}
+            loading={unarchive.isPending}
+            onClick={() => unarchive.mutate(project.id, {
+              onSuccess: () => notifications.show({
+                color: 'green',
+                message: `“${project.name}” was restored.`,
+              }),
+              onError: (err) => notifications.show({
+                color: 'red',
+                message: apiErrorMessage(err, 'Could not unarchive the project.'),
+              }),
+            })}
+          >
+            Unarchive project
+          </Button>
+          <Button variant="default" onClick={() => navigate('/archived')}>
+            Archived projects
+          </Button>
+        </Group>
+      </Stack>
+    </Center>
+  );
+}
+
+function ProjectNotFoundNotice() {
+  return (
+    <Center py={64}>
+      <Stack gap="sm" align="center">
+        <Title order={3}>Project not found</Title>
+        <Button component={Link} to="/" variant="default">Back to projects</Button>
+      </Stack>
+    </Center>
+  );
+}
+
 // ─── Main layout ──────────────────────────────────────────────────────────────
 
 export function AppLayout() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { projectId: routeProjectId } = useParams();
+  const [searchParams] = useSearchParams();
   const { data: projects = [], isLoading } = useProjects();
-  // `?project=<id>` lets sub-pages (Final QC "Back") return to a specific project.
-  const [selectedProjectId, setSelectedProjectId] = useState<number | null>(() => {
-    const id = Number(new URLSearchParams(window.location.search).get('project'));
-    return Number.isInteger(id) && id > 0 ? id : null;
-  });
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(false);
 
-  const effectiveId = projects.some((p) => p.id === selectedProjectId)
-    ? selectedProjectId
-    : projects[0]?.id ?? null;
+  const archivedView = location.pathname.replace(/\/+$/, '') === '/archived';
+
+  // `/projects/:id` is the canonical URL; `?project=<id>` still lets sub-pages
+  // (Final QC "Back") return to a specific project.
+  const requestedId = (() => {
+    const id = Number(routeProjectId ?? searchParams.get('project'));
+    return Number.isInteger(id) && id > 0 ? id : null;
+  })();
+
+  const requestedIsActive = projects.some((p) => p.id === requestedId);
+  // A requested id that is not in the active list may be archived (or gone):
+  // ask the backend so the archived state can be explained instead of silently
+  // showing another project. Archived projects are never the default selection.
+  const lookup = useProject(!archivedView && !isLoading && requestedId !== null && !requestedIsActive ? requestedId : null);
+
+  const effectiveId = archivedView
+    ? null
+    : requestedIsActive
+      ? requestedId
+      : requestedId !== null && routeProjectId !== undefined
+        ? null
+        : projects[0]?.id ?? null;
   const selectedProject = projects.find((p) => p.id === effectiveId) ?? null;
+  const archivedLookup = lookup.data?.archived_at ? lookup.data : null;
+
+  let content: ReactNode;
+  if (archivedView) {
+    content = <ArchivedProjectsPage />;
+  } else if (selectedProject) {
+    content = (
+      <ProjectDetails
+        project={selectedProject}
+        onDeleted={() => navigate('/')}
+        onArchived={() => navigate('/')}
+      />
+    );
+  } else if (archivedLookup) {
+    content = <ArchivedProjectNotice project={archivedLookup} />;
+  } else if (routeProjectId !== undefined && !isLoading && lookup.isError) {
+    content = <ProjectNotFoundNotice />;
+  } else if (routeProjectId !== undefined && (isLoading || lookup.isLoading)) {
+    content = <Center py="xl"><Loader size="sm" /></Center>;
+  } else {
+    content = <EmptyProjectLanding isLoading={isLoading} />;
+  }
 
   return (
     <>
@@ -1305,25 +1470,16 @@ export function AppLayout() {
             <ProjectSidebar
               projects={projects}
               selectedId={effectiveId}
-              onSelect={setSelectedProjectId}
+              archivedActive={archivedView}
+              onSelect={(id) => navigate(`/projects/${id}`)}
               onImport={() => setImportOpen(true)}
             />
           )}
         </AppShell.Navbar>
 
         {/* Main content */}
-        <AppShell.Main>
-          {selectedProject ? (
-            <ProjectDetails
-              project={selectedProject}
-              onDeleted={() => setSelectedProjectId(null)}
-            />
-          ) : (
-            <EmptyProjectLanding isLoading={isLoading} />
-          )}
-        </AppShell.Main>
+        <AppShell.Main>{content}</AppShell.Main>
       </AppShell>
     </>
   );
 }
-

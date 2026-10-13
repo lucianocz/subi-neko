@@ -7,11 +7,12 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.orm import selectinload
 
+from app.api.archive_guard import archived_error, reject_if_archived
 from app.core.database import AsyncSessionLocal
 from app.db import options as options_store
 from app.db.models import (
@@ -44,13 +45,22 @@ from app.db.models import (
 from app.jobs.manager import job_manager
 from app.metadata.base import CharacterGender
 from app.orchestrator.context_status import compute_context_status
+from app.db.archive_state import (
+    ArchiveNotAllowed,
+    ProjectArchived,
+    ProjectNotFound,
+    archive_blockers,
+    archive_project,
+    unarchive_project,
+)
 from app.db.output_state import derive_output_state, touch_output
 from app.db.qc_state import is_qc_available, qc_available_map
 from app.orchestrator.file_orchestrator import finalize_accepted_file, orchestrate_file
 from app.orchestrator.publish import (
-    ProjectNotFound,
     PublishNotReady,
+    PublishSourcesMissing,
     accepted_counts,
+    publish_preflight,
     start_publish,
 )
 from app.orchestrator.project_orchestrator import (
@@ -65,7 +75,7 @@ from app.ws.connection_manager import connection_manager
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["projects"], dependencies=[Depends(reject_if_archived)])
 
 
 class ProjectOutputOut(BaseModel):
@@ -83,6 +93,7 @@ class ProjectOutputOut(BaseModel):
 class _ProjectFields(BaseModel):
     id: int
     name: str
+    name_english: str | None = None
     source_directory: str
     anime_provider: str
     anime_external_id: str
@@ -90,17 +101,29 @@ class _ProjectFields(BaseModel):
     status: str
     is_paused: bool
     context_approved_at: str | None = None
+    archived_at: str | None = None
     created_at: str
     updated_at: str
 
     model_config = {"from_attributes": True}
 
 
+class ProjectArchiveOut(BaseModel):
+    """Whether Archive is currently allowed (the backend re-checks on the action)."""
+    eligible: bool
+    reason: str | None
+
+
 class ProjectOut(_ProjectFields):
     output: ProjectOutputOut
+    archive: ProjectArchiveOut
 
 
-def _project_out(project: Project, counts: tuple[int, int]) -> ProjectOut:
+def _project_out(
+    project: Project, counts: tuple[int, int], archive_reason: str | None = None,
+) -> ProjectOut:
+    if project.archived_at is not None:
+        archive_reason = "The project is already archived."
     accepted, total = counts
     state = derive_output_state(
         accepted_files=accepted,
@@ -121,12 +144,14 @@ def _project_out(project: Project, counts: tuple[int, int]) -> ProjectOut:
             published_at=project.published_at,
             error=project.publish_error if state.value == "failed" else None,
         ),
+        archive=ProjectArchiveOut(eligible=archive_reason is None, reason=archive_reason),
     )
 
 
 async def _load_project_out(session, project: Project) -> ProjectOut:
     counts = (await accepted_counts(session, [project.id]))[project.id]
-    return _project_out(project, counts)
+    reason = (await archive_blockers(session, [project.id]))[project.id]
+    return _project_out(project, counts, reason)
 
 
 class FileOut(BaseModel):
@@ -314,14 +339,90 @@ class SubtitleEventUpdateIn(BaseModel):
 
 @router.get("", response_model=list[ProjectOut])
 async def list_projects():
+    """Active projects only; archived ones are listed by ``/projects/archived``."""
     async with AsyncSessionLocal() as session:
-        projects = list((await session.scalars(select(Project).order_by(Project.name))).all())
-        counts = await accepted_counts(session, [p.id for p in projects])
-        return [_project_out(p, counts[p.id]) for p in projects]
+        projects = list((await session.scalars(
+            select(Project).where(Project.archived_at.is_(None)).order_by(Project.name)
+        )).all())
+        ids = [p.id for p in projects]
+        counts = await accepted_counts(session, ids)
+        blockers = await archive_blockers(session, ids)
+        return [_project_out(p, counts[p.id], blockers[p.id]) for p in projects]
+
+
+class ArchivedProjectOut(BaseModel):
+    """Lightweight row for the Archived projects page."""
+    id: int
+    name: str
+    name_english: str | None
+    source_directory: str
+    archived_at: str
+    file_count: int
+
+
+# Declared before "/{project_id}" so "archived" is never parsed as an id.
+@router.get("/archived", response_model=list[ArchivedProjectOut])
+async def list_archived_projects():
+    async with AsyncSessionLocal() as session:
+        rows = (await session.execute(
+            select(
+                Project.id, Project.name, Project.name_english,
+                Project.source_directory, Project.archived_at,
+                func.count(File.id),
+            )
+            .outerjoin(File, File.project_id == Project.id)
+            .where(Project.archived_at.is_not(None))
+            .group_by(Project.id)
+            .order_by(Project.archived_at.desc(), Project.id.desc())
+        )).all()
+    return [
+        ArchivedProjectOut(
+            id=pid, name=name, name_english=name_english, source_directory=source_directory,
+            archived_at=archived_at, file_count=int(file_count),
+        )
+        for pid, name, name_english, source_directory, archived_at, file_count in rows
+    ]
 
 
 @router.get("/{project_id}", response_model=ProjectOut)
 async def get_project(project_id: int):
+    async with AsyncSessionLocal() as session:
+        project = await session.get(Project, project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        return await _load_project_out(session, project)
+
+
+@router.post("/{project_id}/archive", response_model=ProjectOut)
+async def archive_project_endpoint(project_id: int):
+    """Archive a finished project (pure state change; idempotent). Requires at
+    least one file, every file accepted, and no queued/running job or publish."""
+    try:
+        changed = await archive_project(project_id)
+    except ProjectNotFound:
+        raise HTTPException(status_code=404, detail="Project not found")
+    except ArchiveNotAllowed as exc:
+        raise HTTPException(
+            status_code=409, detail={"code": "archive_not_allowed", "message": exc.reason},
+        )
+    if changed:
+        await _broadcast_project_updated(project_id)
+    return await _get_project_out(project_id)
+
+
+@router.post("/{project_id}/unarchive", response_model=ProjectOut)
+async def unarchive_project_endpoint(project_id: int):
+    """Clear the archive flag (idempotent). Resumes nothing and starts nothing."""
+    try:
+        changed = await unarchive_project(project_id)
+    except ProjectNotFound:
+        raise HTTPException(status_code=404, detail="Project not found")
+    if changed:
+        await _broadcast_project_updated(project_id)
+    return await _get_project_out(project_id)
+
+
+async def _get_project_out(project_id: int) -> ProjectOut:
     async with AsyncSessionLocal() as session:
         project = await session.get(Project, project_id)
         if project is None:
@@ -394,6 +495,17 @@ async def publish_project_output(project_id: int):
                 "total_files": exc.total,
             },
         )
+    except ProjectArchived:
+        raise archived_error()
+    except PublishSourcesMissing as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "publish_sources_missing",
+                "message": exc.message,
+                "missing_files": exc.missing,
+            },
+        )
 
     await _broadcast_project_updated(project_id)
     async with AsyncSessionLocal() as session:
@@ -401,6 +513,26 @@ async def publish_project_output(project_id: int):
         if project is None:
             raise HTTPException(status_code=404, detail="Project not found")
         return await _load_project_out(session, project)
+
+
+class PublishPreflightOut(BaseModel):
+    available: bool
+    reason: str | None
+    missing_files: list[str]
+
+
+@router.get("/{project_id}/publish-preflight", response_model=PublishPreflightOut)
+async def get_publish_preflight(project_id: int):
+    """Can Publish run right now? Checks what the Publish button depends on,
+    including the source folder and media on disk (one directory check plus one
+    stat per file: fetch on open and before publishing, don't poll)."""
+    try:
+        result = await publish_preflight(project_id)
+    except ProjectNotFound:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return PublishPreflightOut(
+        available=result.reason is None, reason=result.reason, missing_files=result.missing,
+    )
 
 
 @router.get("/{project_id}/context-status")
@@ -2526,6 +2658,7 @@ class RefreshMetadataOut(BaseModel):
     characters_updated: int
     episodes_created: int
     episodes_updated: int
+    title_english_updated: bool = False
 
 
 @router.post("/{project_id}/refresh-metadata", response_model=RefreshMetadataOut)
@@ -2534,7 +2667,7 @@ async def refresh_project_metadata(project_id: int):
     provider. Provider-sourced fields are upserted; user-owned character
     fields (social position, aliases, notes, a set gender) are preserved."""
     from app.metadata.registry import get_provider
-    from app.metadata.sync import upsert_characters, upsert_episodes
+    from app.metadata.sync import set_english_title, upsert_characters, upsert_episodes
 
     async with AsyncSessionLocal() as session:
         project = await _get_project_or_404(session, project_id)
@@ -2545,6 +2678,7 @@ async def refresh_project_metadata(project_id: int):
         provider = get_provider(provider_name)
         characters = await provider.get_characters(external_id)
         episodes = await provider.get_episodes(external_id)
+        title_english = (await provider.get_details(external_id)).title_english
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -2554,9 +2688,11 @@ async def refresh_project_metadata(project_id: int):
     async with AsyncSessionLocal() as session:
         chars_created, chars_updated = await upsert_characters(session, project_id, characters)
         eps_created, eps_updated = await upsert_episodes(session, project_id, episodes)
+        english_changed = await set_english_title(session, project_id, title_english)
         await session.commit()
 
     return RefreshMetadataOut(
+        title_english_updated=english_changed,
         characters_created=chars_created,
         characters_updated=chars_updated,
         episodes_created=eps_created,

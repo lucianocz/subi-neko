@@ -1,10 +1,10 @@
 import { Box, Button, Group, Loader, Paper, Stack, Text, Tooltip } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { CheckCircle, Hourglass, Play, RocketLaunch, Stop, Warning } from '@phosphor-icons/react';
-import { isAxiosError } from 'axios';
 import type { Project, VideoFile } from '../../types';
 import { useProjectSpeakers } from '../../hooks/useCharacterMapping';
-import { useContextStatus, useProjectStats, usePublishProject } from '../../hooks/useProjects';
+import { useContextStatus, useProjectStats, usePublishPreflight, usePublishProject } from '../../hooks/useProjects';
+import { apiErrorDetail, publishDisabledReason } from '../../utils/projectArchive';
 
 // ─── State helpers ────────────────────────────────────────────────────────────
 
@@ -188,15 +188,27 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
   const publish = usePublishProject();
   const output = project.output;
 
-  function handlePublish() {
+  // Source folder / media availability: fetched when the project is opened and
+  // when its output state changes, and re-checked right before a publish attempt.
+  const publishVisible = ['ready', 'published', 'failed'].includes(output.state);
+  const preflight = usePublishPreflight(project.id, output.state, publishVisible && !project.archived_at);
+  const publishBlocked = publishDisabledReason(project, preflight.data);
+
+  async function handlePublish() {
+    const fresh = await preflight.refetch();
+    const reason = publishDisabledReason(project, fresh.data);
+    if (reason) {
+      notifications.show({ color: 'red', title: 'Cannot publish', message: reason });
+      return;
+    }
     publish.mutate(project.id, {
       onError: (err) => {
-        const detail = isAxiosError(err) ? err.response?.data?.detail : undefined;
         notifications.show({
           color: 'red',
           title: 'Publish failed to start',
-          message: typeof detail === 'string' ? detail : detail?.message ?? 'Unexpected error.',
+          message: apiErrorDetail(err).message ?? 'Unexpected error.',
         });
+        void preflight.refetch();
       },
     });
   }
@@ -206,16 +218,25 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
     : null;
 
   const publishButton = (text: string, primary: boolean) => (
-    <Button
-      size="compact-xs"
-      mt={4}
-      variant={primary ? 'filled' : 'light'}
-      leftSection={<RocketLaunch size={12} weight="fill" />}
-      loading={publish.isPending}
-      onClick={handlePublish}
-    >
-      {text}
-    </Button>
+    <>
+    <Tooltip label={publishBlocked} disabled={!publishBlocked} multiline maw={360} withArrow>
+      {/* span: a disabled button swallows the pointer events the tooltip needs */}
+      <span style={{ display: 'inline-block' }}>
+        <Button
+          size="compact-xs"
+          mt={4}
+          variant={primary ? 'filled' : 'light'}
+          leftSection={<RocketLaunch size={12} weight="fill" />}
+          loading={publish.isPending || preflight.isFetching}
+          disabled={publishBlocked !== null}
+          onClick={handlePublish}
+        >
+          {text}
+        </Button>
+      </span>
+    </Tooltip>
+    {publishBlocked && <Text size="xs" c="orange" lineClamp={3}>{publishBlocked}</Text>}
+    </>
   );
 
   let outputState: StepState;

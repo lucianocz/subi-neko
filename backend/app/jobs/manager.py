@@ -12,7 +12,7 @@ from sqlalchemy.exc import IntegrityError
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.db import options as options_store
-from app.db.models import JobRecord, JobStatus, SubtitleChunk
+from app.db.models import JobRecord, JobStatus, Project, SubtitleChunk
 from app.jobs.context import JobContext, JobResult
 from app.jobs.models import JobProgress
 from app.jobs.registry import get_handler
@@ -86,6 +86,40 @@ class JobManager:
         max_attempts: int | None = None,
     ) -> JobRecord | None:
         key = dedupe_key or f"{job_type}:{project_id}:{file_id}"
+        # Archived projects are inert: refuse before inserting anything.
+        if await self._project_archived(project_id):
+            logger.info("Not enqueueing %s: project %d is archived", job_type, project_id)
+            return None
+        record = await self._enqueue_row(
+            key, job_type, project_id, payload, file_id, priority, max_attempts,
+        )
+        # Archive may have committed between the check above and the insert
+        # (archive itself refuses while jobs exist, so it can only have won the
+        # race if our row was not yet visible): take the new job back out.
+        if record is not None and await self._project_archived(project_id):
+            await self.cancel_job(record.id)
+            logger.info("Cancelled %s job id=%d: project %d was archived meanwhile",
+                        job_type, record.id, project_id)
+            return None
+        return record
+
+    @staticmethod
+    async def _project_archived(project_id: int) -> bool:
+        async with AsyncSessionLocal() as session:
+            return (await session.scalar(
+                select(Project.archived_at).where(Project.id == project_id)
+            )) is not None
+
+    async def _enqueue_row(
+        self,
+        key: str,
+        job_type: str,
+        project_id: int,
+        payload: dict[str, Any] | None,
+        file_id: int | None,
+        priority: int,
+        max_attempts: int | None,
+    ) -> JobRecord | None:
         async with AsyncSessionLocal() as session:
             # Honour dedupe: return existing queued/running job if key matches
             existing = await session.scalar(

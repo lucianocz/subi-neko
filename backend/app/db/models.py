@@ -93,6 +93,9 @@ class Project(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(Text, nullable=False)
+    # Genuine provider-supplied English title (AniDB official "en" / AniList
+    # english); NULL when none exists — never synthesized or translated.
+    name_english: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     source_directory: Mapped[str] = mapped_column(Text, nullable=False)
     anime_provider: Mapped[str] = mapped_column(Text, nullable=False)
     anime_external_id: Mapped[str] = mapped_column(Text, nullable=False)
@@ -101,6 +104,8 @@ class Project(Base):
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="new")
     is_paused: Mapped[bool] = mapped_column(Integer, nullable=False, server_default="0")
     context_approved_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Archive state (see app/db/archive_state.py): NULL = active project.
+    archived_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # --- Output / publish lifecycle (see app/db/output_state.py) -------------
     # output_revision identifies the current state of everything that feeds the
     # final ASS/MKV; touch_output() bumps it. published_revision is the revision

@@ -28,6 +28,8 @@ function AppContent() {
   return (
     <Routes>
       <Route path="/projects/:projectId/files/:fileId/qc" element={<FinalQcPage />} />
+      <Route path="/archived" element={<AppLayout />} />
+      <Route path="/projects/:projectId" element={<AppLayout />} />
       <Route path="*" element={<AppLayout />} />
     </Routes>
   );
