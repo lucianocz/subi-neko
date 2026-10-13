@@ -12,6 +12,7 @@ export interface GlossaryTerm {
   origin: string;
   locked: boolean;
   is_active: boolean;
+  is_new: boolean;
 }
 
 export interface CharacterVoice {
@@ -31,6 +32,7 @@ export interface AddressPair {
   mode: 'tykani' | 'vykani' | 'mixed';
   origin: string;
   locked: boolean;
+  is_new: boolean;
 }
 
 export interface StyleGuide {

@@ -108,7 +108,7 @@ test('characters: per-row dividers replaced by striping, editing controls kept',
   }
 });
 
-test('style bible keeps the address-pair controls and values', () => {
+test('T-V pairs tab keeps the address-pair controls and values', () => {
   assert.match(dialog, /updatePair\.mutate\(\{ pairId: pair\.id, mode: mode as typeof pair\.mode \}\)/);
   assert.ok(dialog.includes('data={MODE_OPTIONS}'));
 });

@@ -137,6 +137,7 @@ def insert_new_glossary_terms(
         row = existing.get(key)
         if row is not None:
             if not row.locked and _fill_missing_term_fields(row, term, now):
+                row.is_new = True
                 logger.debug("Filled missing glossary fields for %r", row.source_term)
             continue
         row = ProjectGlossaryTerm(
@@ -150,6 +151,7 @@ def insert_new_glossary_terms(
             origin=origin,
             locked=0,
             is_active=1,
+            is_new=True,
             created_at=now,
             updated_at=now,
         )
@@ -226,6 +228,7 @@ def upsert_address_pairs(
                 mode=mode,
                 origin=origin,
                 locked=0,
+                is_new=True,
                 created_at=now,
                 updated_at=now,
             )
@@ -235,6 +238,7 @@ def upsert_address_pairs(
         elif update_existing_mode and not row.locked and row.mode != mode:
             row.mode = mode
             row.origin = origin
+            row.is_new = True
             row.updated_at = now
             written += 1
     return written

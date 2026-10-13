@@ -38,6 +38,35 @@
   white-space: pre-wrap;
 }
 
+/* NEW / UPDATED marker: inline, bold, warm yellow (readable on light and dark backgrounds). */
+.sgd-new {
+  margin-left: 3px;
+  font-weight: 700;
+  white-space: nowrap;
+  cursor: default;
+  color: var(--mantine-color-yellow-7);
+}
+
+:root[data-mantine-color-scheme='dark'] .sgd-new {
+  color: var(--mantine-color-yellow-5);
+}
+
+/* "Only new" toggle lives in the glossary header's Source cell (no extra toolbar row). */
+.sgd-head-source {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.sgd-only-new {
+  font-weight: 400;
+}
+
+.sgd-only-new label {
+  font-size: 11px;
+  line-height: 1.2;
+}
+
 .sgd-num {
   text-align: right;
 }
@@ -159,5 +188,17 @@
     font-size: 10px;
     line-height: 1.2;
     color: var(--mantine-color-dimmed);
+  }
+}
+
+/* The glossary header is hidden when narrow, but its filter must stay reachable. */
+@media (max-width: 860px) {
+  .sgd-head.sgd-head-filter {
+    display: block;
+    padding-bottom: 4px;
+  }
+
+  .sgd-head-filter > :not(:first-child) {
+    display: none;
   }
 }

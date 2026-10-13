@@ -901,7 +901,7 @@ function ProjectDetails({ project, onDeleted }: { project: Project; onDeleted: (
   const [watchedWordsOpen, setWatchedWordsOpen] = useState(false);
   const [stylesOpen, setStylesOpen] = useState(false);
   const [styleGuideOpen, setStyleGuideOpen] = useState(false);
-  const [styleGuideTab, setStyleGuideTab] = useState<'glossary' | 'characters' | 'bible' | 'tm'>('glossary');
+  const [styleGuideTab, setStyleGuideTab] = useState<'glossary' | 'characters' | 'pairs' | 'bible' | 'tm'>('glossary');
   const [reviewQueueOpen, setReviewQueueOpen] = useState(false);
   const [metricsOpen, setMetricsOpen] = useState(false);
   const [subtitleEditorFile, setSubtitleEditorFile] = useState<VideoFile | null>(null);

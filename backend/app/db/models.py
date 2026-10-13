@@ -3,7 +3,8 @@ from datetime import datetime
 from enum import Enum
 from typing import Optional
 
-from sqlalchemy import Column, Float, ForeignKey, Index, Integer, Table, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, Float, ForeignKey, Index, Integer, Table, Text, UniqueConstraint, func
+from sqlalchemy import true as sa_true
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.core.database import Base
@@ -511,6 +512,9 @@ class ProjectGlossaryTerm(Base):
     locked: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")  # user-edited; jobs never overwrite
     is_active: Mapped[int] = mapped_column(Integer, nullable=False, server_default="1")
     occurrence_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    # Created/meaningfully updated automatically since the last user Translate.
+    # Default TRUE = automatic writers; manual creation sets False explicitly.
+    is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_true(), default=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 
@@ -577,6 +581,7 @@ class ProjectAddressPair(Base):
     mode: Mapped[str] = mapped_column(Text, nullable=False)  # tykani|vykani|mixed
     origin: Mapped[str] = mapped_column(Text, nullable=False, server_default="llm")  # manual|llm
     locked: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, server_default=sa_true(), default=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 

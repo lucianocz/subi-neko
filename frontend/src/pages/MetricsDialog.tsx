@@ -2,13 +2,14 @@ import { Center, Group, Loader, Modal, ScrollArea, Table, Text } from '@mantine/
 import { ChartLine } from '@phosphor-icons/react';
 import { useProjectMetrics } from '../hooks/useProjectMetrics';
 import type { FileMetrics } from '../hooks/useProjectMetrics';
+import { summarizeMetrics } from '../utils/metricsSummary';
 
 function pct(value: number | null): string {
   return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
 }
 
 function cost(value: number | null): string {
-  return value === null ? '—' : `$${value.toFixed(3)}`;
+  return value === null ? '—' : `$${value.toFixed(2)}`;
 }
 
 function editDistanceColor(value: number | null): string | undefined {
@@ -26,34 +27,76 @@ function MetricsRow({ m }: { m: FileMetrics }) {
           {m.episode_number !== null ? `Ep ${m.episode_number}` : m.filename}
         </Text>
       </Table.Td>
-      <Table.Td><Text size="sm" c="dimmed">{m.events_total}</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} c="dimmed">{m.events_total}</Text></Table.Td>
       <Table.Td>
-        <Text size="sm" fw={600} c={editDistanceColor(m.edit_distance_norm)}>
+        <Text size="sm" fw={600} ta={'end'} c={editDistanceColor(m.edit_distance_norm)}>
           {pct(m.edit_distance_norm)}
         </Text>
       </Table.Td>
-      <Table.Td><Text size="sm" c="dimmed">{m.events_user_edited}</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} c="dimmed">{m.events_user_edited}</Text></Table.Td>
       <Table.Td>
-        <Text size="sm" c="dimmed">
+        <Text size="sm" ta={'end'} c="dimmed">
           {m.polish_edit_count}
           {m.polish_churn_norm !== null && ` (${pct(m.polish_churn_norm)})`}
         </Text>
       </Table.Td>
       <Table.Td>
-        <Group gap={6} wrap="nowrap">
+        <Group gap={6} justify={'flex-end'} wrap="nowrap">
           {m.qa_blockers > 0 && <Text size="xs" c="red">{m.qa_blockers}</Text>}
           {m.qa_warnings > 0 && <Text size="xs" c="yellow">{m.qa_warnings}</Text>}
           {m.qa_info > 0 && <Text size="xs" c="blue">{m.qa_info}</Text>}
           {m.qa_blockers + m.qa_warnings + m.qa_info === 0 && <Text size="xs" c="dimmed">0</Text>}
         </Group>
       </Table.Td>
-      <Table.Td><Text size="sm" c="dimmed">{pct(m.mean_confidence)}</Text></Table.Td>
-      <Table.Td><Text size="sm" c="dimmed">{cost(m.llm_cost_usd)}</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} c="dimmed">{pct(m.mean_confidence)}</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} c="dimmed">{cost(m.llm_cost_usd)}</Text></Table.Td>
       <Table.Td>
-        <Text size="xs" c="dimmed">
+        <Text size="xs" ta={'end'} c="dimmed">
           {((m.prompt_tokens + m.completion_tokens) / 1000).toFixed(0)}k
         </Text>
       </Table.Td>
+    </Table.Tr>
+  );
+}
+
+/** "~" prefix = average over files, "Σ" = sum. */
+function avgNum(value: number | null, digits = 1): string {
+  return value === null ? '—' : `~${value.toFixed(digits)}`;
+}
+
+function SummaryRow({ rows }: { rows: FileMetrics[] }) {
+  const s = summarizeMetrics(rows);
+  const qaZero = (s.qa_blockers ?? 0) + (s.qa_warnings ?? 0) + (s.qa_info ?? 0) === 0;
+  return (
+    <Table.Tr className="metrics-summary">
+      <Table.Td><Text size="sm" fw={700}>Summary</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} fw={600}>{avgNum(s.events_total, 0)}</Text></Table.Td>
+      <Table.Td>
+        <Text size="sm" ta={'end'} fw={700} c={editDistanceColor(s.edit_distance_norm)}>
+          {s.edit_distance_norm === null ? '—' : `~${pct(s.edit_distance_norm)}`}
+        </Text>
+      </Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} fw={600}>{avgNum(s.events_user_edited)}</Text></Table.Td>
+      <Table.Td>
+        <Text size="sm" ta={'end'} fw={600}>
+          {s.polish_churn_norm === null ? '—' : `~${pct(s.polish_churn_norm)}`}
+        </Text>
+      </Table.Td>
+      <Table.Td>
+        <Group gap={6} justify={'flex-end'} wrap="nowrap">
+          {(s.qa_blockers ?? 0) > 0 && <Text size="xs" fw={600} c="red">~{s.qa_blockers!.toFixed(0)}</Text>}
+          {(s.qa_warnings ?? 0) > 0 && <Text size="xs" fw={600} c="yellow">~{s.qa_warnings!.toFixed(0)}</Text>}
+          {(s.qa_info ?? 0) > 0 && <Text size="xs" fw={600} c="blue">~{s.qa_info!.toFixed(0)}</Text>}
+          {qaZero && <Text size="xs" ta={'end'} fw={600}>~0</Text>}
+        </Group>
+      </Table.Td>
+      <Table.Td>
+        <Text size="sm" ta={'end'} fw={600}>
+          {s.mean_confidence === null ? '—' : `~${pct(s.mean_confidence)}`}
+        </Text>
+      </Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} fw={600}>Σ {cost(s.llm_cost_usd)}</Text></Table.Td>
+      <Table.Td><Text size="xs" ta={'end'} fw={600}>Σ {(s.tokens / 1000).toFixed(0)}k</Text></Table.Td>
     </Table.Tr>
   );
 }
@@ -93,19 +136,22 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
             <Table.Thead>
               <Table.Tr>
                 <Table.Th>Episode</Table.Th>
-                <Table.Th style={{ width: 60 }}>Lines</Table.Th>
-                <Table.Th style={{ width: 110 }}>Human edits</Table.Th>
-                <Table.Th style={{ width: 70 }}>Edited</Table.Th>
-                <Table.Th style={{ width: 110 }}>Polish edits</Table.Th>
-                <Table.Th style={{ width: 110 }}>QA (b/w/i)</Table.Th>
-                <Table.Th style={{ width: 100 }}>Confidence</Table.Th>
-                <Table.Th style={{ width: 80 }}>Cost</Table.Th>
-                <Table.Th style={{ width: 70 }}>Tokens</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 60 }}>Lines</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 110 }}>Human edits</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 70 }}>Edited</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 110 }}>Polish edits</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 110 }}>QA (b/w/i)</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 100 }}>Confidence</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 80 }}>Cost</Table.Th>
+                <Table.Th ta={'end'} style={{ width: 70 }}>Tokens</Table.Th>
               </Table.Tr>
             </Table.Thead>
             <Table.Tbody>
               {metrics.map((m) => <MetricsRow key={m.file_id} m={m} />)}
             </Table.Tbody>
+            <Table.Tfoot style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
+              <SummaryRow rows={metrics} />
+            </Table.Tfoot>
           </Table>
         </ScrollArea.Autosize>
       )}

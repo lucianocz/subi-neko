@@ -36,5 +36,5 @@ test('does not mutate the input (query cache) and re-sorts after add / edit / de
 test('Glossary tab renders the sorted, memoized list', () => {
   const src = readFileSync(new URL('../src/pages/StyleGuideDialog.tsx', import.meta.url), 'utf8');
   assert.match(src, /useMemo\(\(\) => \(rawTerms \? sortGlossaryTerms\(rawTerms\) : undefined\), \[rawTerms\]\)/);
-  assert.match(src, /terms\.map\(\(term\) => \(\s*<GlossaryRow key=\{term\.id\}/);
+  assert.match(src, /visibleTerms\.map\(\(term\) => \(\s*<GlossaryRow key=\{term\.id\}/);
 });

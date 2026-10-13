@@ -9,7 +9,7 @@ from urllib.parse import quote
 
 from fastapi import APIRouter, HTTPException, Query, Response
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import and_, case, delete, func, select
+from sqlalchemy import and_, case, delete, func, select, update
 from sqlalchemy.orm import selectinload
 
 from app.core.database import AsyncSessionLocal
@@ -506,6 +506,20 @@ async def retry_context_component(project_id: int, body: ContextRetryIn):
     return {"status": "requeued", "component": body.component}
 
 
+async def _reset_new_markers(session, project_id: int) -> None:
+    """Clear the NEW/UPDATED review markers of the project's glossary terms and
+    address pairs. Runs inside the caller's transaction, so it commits together
+    with the Translate state change and always before any analysis job can
+    start (jobs are only enqueued after that commit)."""
+    for model in (ProjectGlossaryTerm, ProjectAddressPair):
+        await session.execute(
+            update(model)
+            .where(model.project_id == project_id, model.is_new.is_(True))
+            .values(is_new=False)
+            .execution_options(synchronize_session=False)
+        )
+
+
 @router.post("/{project_id}/files/{file_id}/translate", response_model=FileOut)
 async def translate_file(project_id: int, file_id: int):
     """Per-file Translate action (gate 2): starts the file's automatic
@@ -529,6 +543,9 @@ async def translate_file(project_id: int, file_id: int):
             and file.blocking_reason == FileBlockingReason.ANALYSIS_FAILED.value
         )
         if file.status == FileStatus.READY.value or retry_analysis:
+            if file.translation_requested_at is None or retry_analysis:
+                # A real user-initiated start (not the idempotent re-click).
+                await _reset_new_markers(session, project_id)
             if file.translation_requested_at is None:
                 file.translation_requested_at = now
             if retry_analysis:
@@ -758,6 +775,8 @@ async def retranslate_file(project_id: int, file_id: int):
             record.status = JobStatus.CANCELLED.value
             record.finished_at = now
             record.updated_at = now
+
+        await _reset_new_markers(session, project_id)
 
         file.status = FileStatus.READY.value
         file.translation_requested_at = now
@@ -1102,6 +1121,7 @@ class GlossaryTermApiOut(BaseModel):
     origin: str
     locked: bool
     is_active: bool
+    is_new: bool
 
     model_config = {"from_attributes": True}
 
@@ -1151,6 +1171,7 @@ class AddressPairApiOut(BaseModel):
     mode: str
     origin: str
     locked: bool
+    is_new: bool
 
     model_config = {"from_attributes": True}
 
@@ -1226,6 +1247,7 @@ async def create_glossary_term(project_id: int, body: GlossaryTermCreateIn):
             origin="manual",
             locked=1,
             is_active=1,
+            is_new=False,
             created_at=now,
             updated_at=now,
         )

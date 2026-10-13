@@ -4,6 +4,7 @@ import {
   Badge,
   Button,
   Center,
+  Checkbox,
   Group,
   Loader,
   Modal,
@@ -19,6 +20,7 @@ import {
 import { notifications } from '@mantine/notifications';
 import { BookOpen, Plus, Trash } from '@phosphor-icons/react';
 import { sortGlossaryTerms } from '../utils/glossarySort';
+import { NEW_MARKER_LABEL, countNew, filterNew } from '../utils/newMarkers';
 import {
   GLOSSARY_CATEGORIES,
   useCreateGlossaryTerm,
@@ -40,7 +42,7 @@ interface StyleGuideDialogProps {
   projectId: number;
   opened: boolean;
   onClose: () => void;
-  initialTab?: 'glossary' | 'characters' | 'bible' | 'tm';
+  initialTab?: 'glossary' | 'characters' | 'pairs' | 'bible' | 'tm';
 }
 
 const MODE_OPTIONS = [
@@ -51,10 +53,37 @@ const MODE_OPTIONS = [
 
 const CATEGORY_OPTIONS = GLOSSARY_CATEGORIES.map((c) => ({ value: c, label: c }));
 
+/** Small warm-yellow star after an entry's identity; sits inline so it wraps with the text
+ * (U+2060 keeps it from being orphaned on its own line) and adds no height or column width. */
+function NewMarker({ show }: { show: boolean }) {
+  if (!show) return null;
+  return (
+    <>
+      {'⁠'}
+      <Tooltip label={NEW_MARKER_LABEL} withArrow>
+        <span className="sgd-new" aria-label={NEW_MARKER_LABEL} role="img">★</span>
+      </Tooltip>
+    </>
+  );
+}
+
+function OnlyNewToggle({ count, checked, onChange, className }: {
+  count: number; checked: boolean; onChange: (v: boolean) => void; className?: string;
+}) {
+  return (
+    <Checkbox
+      size="xs"
+      className={className}
+      label={`Only new (${count})`}
+      checked={checked}
+      onChange={(e) => onChange(e.currentTarget.checked)}
+    />
+  );
+}
+
 function BibleTab({ projectId }: { projectId: number }) {
   const { data, isLoading } = useStyleGuide(projectId, true);
   const updateBible = useUpdateStyleBible(projectId);
-  const updatePair = useUpdateAddressPair(projectId);
 
   if (isLoading || !data) return <Center h={160}><Loader size="sm" /></Center>;
 
@@ -95,36 +124,65 @@ function BibleTab({ projectId }: { projectId: number }) {
           onBlur={saveField('honorific_policy')}
           autosize minRows={2} maxRows={6}
         />
-
-        {data.address_pairs.length > 0 && (
-          <Stack gap="xs">
-            <Text size="sm" fw={700}>Address pairs (T–V)</Text>
-            <div className="sgd-zebra">
-              {data.address_pairs.map((pair) => (
-                <div key={pair.id} className="sgd-row sgd-pair">
-                  <Text size="sm" className="sgd-wrap" title={`${pair.speaker_name} → ${pair.addressee_name}`}>
-                    {pair.speaker_name} → {pair.addressee_name}
-                  </Text>
-                  <div>
-                    {pair.origin === 'manual' && <Badge size="xs" variant="light">manual</Badge>}
-                  </div>
-                  <Select
-                    size="xs"
-                    data={MODE_OPTIONS}
-                    value={pair.mode}
-                    onChange={(mode) => {
-                      if (mode && mode !== pair.mode) {
-                        updatePair.mutate({ pairId: pair.id, mode: mode as typeof pair.mode });
-                      }
-                    }}
-                  />
-                </div>
-              ))}
-            </div>
-          </Stack>
-        )}
       </Stack>
     </ScrollArea.Autosize>
+  );
+}
+
+function PairsTab({ projectId }: { projectId: number }) {
+  const { data, isLoading } = useStyleGuide(projectId, true);
+  const updatePair = useUpdateAddressPair(projectId);
+  const [onlyNew, setOnlyNew] = useState(false);
+  const visiblePairs = useMemo(
+    () => filterNew(data?.address_pairs ?? [], onlyNew),
+    [data?.address_pairs, onlyNew],
+  );
+
+  if (isLoading || !data) return <Center h={160}><Loader size="sm" /></Center>;
+
+  if (data.address_pairs.length === 0) {
+    return (
+      <Text size="xs" c="dimmed" pt="sm">
+        No address pairs yet — the style bible generator and script analysis fill this in automatically.
+      </Text>
+    );
+  }
+
+  return (
+    <Stack gap="xs" pt="sm">
+      <Group justify="space-between" wrap="nowrap">
+        <Text size="xs" c="dimmed">Who addresses whom with tykání / vykání.</Text>
+        <OnlyNewToggle count={countNew(data.address_pairs)} checked={onlyNew} onChange={setOnlyNew} />
+      </Group>
+      {visiblePairs.length === 0 && (
+        <Text size="xs" c="dimmed">No new or updated address pairs.</Text>
+      )}
+      <ScrollArea.Autosize mah={420} scrollbars="y">
+        <div className="sgd-zebra">
+          {visiblePairs.map((pair) => (
+            <div key={pair.id} className="sgd-row sgd-pair">
+              <Text size="sm" className="sgd-wrap" title={`${pair.speaker_name} → ${pair.addressee_name}`}>
+                {pair.speaker_name} → {pair.addressee_name}
+                <NewMarker show={pair.is_new} />
+              </Text>
+              <div>
+                {pair.origin === 'manual' && <Badge size="xs" variant="light">manual</Badge>}
+              </div>
+              <Select
+                size="xs"
+                data={MODE_OPTIONS}
+                value={pair.mode}
+                onChange={(mode) => {
+                  if (mode && mode !== pair.mode) {
+                    updatePair.mutate({ pairId: pair.id, mode: mode as typeof pair.mode });
+                  }
+                }}
+              />
+            </div>
+          ))}
+        </div>
+      </ScrollArea.Autosize>
+    </Stack>
   );
 }
 
@@ -149,6 +207,7 @@ function GlossaryRow({
     <div className="sgd-row sgd-glossary" style={{ opacity: term.is_active ? 1 : 0.45 }}>
       <Text size="sm" className="sgd-wrap sgd-cell sgd-full" data-label="Source" title={term.source_term}>
         {term.source_term}
+        <NewMarker show={term.is_new} />
       </Text>
       <div className="sgd-cell" data-label="Translation">
         <TextInput size="xs" defaultValue={term.target_term} onBlur={blurUpdate('target_term')} />
@@ -194,6 +253,8 @@ function GlossaryRow({
 function GlossaryTab({ projectId }: { projectId: number }) {
   const { data: rawTerms, isLoading } = useGlossaryTerms(projectId, true);
   const terms = useMemo(() => (rawTerms ? sortGlossaryTerms(rawTerms) : undefined), [rawTerms]);
+  const [onlyNew, setOnlyNew] = useState(false);
+  const visibleTerms = useMemo(() => filterNew(terms ?? [], onlyNew), [terms, onlyNew]);
   const createTerm = useCreateGlossaryTerm(projectId);
   const [source, setSource] = useState('');
   const [target, setTarget] = useState('');
@@ -259,8 +320,13 @@ function GlossaryTab({ projectId }: { projectId: number }) {
         </Text>
       ) : (
         <>
-          <div className="sgd-head sgd-glossary">
-            <span>Source</span>
+          <div className="sgd-head sgd-glossary sgd-head-filter">
+            <span className="sgd-head-source">
+              Source
+              <OnlyNewToggle
+                className="sgd-only-new" count={countNew(terms)} checked={onlyNew} onChange={setOnlyNew}
+              />
+            </span>
             <span>Translation</span>
             <span>Category</span>
             <span>Vocative</span>
@@ -268,9 +334,12 @@ function GlossaryTab({ projectId }: { projectId: number }) {
             <span>Origin</span>
             <span />
           </div>
+          {visibleTerms.length === 0 && (
+            <Text size="xs" c="dimmed">No new or updated glossary terms.</Text>
+          )}
           <ScrollArea.Autosize mah={420} scrollbars="y">
             <div className="sgd-zebra">
-              {terms.map((term) => (
+              {visibleTerms.map((term) => (
                 <GlossaryRow key={term.id} term={term} projectId={projectId} />
               ))}
             </div>
@@ -396,6 +465,7 @@ export function StyleGuideDialog({ projectId, opened, onClose, initialTab = 'glo
         <Tabs.List>
           <Tabs.Tab value="glossary">Glossary</Tabs.Tab>
           <Tabs.Tab value="characters">Characters</Tabs.Tab>
+          <Tabs.Tab value="pairs">T-V pairs</Tabs.Tab>
           <Tabs.Tab value="bible">Style bible</Tabs.Tab>
           <Tabs.Tab value="tm">Translation memory</Tabs.Tab>
         </Tabs.List>
@@ -404,6 +474,9 @@ export function StyleGuideDialog({ projectId, opened, onClose, initialTab = 'glo
         </Tabs.Panel>
         <Tabs.Panel value="characters">
           <CharactersTab projectId={projectId} />
+        </Tabs.Panel>
+        <Tabs.Panel value="pairs">
+          <PairsTab projectId={projectId} />
         </Tabs.Panel>
         <Tabs.Panel value="bible">
           <BibleTab projectId={projectId} />
