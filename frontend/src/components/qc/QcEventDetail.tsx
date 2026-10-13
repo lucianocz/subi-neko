@@ -298,7 +298,7 @@ export interface QcEventDetailProps {
   actionBusy: boolean;
   getVideoTimeMs: () => number | null;
   /** Seek the shared video to `startMs − 500` and play on (current, possibly unsaved Start). */
-  onReplay: (startMs: number) => void;
+  onReplay: (startMs: number, clickDetail: number) => void;
   newDraft: NewEventDraft | null;
   newError: string | null;
   styles: readonly string[];
@@ -505,7 +505,7 @@ export function QcEventDetail(props: QcEventDetailProps) {
                       <Tooltip label="Replay event" openDelay={300}>
                       <ActionIcon
                         size={30} variant="default" aria-label="Replay event" data-testid="qc-replay"
-                        onClick={() => onReplay(timing.startMs)}
+                        onClick={(e) => onReplay(timing.startMs, e.detail)}
                       >
                         <Play size={14} weight="fill" />
                       </ActionIcon>

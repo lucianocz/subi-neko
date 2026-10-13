@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useMemo, useState } from 'react';
 import {
   ActionIcon,
   Badge,
@@ -18,6 +18,7 @@ import {
 } from '@mantine/core';
 import { notifications } from '@mantine/notifications';
 import { BookOpen, Plus, Trash } from '@phosphor-icons/react';
+import { sortGlossaryTerms } from '../utils/glossarySort';
 import {
   GLOSSARY_CATEGORIES,
   useCreateGlossaryTerm,
@@ -191,7 +192,8 @@ function GlossaryRow({
 }
 
 function GlossaryTab({ projectId }: { projectId: number }) {
-  const { data: terms, isLoading } = useGlossaryTerms(projectId, true);
+  const { data: rawTerms, isLoading } = useGlossaryTerms(projectId, true);
+  const terms = useMemo(() => (rawTerms ? sortGlossaryTerms(rawTerms) : undefined), [rawTerms]);
   const createTerm = useCreateGlossaryTerm(projectId);
   const [source, setSource] = useState('');
   const [target, setTarget] = useState('');

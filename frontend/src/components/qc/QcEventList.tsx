@@ -1,10 +1,11 @@
 import { memo, useEffect, useRef } from 'react';
-import type { CSSProperties, KeyboardEvent as ReactKeyboardEvent } from 'react';
+import type { CSSProperties } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { Badge } from '@mantine/core';
 import type { QcEvent } from '../../types/qc';
 import type { ActiveEvents } from '../../hooks/useActiveSubtitleEvents';
 import { formatMs, plainAssText } from '../../utils/qcText';
+import { followScrollTarget } from '../../utils/qcFollowScroll';
 import { CPS_COLORS, cpsSeverity } from '../../utils/cps';
 import type { CpsLimits } from '../../utils/cps';
 import { SEVERITY_COLORS } from '../../utils/qaSeverity';
@@ -14,9 +15,6 @@ import './qc.css';
 // Fixed height: meta line + translated line + source line. Fixed rows keep the
 // virtualizer trivially cheap and let the Follow check be pure arithmetic.
 export const QC_ROW_HEIGHT = 60;
-
-
-const SCROLL_KEYS = new Set(['PageUp', 'PageDown', 'Home', 'End', 'ArrowUp', 'ArrowDown']);
 
 interface RowProps {
   event: QcEvent;
@@ -87,13 +85,13 @@ const Row = memo(function Row({ event, top, selected, active, cpsLimits, onSelec
  * only the ~20 visible rows exist in the DOM however long the file is.
  *
  * Selected (outline) and active (fill) are separate props and separate styles.
- * Follow: when the active set changes and none of its rows is visible, the first
- * one (by start) is scrolled into view. A *user* scroll (wheel, touch, scrollbar
- * drag, scroll keys) calls `onUserScroll`; programmatic scrolls never do, because
- * they are not input events — so no suppression flag is needed.
+ * Follow: when the active set changes (or Follow is switched on), the whole active
+ * span is kept clear of the bottom margin — see `followScrollTarget`. Scrolling the
+ * list by hand never touches Follow; only its toggle does. A manual scroll is simply
+ * corrected at the next active-set change that needs one.
  */
 export function QcEventList({
-  events, cpsLimits, active, selectedId, follow, reveal, onSelect, onSeek, onUserScroll,
+  events, cpsLimits, active, selectedId, follow, reveal, onSelect, onSeek,
 }: {
   events: readonly QcEvent[];
   cpsLimits: CpsLimits;
@@ -104,7 +102,6 @@ export function QcEventList({
   reveal: { id: number; nonce: number } | null;
   onSelect: (event: QcEvent) => void;
   onSeek: (event: QcEvent) => void;
-  onUserScroll: () => void;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   // eslint-disable-next-line react-hooks/incompatible-library -- virtualizer is only used locally, not passed to memoized children
@@ -120,11 +117,14 @@ export function QcEventList({
     if (!follow || active.indices.length === 0) return;
     const el = parentRef.current;
     if (!el) return;
-    const top = el.scrollTop;
-    const bottom = top + el.clientHeight;
-    const anyVisible = active.indices.some(
-      (i) => i * QC_ROW_HEIGHT < bottom && (i + 1) * QC_ROW_HEIGHT > top);
-    if (!anyVisible) virtualizer.scrollToIndex(active.indices[0], { align: 'center' });
+    const target = followScrollTarget({
+      indices: active.indices,
+      scrollTop: el.scrollTop,
+      viewportHeight: el.clientHeight,
+      rowHeight: QC_ROW_HEIGHT,
+      totalHeight: virtualizer.getTotalSize(),
+    });
+    if (target !== null) virtualizer.scrollToOffset(target);
   }, [active, follow, virtualizer]);
 
   useEffect(() => {
@@ -135,21 +135,12 @@ export function QcEventList({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [reveal?.nonce]);
 
-  const onKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
-    if (SCROLL_KEYS.has(e.key)) onUserScroll();
-  };
-
   return (
     <div
       ref={parentRef}
       className="qc-list"
       tabIndex={0}
       aria-label="Subtitle events"
-      onWheel={onUserScroll}
-      onTouchMove={onUserScroll}
-      onKeyDown={onKeyDown}
-      // A press on the container itself (not a row) is the scrollbar.
-      onPointerDown={(e) => { if (e.target === e.currentTarget) onUserScroll(); }}
     >
       <div style={{ height: virtualizer.getTotalSize(), position: 'relative' }}>
         {virtualizer.getVirtualItems().map((item) => {

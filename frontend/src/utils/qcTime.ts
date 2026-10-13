@@ -74,3 +74,17 @@ export function replayFromStart(
   } catch { /* play() threw synchronously */ }
   return true;
 }
+
+/**
+ * After a *pointer* click on Replay, hand focus to the player so Space is the
+ * normal play/pause again instead of re-pressing the button. Keyboard
+ * activation (`detail === 0`) keeps focus where the user put it.
+ */
+export function focusPlayerAfterReplay(
+  video: { focus(options?: { preventScroll?: boolean }): void } | null | undefined,
+  clickDetail: number,
+): boolean {
+  if (!video || clickDetail === 0) return false;
+  video.focus({ preventScroll: true });
+  return true;
+}

@@ -53,10 +53,10 @@ test('rejected or throwing play() does not escape', async () => {
 
 test('replay adds no playback state: no pause, timer, End boundary or event selection', () => {
   const fn = readFileSync(new URL('../src/utils/qcTime.ts', import.meta.url), 'utf8')
-    .split('export function replayFromStart')[1];
+    .split('export function replayFromStart')[1].split(' * After a *pointer* click')[0];
   assert.doesNotMatch(fn, /pause|setTimeout|setInterval|loop|endMs|timeupdate/);
   const page = readFileSync(new URL('../src/pages/FinalQcPage.tsx', import.meta.url), 'utf8');
-  assert.match(page, /const handleReplay = useCallback\(\(startMs: number\) => \{ replayFromStart\(videoRef\.current, startMs\); \}, \[\]\)/);
+  assert.match(page, /const handleReplay = useCallback\(\(startMs: number, clickDetail: number\) => \{\s*replayFromStart\(videoRef\.current, startMs\);\s*focusPlayerAfterReplay\(videoRef\.current, clickDetail\);/);
 });
 
 test('detail panel: Replay sits between Duration and CPS and sends the live Start', () => {
@@ -64,7 +64,7 @@ test('detail panel: Replay sits between Duration and CPS and sends the live Star
   assert.match(src, /\{replay\}\s*\{cps\}/);
   assert.match(src, /aria-label="Replay event"/);
   assert.match(src, /<Tooltip label="Replay event"/);
-  assert.match(src, /onClick=\{\(\) => onReplay\(timing\.startMs\)\}/);
+  assert.match(src, /onClick=\{\(e\) => onReplay\(timing\.startMs, e\.detail\)\}/);
   assert.match(src, /<Play size/);
 });
 
@@ -79,4 +79,24 @@ test('Hide / Restore lives in the right panel after the QA list, unconditionally
   assert.match(side, /event\.is_hidden \? 'Restore event' : 'Hide event'/);
   // Not inside QcIssuesPanel (which returns early with zero issues) nor the timing editor.
   assert.doesNotMatch(src.slice(0, src.indexOf('data-testid="qc-side"')), /qc-hide-toggle/);
+});
+
+test('pointer click on Replay moves focus to the player; keyboard activation keeps it', async () => {
+  const { focusPlayerAfterReplay } = await import('../src/utils/qcTime.ts');
+  const calls: unknown[] = [];
+  const video = { focus: (o?: unknown) => { calls.push(o); } };
+  assert.equal(focusPlayerAfterReplay(video, 1), true);
+  assert.deepEqual(calls, [{ preventScroll: true }]);
+  assert.equal(focusPlayerAfterReplay(video, 0), false); // Enter/Space on the button
+  assert.equal(calls.length, 1);
+  assert.equal(focusPlayerAfterReplay(null, 1), false);
+});
+
+test('Replay focus lands on the video (native Space play/pause); playback updates never refocus', async () => {
+  const { spaceBelongsToTarget } = await import('../src/utils/qcKeyboard.ts');
+  assert.equal(spaceBelongsToTarget({ tagName: 'VIDEO' }), true); // native controls toggle; global handler stays out
+  const page = readFileSync(new URL('../src/pages/FinalQcPage.tsx', import.meta.url), 'utf8');
+  assert.equal((page.match(/focusPlayerAfterReplay\(/g) ?? []).length, 1); // only inside handleReplay
+  const hook = readFileSync(new URL('../src/hooks/useActiveSubtitleEvents.ts', import.meta.url), 'utf8');
+  assert.doesNotMatch(hook, /focus\(/);
 });

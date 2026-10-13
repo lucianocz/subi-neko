@@ -16,7 +16,7 @@ import { useQcFonts } from '../hooks/useQcFonts';
 import { useQcPreview } from '../hooks/useQcPreview';
 import type { QcBrandingSave, QcEvent, QcEventList as QcEventListData } from '../types/qc';
 import { cpsLimitsFrom } from '../utils/cps';
-import { replayFromStart } from '../utils/qcTime';
+import { focusPlayerAfterReplay, replayFromStart } from '../utils/qcTime';
 import { brandingIndicator, brandingNeedsFontRefresh } from '../utils/qcBranding';
 import { spaceBelongsToTarget } from '../utils/qcKeyboard';
 import '../components/qc/qc.css';
@@ -206,8 +206,10 @@ function FinalQcWorkspace({
     // that shows it.
     if (el) el.currentTime = (event.start_ms + Math.min(SEEK_NUDGE_MS, (event.end_ms - event.start_ms) / 2)) / 1000;
   }, [select]);
-  const handleReplay = useCallback((startMs: number) => { replayFromStart(videoRef.current, startMs); }, []);
-  const handleUserScroll = useCallback(() => setFollow(false), []);
+  const handleReplay = useCallback((startMs: number, clickDetail: number) => {
+    replayFromStart(videoRef.current, startMs);
+    focusPlayerAfterReplay(videoRef.current, clickDetail);
+  }, []);
 
   // Space = play/pause, except where Space already means something (text entry,
   // buttons, the native video controls).
@@ -441,7 +443,6 @@ function FinalQcWorkspace({
               reveal={editing.reveal}
               onSelect={handleSelect}
               onSeek={handleSeek}
-              onUserScroll={handleUserScroll}
             />
           )}
         </div>
