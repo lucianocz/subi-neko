@@ -83,7 +83,8 @@ async def archive_blockers(session, project_ids: list[int]) -> dict[int, str | N
     publishing = set((await session.scalars(
         select(Project.id).where(
             Project.id.in_(project_ids),
-            Project.publish_state == PublishState.PUBLISHING.value,
+            or_(Project.publish_state == PublishState.PUBLISHING.value,
+                Project.web_publish_state == "publishing"),
         )
     )).all())
 
@@ -118,6 +119,7 @@ async def archive_project(project_id: int) -> bool:
                 .where(
                     Project.id == project_id,
                     Project.archived_at.is_(None),
+                    or_(Project.web_publish_state.is_(None), Project.web_publish_state != "publishing"),
                     or_(
                         Project.publish_state.is_(None),
                         Project.publish_state != PublishState.PUBLISHING.value,

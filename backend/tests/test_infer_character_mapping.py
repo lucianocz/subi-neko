@@ -363,6 +363,8 @@ def test_mapping_payload_has_aliases_metadata_and_configured_description_limits(
                          mapping_character_description_budget=30)
     _run(project_id, options)
     user = captured["user"]
+    assert captured["project_id"] == project_id
+    assert captured.get("file_id") is None and captured.get("chunk_id") is None
     assert "external_id: c1" in user and "canonical_name: Aria Vermillion" in user
     assert "aliases: Heroine, Aria V" in user
     assert "character_type: Human" in user and "voice_actor: Jane" in user

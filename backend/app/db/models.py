@@ -1,4 +1,3 @@
-import uuid
 from datetime import datetime
 from enum import Enum
 from typing import Optional
@@ -106,6 +105,12 @@ class Project(Base):
     context_approved_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Archive state (see app/db/archive_state.py): NULL = active project.
     archived_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # WEB is independent of translation metadata and local output publishing.
+    web_config_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_config_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    web_publish_attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
+    web_publish_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_identity_locked_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # --- Output / publish lifecycle (see app/db/output_state.py) -------------
     # output_revision identifies the current state of everything that feeds the
     # final ASS/MKV; touch_output() bumps it. published_revision is the revision
@@ -226,6 +231,9 @@ class ProjectEpisode(Base):
 class File(Base):
     __tablename__ = "files"
     __table_args__ = (
+        Index("uq_file_web_tmdb", "project_id", "web_tmdb_episode_id", unique=True),
+        Index("uq_file_web_key", "project_id", "web_publisher_key", unique=True),
+        Index("uq_file_web_uuid", "project_id", "web_episode_uuid", unique=True),
         UniqueConstraint("project_id", "relative_path"),
         Index("idx_files_project_status", "project_id", "status"),
         Index("idx_files_project_blocking_reason", "project_id", "blocking_reason"),
@@ -236,6 +244,13 @@ class File(Base):
     filename: Mapped[str] = mapped_column(Text, nullable=False)
     relative_path: Mapped[str] = mapped_column(Text, nullable=False)
     episode_number: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    web_tmdb_episode_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_publisher_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_episode_uuid: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_mapping_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_identity_locked_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_published_sha256: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_published_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     status: Mapped[str] = mapped_column(Text, nullable=False, server_default="new")
     blocking_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     translation_requested_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

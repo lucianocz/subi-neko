@@ -240,6 +240,11 @@ export function useResolveQaIssue() {
     },
     onSuccess: (data, variables, context) => {
       patchSubtitleEventRow(queryClient, variables.projectId, variables.fileId, data);
+      // Chunk rows in project detail carry per-chunk QA counts; the editor row
+      // has no chunk mapping, so refetch them.
+      queryClient.invalidateQueries({
+        queryKey: ['projects', variables.projectId, 'files', variables.fileId, 'chunks'],
+      });
       const issue = context?.issue;
       if (!issue) return;
       // Header summary: one fewer unresolved issue; the per-type badge count

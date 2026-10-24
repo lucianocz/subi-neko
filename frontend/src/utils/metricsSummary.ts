@@ -1,4 +1,27 @@
 import type { FileMetrics } from '../hooks/useProjectMetrics';
+import type { LlmUsage } from '../hooks/useProjectMetrics';
+
+export function summarizeUsage(rows: readonly LlmUsage[]) {
+  return { calls: rows.reduce((s, r) => s + r.calls, 0),
+    prompt_tokens: rows.reduce((s, r) => s + r.prompt_tokens, 0),
+    completion_tokens: rows.reduce((s, r) => s + r.completion_tokens, 0),
+    cost_usd: rows.some(r => r.cost_usd !== null) ? rows.reduce((s, r) => s + (r.cost_usd ?? 0), 0) : null };
+}
+
+export interface OtherMetrics {
+  llm_cost_usd: number | null;
+  tokens: number;
+}
+
+/** Episode-associated calls are already accounted for by the file metrics. */
+export function summarizeOtherUsage(rows: readonly LlmUsage[]): OtherMetrics {
+  const other = rows.filter(row => row.category === 'Other');
+  const usage = summarizeUsage(other);
+  return {
+    llm_cost_usd: other.length === 0 ? 0 : usage.cost_usd,
+    tokens: usage.prompt_tokens + usage.completion_tokens,
+  };
+}
 
 export interface MetricsSummary {
   events_total: number | null;
@@ -20,7 +43,7 @@ function avg(values: readonly (number | null)[]): number | null {
 }
 
 /** Summary row: averages for ratios/counts per file, sums for cost and tokens. */
-export function summarizeMetrics(rows: readonly FileMetrics[]): MetricsSummary {
+export function summarizeMetrics(rows: readonly FileMetrics[], other?: OtherMetrics): MetricsSummary {
   return {
     events_total: avg(rows.map((m) => m.events_total)),
     edit_distance_norm: avg(rows.map((m) => m.edit_distance_norm)),
@@ -30,7 +53,7 @@ export function summarizeMetrics(rows: readonly FileMetrics[]): MetricsSummary {
     qa_warnings: avg(rows.map((m) => m.qa_warnings)),
     qa_info: avg(rows.map((m) => m.qa_info)),
     mean_confidence: avg(rows.map((m) => m.mean_confidence)),
-    llm_cost_usd: rows.reduce((s, m) => s + (m.llm_cost_usd ?? 0), 0),
-    tokens: rows.reduce((s, m) => s + m.prompt_tokens + m.completion_tokens, 0),
+    llm_cost_usd: rows.reduce((s, m) => s + (m.llm_cost_usd ?? 0), 0) + (other?.llm_cost_usd ?? 0),
+    tokens: rows.reduce((s, m) => s + m.prompt_tokens + m.completion_tokens, 0) + (other?.tokens ?? 0),
   };
 }

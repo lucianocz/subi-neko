@@ -5,6 +5,10 @@ import type { Project, VideoFile } from '../../types';
 import { useProjectSpeakers } from '../../hooks/useCharacterMapping';
 import { useContextStatus, useProjectStats, usePublishPreflight, usePublishProject } from '../../hooks/useProjects';
 import { apiErrorDetail, publishDisabledReason } from '../../utils/projectArchive';
+import { useState } from 'react';
+import { useWebAvailability, useWebState } from '../../hooks/useWebPublishing';
+import { WEB_LABELS, webAvailable } from '../../utils/webPublishing';
+import { WebPublishDialog } from './WebPublishDialog';
 
 // ─── State helpers ────────────────────────────────────────────────────────────
 
@@ -54,9 +58,10 @@ interface StepBoxProps {
   detail: React.ReactNode;
   /** Overrides the generic label for the state (e.g. "Ready to publish"). */
   label?: string;
+  dimWaiting?: boolean;
 }
 
-function StepBox({ title, state, detail, label }: StepBoxProps) {
+function StepBox({ title, state, detail, label, dimWaiting = true }: StepBoxProps) {
   const color = STATE_COLOR[state];
   return (
     <Paper
@@ -64,8 +69,8 @@ function StepBox({ title, state, detail, label }: StepBoxProps) {
       withBorder
       style={{
         flex: 1,
-        minWidth: 0,
-        opacity: state === 'waiting' ? 0.5 : 1,
+        minWidth: 130,
+        opacity: state === 'waiting' && dimWaiting ? 0.5 : 1,
         borderColor: state === 'waiting' ? 'var(--mantine-color-dark-5)' : undefined,
       }}
     >
@@ -91,6 +96,10 @@ interface ProjectPipelineProps {
 }
 
 export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
+  const availability = useWebAvailability();
+  const enabled = webAvailable(availability.data);
+  const web = useWebState(project.id, enabled);
+  const [webOpen, setWebOpen] = useState(false);
   const rank = STATUS_RANK[project.status] ?? 0;
 
   const { data: speakers = [] } = useProjectSpeakers(project.id);
@@ -300,12 +309,17 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
   }
 
   return (
-    <Group gap="xs" align="stretch" wrap="nowrap">
+    <Group gap="xs" align="stretch" wrap="wrap">
       <StepBox title="Preparation" state={prepState} detail={prepDetail} />
       <StepBox title="Context" state={contextState} detail={contextDetail} />
       <StepBox title="Translation" state={transState} detail={transDetail} />
       <StepBox title="Review" state={reviewState} detail={reviewDetail} />
       <StepBox title="Output" state={outputState} detail={outputDetail} label={outputLabel} />
+      {enabled && <StepBox title="WEB" dimWaiting={false} state={web.data?.state === 'publishing' ? 'active' : web.data?.state === 'published' ? 'completed' : web.data?.state === 'failed' || web.data?.state === 'partial' ? 'failed' : 'waiting'}
+        label={WEB_LABELS[web.data?.state ?? 'not_published']} detail={<Button size="compact-xs" variant="light"
+          disabled={!!project.archived_at || !files.some(f => f.status === 'accepted')}
+          onClick={() => setWebOpen(true)}>Publish to Web</Button>} />}
+      {enabled && webOpen && <WebPublishDialog projectId={project.id} projectName={project.name} opened={webOpen} onClose={() => setWebOpen(false)} />}
     </Group>
   );
 }

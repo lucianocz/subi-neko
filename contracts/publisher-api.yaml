@@ -1,0 +1,1668 @@
+openapi: 3.1.0
+info:
+  title: Subi-neko Publisher API
+  version: 1.0.0
+  description: |
+    Defines the HTTP contract for websites receiving publications from Subi-neko. A compatible receiver MUST implement the documented routes, schemas, identity and conflict rules, authentication, response semantics, and retry behavior. Internal storage and deployment are not specified.
+
+    Resources and identities
+    - Resources follow Title -> optional Season -> Episode -> SubtitleRevision. Target-issued UUIDs identify existing resources; external provider mappings are unique lookup aliases, not resource paths.
+    - Movies use FLAT structure and standard episode order. SEASONED titles require seasons; FLAT titles publish episodes directly. Media type, episode structure, and selected episode order cannot change after creation.
+    - Title and episode mappings remain attached to their resources. Aliases may be added but not removed or rebound. Existing episodes cannot move to another title or season or change publisher_key. Episode number/name updates preserve identity.
+    - SEASONED episodes require TMDB episode IDs. FLAT episodes without a TMDB episode ID require a stable title-scoped publisher_key. Episode UUIDs supplied in batches must reference existing episodes.
+    - Deletion and recovery are outside this API. If resources are deleted externally, their UUIDs and related counters do not survive recreation.
+
+    Metadata updates
+    - PUT collection requests are additive, atomic upserts: omitted children and mappings are preserved. Optional descriptive fields on an included entity default to null; title_romaji defaults to title_english. Duplicate resolved identities in a request return 409 without partial changes.
+    - 201 denotes creation and 200 denotes update or noop. Season publication returns created only for a new season; FLAT publication returns created if at least one episode is new. Metadata mutation responses include the current title snapshot.
+    - Results order seasons by season_number DESC and episodes by episode_number DESC, with stable external-identity tie-breakers. Reads expose current poster and subtitle summaries, not historical revisions.
+    - metadata_fingerprint is SHA-256 of the RFC8785 canonical metadata projection described in x-metadata-fingerprint. UUIDs, file content/summaries, counters, and timestamps are excluded. metadata_updated_at advances only when effective projected metadata changes. Uploads do not change either value.
+
+    Authentication and failures
+    - All operations require HTTPS and Authorization: Bearer <token>. Missing or invalid authentication returns 401 with WWW-Authenticate: Bearer; website sessions cannot replace the token.
+    - Invalid JSON (including duplicate keys or invalid Unicode) returns 422; unknown resources return 404; identity/structure conflicts return 409. The documented error envelope is used without revealing secrets or internal details.
+    - After a 503 or unknown network outcome, retry the identical request with bounded backoff: the first attempt may have committed. Identical current state returns noop, but intervening writes may change the outcome. No idempotency-key header or permanent deduplication record is defined. Resolve 401, 404, 409, 413, 415, and 422 failures before retrying.
+
+    File uploads
+    - Multipart uploads contain one file and only documented fields; duplicate/unknown fields return 422. Filenames are metadata, must be nonblank (up to 255 characters), and cannot contain path separators, drive delimiters, or control characters.
+    - release_label must be nonblank (max 200 characters); changelog is optional (max 4000 characters), with omitted and empty values distinguished. Empty files return 415. The default upload limit is 25 MiB per file plus 64 KiB multipart overhead; receivers must communicate any different configured limit.
+    - SHA-256 compares exact bytes. Identical current files return noop without changing existing revision metadata; changed subtitle bytes create a new revision, including when reverting to previously published bytes. Failed/uncommitted uploads do not replace current published content. A successful response confirms the published result.
+
+servers:
+- url: https://publisher-api.example.invalid
+  description: Configure the receiver HTTPS origin; paths already include /api/v1.
+security:
+- PublishToken: []
+tags:
+- name: Publish
+paths:
+  /api/v1/titles:
+    get:
+      operationId: lookupTitle
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters:
+      - name: provider
+        in: query
+        required: true
+        schema:
+          type: string
+          pattern: ^[a-z][a-z0-9_-]{0,31}$
+      - name: media_type
+        in: query
+        required: true
+        schema:
+          type: string
+          enum:
+          - tv
+          - movie
+      - name: external_id
+        in: query
+        required: true
+        schema:
+          type: string
+          minLength: 1
+          maxLength: 255
+      responses:
+        '200':
+          description: Current aggregate title snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleSnapshot'
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: publishTitle
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters: []
+      responses:
+        '200':
+          description: Current snapshot; PUT outcomes updated or noop.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '201':
+          description: New title created (outcome created).
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      const: created
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TitlePublish'
+  /api/v1/titles/{title_id}:
+    get:
+      operationId: getTitle
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters:
+      - name: title_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current aggregate title snapshot.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleSnapshot'
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    put:
+      operationId: updateTitle
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters:
+      - name: title_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current snapshot; PUT outcomes updated or noop.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TitlePublish'
+  /api/v1/titles/{title_id}/seasons:
+    put:
+      operationId: publishSeason
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters:
+      - name: title_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current snapshot; PUT outcomes updated or noop.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '201':
+          description: Created requested title/season, or at least one FLAT episode.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      const: created
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeasonPublish'
+  /api/v1/titles/{title_id}/episodes:
+    put:
+      operationId: publishFlatEpisodes
+      tags:
+      - Publish
+      security:
+      - PublishToken: []
+      parameters:
+      - name: title_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      responses:
+        '200':
+          description: Current snapshot; PUT outcomes updated or noop.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '201':
+          description: Created requested title/season, or at least one FLAT episode.
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PublishResult'
+                - properties:
+                    outcome:
+                      const: created
+        '401':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Sanitized error; never returns credentials or input values.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FlatPublish'
+  /api/v1/titles/{title_id}/poster:
+    put:
+      tags:
+      - Publish
+      operationId: putPoster
+      summary: Upload or replace title poster
+      description: |-
+        JPEG, PNG and WebP content is validated from actual bytes, independently of
+        the declared file media type or filename suffix. At most 40 million decoded pixels
+        across all frames. Identical current SHA-256 returns noop and preserves poster
+        metadata. Changed bytes replace current_poster. The first poster returns 201/created;
+        replacement returns 200/updated; identical current bytes return 200/noop.
+        Title identity, metadata_fingerprint and metadata_updated_at remain unchanged.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PosterUpload'
+            encoding:
+              file:
+                contentType: image/jpeg, image/png, image/webp
+      responses:
+        '200':
+          description: 'Existing current poster: updated for different image file bytes; noop for identical
+            current bytes. Replacement preserves title identity and metadata freshness.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PosterResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '201':
+          description: First current file for this target created (outcome created).
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/PosterResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - created
+        '401':
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Unknown entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Published content or resource identity conflict; no partial changes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File exceeds configured byte limit, or request exceeds file limit plus 64 KiB 
+            multipart overhead
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Unsupported, empty, corrupted or invalid image content or request media type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid multipart fields, filename or incomplete body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Publication unavailable or unexpected server error; no internal details exposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      parameters:
+      - name: title_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      security:
+      - PublishToken: []
+  /api/v1/episodes/{episode_id}/subtitles:
+    put:
+      tags:
+      - Publish
+      operationId: putSubtitle
+      summary: Upload ASS subtitles for an episode
+      description: |-
+        SEASONED, FLAT and movie episodes share this endpoint. A valid UTF-8 ASS file
+        (optional UTF-8 BOM) with a matching .ass filename suffix (case-insensitive) is required.
+        ASS requires Script Info/ScriptType and Events/Format with a nonempty Dialogue and
+        valid increasing start/end times. SHA-256 covers exact original bytes without text
+        or newline normalization. Identical current SHA-256 returns noop and preserves all
+        current revision metadata, including filename, release label, changelog and timestamp.
+        Changed bytes create an immutable revision UUID and the next revision number.
+        A -> B -> A creates three revisions. The first revision returns 201/created;
+        subsequent changed bytes return 200/updated; identical current bytes return 200/noop.
+        FLAT/movie episodes require no season. File uploads never change metadata_fingerprint
+        or metadata_updated_at.
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubtitleUpload'
+            encoding:
+              file:
+                contentType: application/octet-stream
+      responses:
+        '200':
+          description: 'Existing current file: updated for different bytes; noop for identical current bytes.
+            Subtitle updated creates a new immutable revision.'
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/SubtitleResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - updated
+                      - noop
+        '201':
+          description: First current file for this target created (outcome created).
+          content:
+            application/json:
+              schema:
+                allOf:
+                - $ref: '#/components/schemas/SubtitleResult'
+                - properties:
+                    outcome:
+                      enum:
+                      - created
+        '401':
+          description: Missing or invalid Bearer token
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+          headers:
+            WWW-Authenticate:
+              schema:
+                type: string
+                const: Bearer
+        '404':
+          description: Unknown entity
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '409':
+          description: Published content or resource identity conflict; no partial changes.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '413':
+          description: File exceeds configured byte limit, or request exceeds file limit plus 64 KiB 
+            multipart overhead
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '415':
+          description: Unsupported, empty, corrupted or invalid ASS content, filename extension, encoding
+            or request media type.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '422':
+          description: Invalid multipart fields, filename or incomplete body
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '500':
+          description: Publication unavailable or unexpected server error; no internal details exposed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        '503':
+          description: Temporarily unavailable or commit outcome uncertain; retry the identical request 
+            with backoff. It may already have committed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+      parameters:
+      - name: episode_id
+        in: path
+        required: true
+        schema:
+          type: string
+          format: uuid
+      security:
+      - PublishToken: []
+components:
+  securitySchemes:
+    PublishToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Random shared publisher token; TLS required.
+  parameters:
+    TitleId:
+      name: title_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    EpisodeId:
+      name: episode_id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+  responses:
+    Unauthorized:
+      description: Missing, invalid or unconfigured token. Includes WWW-Authenticate Bearer.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            const: Bearer
+    NotFound:
+      description: Parent title or stable Episode target does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Conflict:
+      description: Identity ownership conflict, alias rebinding, selected-order change, episode remapping
+        or placement collision. No partial changes to this request.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Invalid:
+      description: Invalid metadata or IDs, mismatched media types, unsupported season-mapping kind for 
+        the selected order, or invalid multipart fields or filename.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    TooLarge:
+      description: File or request exceeds configured upload size limit (default file limit 25 MiB).
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unsupported:
+      description: Invalid/unsupported file content, subtitle format or encoding; no new revision 
+        created.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    Unavailable:
+      description: Temporarily unavailable or commit outcome uncertain; retry the identical request with 
+        backoff.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+    InternalError:
+      description: Unexpected server error. No secrets or internal paths exposed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+  schemas:
+    EpisodeOrder:
+      additionalProperties: false
+      allOf:
+      - else:
+          properties:
+            group_id:
+              type: 'null'
+        if:
+          properties:
+            kind:
+              const: episode_group
+        then:
+          properties:
+            group_id:
+              minLength: 1
+              type: string
+          required:
+          - group_id
+      properties:
+        provider:
+          default: tmdb
+          pattern: ^[a-z][a-z0-9_-]{0,31}$
+          title: Provider
+          type: string
+        kind:
+          enum:
+          - standard
+          - episode_group
+          title: Kind
+          type: string
+        group_id:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Group Id
+      required:
+      - kind
+      title: EpisodeOrder
+      type: object
+    ProviderMapping:
+      additionalProperties: false
+      properties:
+        provider:
+          pattern: ^[a-z][a-z0-9_-]{0,31}$
+          title: Provider
+          type: string
+        media_type:
+          enum:
+          - tv
+          - movie
+          title: Media Type
+          type: string
+        external_id:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: External Id
+          type: string
+      required:
+      - provider
+      - media_type
+      - external_id
+      title: ProviderMapping
+      type: object
+    TitlePublish:
+      additionalProperties: false
+      allOf:
+      - if:
+          properties:
+            media_type:
+              const: movie
+        then:
+          properties:
+            episode_structure:
+              const: FLAT
+            episode_order:
+              properties:
+                kind:
+                  const: standard
+      properties:
+        mappings:
+          items:
+            $ref: '#/components/schemas/ProviderMapping'
+          maxItems: 100
+          minItems: 1
+          title: Mappings
+          type: array
+        media_type:
+          enum:
+          - tv
+          - movie
+          title: Media Type
+          type: string
+        episode_structure:
+          enum:
+          - SEASONED
+          - FLAT
+          title: Episode Structure
+          type: string
+        episode_order:
+          $ref: '#/components/schemas/EpisodeOrder'
+        title_english:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Title English
+          type: string
+        title_romaji:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Title Romaji
+        year:
+          anyOf:
+          - maximum: 9999
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Year
+        original_language:
+          pattern: ^[a-z]{2,3}$
+          title: Original Language
+          type: string
+        description_english:
+          anyOf:
+          - maxLength: 10000
+            type: string
+          - type: 'null'
+          default: null
+          title: Description English
+      required:
+      - mappings
+      - media_type
+      - episode_structure
+      - episode_order
+      - title_english
+      - original_language
+      title: TitlePublish
+      type: object
+    EpisodePublish:
+      additionalProperties: false
+      anyOf:
+      - properties:
+          id:
+            type: string
+        required:
+        - id
+      - properties:
+          mappings:
+            minItems: 1
+        required:
+        - mappings
+      - properties:
+          publisher_key:
+            minLength: 1
+            type: string
+        required:
+        - publisher_key
+      properties:
+        id:
+          anyOf:
+          - format: uuid
+            type: string
+          - type: 'null'
+          default: null
+          title: Id
+        mappings:
+          items:
+            $ref: '#/components/schemas/ProviderMapping'
+          maxItems: 100
+          title: Mappings
+          type: array
+        publisher_key:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Publisher Key
+        episode_number:
+          maximum: 2147483647
+          minimum: 0
+          title: Episode Number
+          type: integer
+        name_english:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Name English
+      required:
+      - episode_number
+      title: EpisodePublish
+      type: object
+    SeasonMapping:
+      additionalProperties: false
+      properties:
+        provider:
+          pattern: ^[a-z][a-z0-9_-]{0,31}$
+          title: Provider
+          type: string
+        media_type:
+          enum:
+          - tv
+          - movie
+          title: Media Type
+          type: string
+        external_id:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: External Id
+          type: string
+        kind:
+          default: season
+          enum:
+          - season
+          - episode_group_subgroup
+          title: Kind
+          type: string
+      required:
+      - provider
+      - media_type
+      - external_id
+      title: SeasonMapping
+      type: object
+    SeasonPublish:
+      additionalProperties: false
+      properties:
+        id:
+          anyOf:
+          - format: uuid
+            type: string
+          - type: 'null'
+          default: null
+          title: Id
+        mappings:
+          items:
+            $ref: '#/components/schemas/SeasonMapping'
+          maxItems: 100
+          minItems: 1
+          title: Mappings
+          type: array
+        season_number:
+          maximum: 2147483647
+          minimum: 0
+          title: Season Number
+          type: integer
+        name_english:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Name English
+        year:
+          anyOf:
+          - maximum: 9999
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Year
+        episodes:
+          items:
+            $ref: '#/components/schemas/EpisodePublish'
+          maxItems: 1000
+          title: Episodes
+          type: array
+      required:
+      - mappings
+      - season_number
+      title: SeasonPublish
+      type: object
+    FlatPublish:
+      additionalProperties: false
+      properties:
+        episodes:
+          items:
+            $ref: '#/components/schemas/EpisodePublish'
+          maxItems: 1000
+          minItems: 1
+          title: Episodes
+          type: array
+      required:
+      - episodes
+      title: FlatPublish
+      type: object
+    CurrentPoster:
+      additionalProperties: false
+      properties:
+        sha256:
+          pattern: ^[0-9a-f]{64}$
+          title: Sha256
+          type: string
+        content_type:
+          enum:
+          - image/jpeg
+          - image/png
+          - image/webp
+          title: Content Type
+          type: string
+        size_bytes:
+          minimum: 1
+          title: Size Bytes
+          type: integer
+      required:
+      - sha256
+      - content_type
+      - size_bytes
+      title: CurrentPoster
+      type: object
+    CurrentSubtitle:
+      additionalProperties: false
+      properties:
+        id:
+          format: uuid
+          title: Id
+          type: string
+        revision_number:
+          minimum: 1
+          title: Revision Number
+          type: integer
+        sha256:
+          pattern: ^[0-9a-f]{64}$
+          title: Sha256
+          type: string
+        original_filename:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Original Filename
+          type: string
+        release_label:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Release Label
+          type: string
+        changelog:
+          anyOf:
+          - type: string
+          - type: 'null'
+          title: Changelog
+        created_at:
+          format: date-time
+          title: Created At
+          type: string
+      required:
+      - id
+      - revision_number
+      - sha256
+      - original_filename
+      - release_label
+      - changelog
+      - created_at
+      title: CurrentSubtitle
+      type: object
+    EpisodeSnapshot:
+      additionalProperties: false
+      properties:
+        id:
+          format: uuid
+          title: Id
+          type: string
+        title_id:
+          format: uuid
+          title: Title Id
+          type: string
+        season_id:
+          anyOf:
+          - format: uuid
+            type: string
+          - type: 'null'
+          title: Season Id
+        mappings:
+          items:
+            $ref: '#/components/schemas/ProviderMapping'
+          title: Mappings
+          type: array
+        publisher_key:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          title: Publisher Key
+        episode_number:
+          maximum: 2147483647
+          minimum: 0
+          title: Episode Number
+          type: integer
+        name_english:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          title: Name English
+        current_subtitle:
+          anyOf:
+          - $ref: '#/components/schemas/CurrentSubtitle'
+          - type: 'null'
+      required:
+      - id
+      - title_id
+      - season_id
+      - mappings
+      - publisher_key
+      - episode_number
+      - name_english
+      - current_subtitle
+      title: EpisodeSnapshot
+      type: object
+    SeasonSnapshot:
+      additionalProperties: false
+      properties:
+        id:
+          format: uuid
+          title: Id
+          type: string
+        title_id:
+          format: uuid
+          title: Title Id
+          type: string
+        mappings:
+          items:
+            $ref: '#/components/schemas/SeasonMapping'
+          title: Mappings
+          type: array
+        season_number:
+          maximum: 2147483647
+          minimum: 0
+          title: Season Number
+          type: integer
+        name_english:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          title: Name English
+        year:
+          anyOf:
+          - type: integer
+          - type: 'null'
+          title: Year
+        episodes:
+          items:
+            $ref: '#/components/schemas/EpisodeSnapshot'
+          title: Episodes
+          type: array
+      required:
+      - id
+      - title_id
+      - mappings
+      - season_number
+      - name_english
+      - year
+      - episodes
+      title: SeasonSnapshot
+      type: object
+    TitleSnapshot:
+      additionalProperties: false
+      allOf:
+      - if:
+          properties:
+            media_type:
+              const: movie
+        then:
+          properties:
+            episode_structure:
+              const: FLAT
+            episode_order:
+              properties:
+                kind:
+                  const: standard
+      properties:
+        mappings:
+          items:
+            $ref: '#/components/schemas/ProviderMapping'
+          maxItems: 100
+          minItems: 1
+          title: Mappings
+          type: array
+        media_type:
+          enum:
+          - tv
+          - movie
+          title: Media Type
+          type: string
+        episode_structure:
+          enum:
+          - SEASONED
+          - FLAT
+          title: Episode Structure
+          type: string
+        episode_order:
+          $ref: '#/components/schemas/EpisodeOrder'
+        title_english:
+          maxLength: 255
+          minLength: 1
+          pattern: \S
+          title: Title English
+          type: string
+        title_romaji:
+          anyOf:
+          - maxLength: 255
+            minLength: 1
+            pattern: \S
+            type: string
+          - type: 'null'
+          default: null
+          title: Title Romaji
+        year:
+          anyOf:
+          - maximum: 9999
+            minimum: 1
+            type: integer
+          - type: 'null'
+          default: null
+          title: Year
+        original_language:
+          pattern: ^[a-z]{2,3}$
+          title: Original Language
+          type: string
+        description_english:
+          anyOf:
+          - maxLength: 10000
+            type: string
+          - type: 'null'
+          default: null
+          title: Description English
+        id:
+          format: uuid
+          title: Id
+          type: string
+        metadata_fingerprint:
+          pattern: ^[0-9a-f]{64}$
+          title: Metadata Fingerprint
+          type: string
+        metadata_updated_at:
+          format: date-time
+          title: Metadata Updated At
+          type: string
+        current_poster:
+          anyOf:
+          - $ref: '#/components/schemas/CurrentPoster'
+          - type: 'null'
+        seasons:
+          items:
+            $ref: '#/components/schemas/SeasonSnapshot'
+          title: Seasons
+          type: array
+        episodes:
+          items:
+            $ref: '#/components/schemas/EpisodeSnapshot'
+          title: Episodes
+          type: array
+      required:
+      - mappings
+      - media_type
+      - episode_structure
+      - episode_order
+      - title_english
+      - original_language
+      - id
+      - metadata_fingerprint
+      - metadata_updated_at
+      - current_poster
+      - seasons
+      - episodes
+      title: TitleSnapshot
+      type: object
+    PublishResult:
+      additionalProperties: false
+      properties:
+        outcome:
+          enum:
+          - created
+          - updated
+          - noop
+          title: Outcome
+          type: string
+        title:
+          $ref: '#/components/schemas/TitleSnapshot'
+      required:
+      - outcome
+      - title
+      title: PublishResult
+      type: object
+    ErrorDetail:
+      additionalProperties: false
+      properties:
+        code:
+          title: Code
+          type: string
+        message:
+          title: Message
+          type: string
+      required:
+      - code
+      - message
+      title: ErrorDetail
+      type: object
+    ErrorResponse:
+      additionalProperties: false
+      properties:
+        error:
+          $ref: '#/components/schemas/ErrorDetail'
+      required:
+      - error
+      title: ErrorResponse
+      type: object
+    PosterUpload:
+      additionalProperties: false
+      properties:
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+      required:
+      - file
+      title: PosterUpload
+      type: object
+    Poster:
+      additionalProperties: false
+      properties:
+        title_id:
+          format: uuid
+          title: Title Id
+          type: string
+        sha256:
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+          type: string
+        size_bytes:
+          minimum: 1
+          title: Size Bytes
+          type: integer
+        content_type:
+          enum:
+          - image/jpeg
+          - image/png
+          - image/webp
+          title: Content Type
+          type: string
+      required:
+      - title_id
+      - sha256
+      - size_bytes
+      - content_type
+      title: Poster
+      type: object
+    PosterResult:
+      additionalProperties: false
+      properties:
+        outcome:
+          enum:
+          - created
+          - updated
+          - noop
+          title: Outcome
+          type: string
+        poster:
+          $ref: '#/components/schemas/Poster'
+      required:
+      - outcome
+      - poster
+      title: PosterResult
+      type: object
+    SubtitleUpload:
+      additionalProperties: false
+      properties:
+        file:
+          contentMediaType: application/octet-stream
+          title: File
+          type: string
+        release_label:
+          maxLength: 200
+          minLength: 1
+          pattern: \S
+          title: Release Label
+          type: string
+        changelog:
+          anyOf:
+          - maxLength: 4000
+            type: string
+          - type: 'null'
+          default: null
+          title: Changelog
+      required:
+      - file
+      - release_label
+      title: SubtitleUpload
+      type: object
+    SubtitleRevision:
+      additionalProperties: false
+      properties:
+        id:
+          format: uuid
+          title: Id
+          type: string
+        target:
+          $ref: '#/components/schemas/SubtitleTarget'
+        revision_number:
+          minimum: 1
+          title: Revision Number
+          type: integer
+        language:
+          const: cs
+          title: Language
+          type: string
+        original_filename:
+          maxLength: 255
+          minLength: 1
+          title: Original Filename
+          type: string
+        format:
+          const: ass
+          title: Format
+          type: string
+        sha256:
+          pattern: ^[a-f0-9]{64}$
+          title: Sha256
+          type: string
+        size_bytes:
+          minimum: 1
+          title: Size Bytes
+          type: integer
+        release_label:
+          maxLength: 200
+          minLength: 1
+          title: Release Label
+          type: string
+        changelog:
+          anyOf:
+          - maxLength: 4000
+            type: string
+          - type: 'null'
+          title: Changelog
+        created_at:
+          format: date-time
+          title: Created At
+          type: string
+      required:
+      - id
+      - target
+      - revision_number
+      - language
+      - original_filename
+      - format
+      - sha256
+      - size_bytes
+      - release_label
+      - changelog
+      - created_at
+      title: SubtitleRevision
+      type: object
+    SubtitleResult:
+      additionalProperties: false
+      properties:
+        outcome:
+          enum:
+          - created
+          - updated
+          - noop
+          title: Outcome
+          type: string
+        revision:
+          $ref: '#/components/schemas/SubtitleRevision'
+      required:
+      - outcome
+      - revision
+      title: SubtitleResult
+      type: object
+    Error:
+      type: object
+      additionalProperties: false
+      required:
+      - error
+      properties:
+        error:
+          type: object
+          additionalProperties: false
+          required:
+          - code
+          - message
+          properties:
+            code:
+              type: string
+            message:
+              type: string
+    SubtitleTarget:
+      additionalProperties: false
+      properties:
+        title_id:
+          format: uuid
+          title: Title Id
+          type: string
+        episode_id:
+          format: uuid
+          title: Episode Id
+          type: string
+      required:
+      - title_id
+      - episode_id
+      title: SubtitleTarget
+      type: object
+x-metadata-fingerprint:
+  canonicalization: RFC8785
+  algorithm: SHA-256
+  fields:
+    title:
+    - mappings
+    - media_type
+    - episode_structure
+    - episode_order
+    - title_english
+    - title_romaji
+    - year
+    - original_language
+    - description_english
+    - seasons
+    - episodes
+    season:
+    - mappings
+    - season_number
+    - name_english
+    - year
+    - episodes
+    episode:
+    - mappings
+    - publisher_key
+    - episode_number
+    - name_english
+  array_order: Mappings sorted by provider/media_type/kind/external_id; seasons by number DESC then 
+    canonical mappings; episodes by number DESC then canonical mappings/publisher_key. Structural nesting
+    represents placement; no UUIDs projected.

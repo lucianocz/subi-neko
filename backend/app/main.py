@@ -24,6 +24,7 @@ import app.jobs.handlers.inspect_mkv       # noqa: F401
 import app.jobs.handlers.extract_subtitles # noqa: F401
 import app.jobs.handlers.aggregate_speakers  # noqa: F401
 import app.jobs.handlers.publish_project     # noqa: F401
+import app.jobs.handlers.publish_web         # noqa: F401
 import app.jobs.handlers.scan_project        # noqa: F401
 import app.jobs.handlers.plan_translation_chunks  # noqa: F401
 import app.jobs.handlers.translate_chunk          # noqa: F401
@@ -144,6 +145,9 @@ def create_app() -> FastAPI:
     app.include_router(metadata.router, prefix="/api")
     app.include_router(import_.router, prefix="/api")
     app.include_router(jobs.router, prefix="/api")
+    from app.api.routes.web_publishing import router as web_router, metadata_router
+    app.include_router(web_router, prefix="/api")
+    app.include_router(metadata_router, prefix="/api")
 
     # Serve frontend static files (populated by Docker build)
     static_dir = os.path.join(os.path.dirname(__file__), "..", "static")

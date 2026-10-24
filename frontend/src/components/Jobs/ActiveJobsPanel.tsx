@@ -21,6 +21,7 @@ const JOB_LABELS: Record<string, string> = {
   review_chunk_final: 'Final review',
   resolve_style_fonts: 'Resolve fonts',
   publish_project: 'Publish',
+  publish_web: 'Publish to Web',
   // Retired per-file output jobs — still labelled for old job history.
   render_output_ass: 'Render ASS',
   mux_output_mkv: 'Mux MKV',

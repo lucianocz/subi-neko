@@ -169,6 +169,8 @@ def test_initial_style_bible_receives_rich_separately_budgeted_character_context
     )
     assert result["status"] == "succeeded"
     user = captured["user"]
+    assert captured["task"] == "initial_style_bible"
+    assert captured["project_id"] == project_id and captured["file_id"] is None
     assert "external_id: c1" in user and "canonical_name: Aria" in user
     for expected in ("gender: female", "role: MAIN", "aliases: Hero, Princess",
                      "character_type: Human", "voice_actor: Jane Actor",

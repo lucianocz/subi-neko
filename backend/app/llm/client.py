@@ -43,6 +43,8 @@ TASK_TEMPERATURES: dict[str, float] = {
     "repair": 0.1,
     "analyze": 0.2,
     "style_bible": 0.2,
+    "initial_style_bible": 0.2,
+    "web_description": 0.3,
 }
 
 _MODES = ("json_schema", "json_object", "text")
@@ -197,6 +199,7 @@ def complete(
     response_validator: Callable[[BaseModel], str | None] | None = None,
     max_transient_retries: int = 3,
     backoff_base_seconds: float = 1.0,
+    timeout_seconds: float | None = None,
 ) -> tuple[BaseModel, LlmCallStats]:
     """Run one structured LLM completion and return the validated response.
 
@@ -208,6 +211,7 @@ def complete(
     client = openai.OpenAI(
         api_key=options.openai_api_key or "no-key",
         base_url=base_url,
+        **({"timeout": timeout_seconds, "max_retries": 0} if timeout_seconds is not None else {}),
     )
     cache_key = (base_url, model)
 

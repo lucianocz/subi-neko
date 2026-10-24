@@ -271,7 +271,7 @@ def generate_style_bible(
 
     try:
         response, stats = llm_client.complete(
-            task="style_bible",
+            task="initial_style_bible",
             model=model,
             system=system_prompt,
             user=user_message,
@@ -282,7 +282,8 @@ def generate_style_bible(
                 ctx.options.llm_max_completion_tokens,
             ),
             project_id=project_id,
-            file_id=sample_file_id,
+            # The sample is context, not an episode-level operation.
+            file_id=None,
         )
     except llm_client.LlmError as exc:
         return JobResult(status="failed", result=None,

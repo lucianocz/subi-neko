@@ -1,6 +1,17 @@
 import { useQuery } from '@tanstack/react-query';
 import client from '../api/client';
 
+export interface LlmUsage {
+  category: 'Episodes' | 'Other'; model: string; calls: number;
+  prompt_tokens: number; completion_tokens: number; cost_usd: number | null;
+}
+
+export function useProjectLlmMetrics(projectId: number, enabled: boolean) {
+  return useQuery({ queryKey: ['projects', projectId, 'llm-metrics'], enabled,
+    queryFn: async () => (await client.get<LlmUsage[]>(`/projects/${projectId}/llm-metrics`)).data,
+    refetchInterval: enabled ? 15_000 : false });
+}
+
 export interface FileMetrics {
   file_id: number;
   filename: string;

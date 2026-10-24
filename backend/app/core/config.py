@@ -1,7 +1,7 @@
-import logging
 from pathlib import Path
+from urllib.parse import urlsplit
 
-from pydantic import computed_field
+from pydantic import Field, computed_field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Resolve .env from the project root regardless of working directory
@@ -16,6 +16,21 @@ class Settings(BaseSettings):
     )
 
     debug: bool = False
+    subineko_web_url: str = ""
+    subineko_web_token: str = Field(default="", repr=False)
+    tmdb_api_token: str = Field(default="", repr=False)
+
+    @property
+    def web_publishing_available(self) -> bool:
+        try:
+            url = urlsplit(self.subineko_web_url.strip())
+            return bool(url.scheme in ("http", "https") and url.hostname and not url.username
+                        and not url.password and not url.query and not url.fragment
+                        and url.path in ("", "/") and (url.port is None or 0 < url.port <= 65535)
+                        and self.subineko_web_token.strip()
+                        and all(33 <= ord(c) <= 126 for c in self.subineko_web_token))
+        except ValueError:
+            return False
 
     import_root: Path = Path("./media/import")
     output_root: Path = Path("./media/output")

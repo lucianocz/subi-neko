@@ -12,7 +12,7 @@ from app.db.models import JobRecord, Project, ProjectStatus
 
 from app.ws.connection_manager import connection_manager
 from app.orchestrator.project_orchestrator import orchestrate_project
-from app.orchestrator.file_orchestrator import orchestrate_file
+from app.orchestrator.file_orchestrator import orchestrate_file as orchestrate_file
 from app.orchestrator.publish import PUBLISH_JOB_TYPE, reconcile_publish_state
 
 logger = logging.getLogger(__name__)
@@ -77,12 +77,18 @@ async def orchestrate_on_job_complete(
         except Exception:
             logger.exception("Publish reconciliation failed after job id=%d", job_id)
 
+    if job_type == "publish_web":
+        from app.publishing.service import reconcile as reconcile_web
+        await reconcile_web(AsyncSessionLocal)
+
 
 async def sweep_all_projects(enqueue_fn: EnqueueFn) -> None:
     """Periodic safety sweep — find all active projects and orchestrate them.
 
     Publishing is never started here: the sweep only reconciles a publish run
     that died without recording its outcome (output is explicit-only)."""
+    from app.publishing.service import reconcile as reconcile_web
+    await reconcile_web(AsyncSessionLocal)
     try:
         for pid in await reconcile_publish_state():
             await connection_manager.broadcast("project_updated", {"project_id": pid})

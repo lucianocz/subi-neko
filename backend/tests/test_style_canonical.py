@@ -255,13 +255,24 @@ def test_source_ass_ignores_option(enabled):  # G
     assert _render(style, "original", enabled) == ("Arial", 42.0)
 
 
-def test_both_translated_paths_pass_the_option():
-    """Download route and render job must both forward the option to build_ass."""
-    import inspect
-    from app.api.routes import projects
-    from app.jobs.handlers import publish_project
-    for mod in (projects, publish_project):
-        assert "use_font_replacements=" in inspect.getsource(mod)
+@pytest.mark.parametrize("enabled", [True, False])
+def test_both_translated_paths_pass_the_option(session_factory, enabled):
+    """Shared database export honors the option used by downloads and WEB."""
+    from app.db.options import AppOptions
+    from app.subs.ass_export import export_ass
+    with session_factory() as session:
+        pid = _project(session)
+        fid = _file(session, pid)
+        session.add(Subtitle(file_id=fid))
+        ids = link_file_styles(session, fid, pid, [_style()])
+        style = session.get(SubtitleStyle, ids[0])
+        style.replacement_font_name = "Noto Sans"
+        style.replacement_font_size = 30
+        session.commit()
+        _, content = export_ass(session, session.get(File, fid), AppOptions(replace_incompatible_fonts=enabled))
+        rendered = pysubs2.SSAFile.from_string(content.decode("utf-8"), format_="ass")
+        assert rendered.styles["Default"].fontname == ("Noto Sans" if enabled else "Arial")
+        assert rendered.styles["Default"].fontsize == (30 if enabled else 42)
 
 
 # --- J: event -> style references -------------------------------------------

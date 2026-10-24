@@ -1,8 +1,9 @@
 import { Center, Group, Loader, Modal, ScrollArea, Table, Text } from '@mantine/core';
 import { ChartLine } from '@phosphor-icons/react';
-import { useProjectMetrics } from '../hooks/useProjectMetrics';
+import { useProjectLlmMetrics, useProjectMetrics } from '../hooks/useProjectMetrics';
 import type { FileMetrics } from '../hooks/useProjectMetrics';
-import { summarizeMetrics } from '../utils/metricsSummary';
+import { summarizeMetrics, summarizeOtherUsage } from '../utils/metricsSummary';
+import type { OtherMetrics } from '../utils/metricsSummary';
 
 function pct(value: number | null): string {
   return value === null ? '—' : `${(value * 100).toFixed(1)}%`;
@@ -64,8 +65,24 @@ function avgNum(value: number | null, digits = 1): string {
   return value === null ? '—' : `~${value.toFixed(digits)}`;
 }
 
-function SummaryRow({ rows }: { rows: FileMetrics[] }) {
-  const s = summarizeMetrics(rows);
+function OtherRow({ other }: { other: OtherMetrics | undefined }) {
+  return (
+    <Table.Tr>
+      <Table.Td><Text size="sm">Other</Text></Table.Td>
+      <Table.Td />
+      <Table.Td />
+      <Table.Td />
+      <Table.Td />
+      <Table.Td />
+      <Table.Td />
+      <Table.Td><Text size="sm" ta={'end'} c="dimmed">{cost(other?.llm_cost_usd ?? null)}</Text></Table.Td>
+      <Table.Td><Text size="xs" ta={'end'} c="dimmed">{other ? `${(other.tokens / 1000).toFixed(0)}k` : '—'}</Text></Table.Td>
+    </Table.Tr>
+  );
+}
+
+function SummaryRow({ rows, other }: { rows: FileMetrics[]; other: OtherMetrics | undefined }) {
+  const s = summarizeMetrics(rows, other);
   const qaZero = (s.qa_blockers ?? 0) + (s.qa_warnings ?? 0) + (s.qa_info ?? 0) === 0;
   return (
     <Table.Tr className="metrics-summary">
@@ -95,8 +112,8 @@ function SummaryRow({ rows }: { rows: FileMetrics[] }) {
           {s.mean_confidence === null ? '—' : `~${pct(s.mean_confidence)}`}
         </Text>
       </Table.Td>
-      <Table.Td><Text size="sm" ta={'end'} fw={600}>Σ {cost(s.llm_cost_usd)}</Text></Table.Td>
-      <Table.Td><Text size="xs" ta={'end'} fw={600}>Σ {(s.tokens / 1000).toFixed(0)}k</Text></Table.Td>
+      <Table.Td><Text size="sm" ta={'end'} fw={600}>Σ {cost(other ? s.llm_cost_usd : null)}</Text></Table.Td>
+      <Table.Td><Text size="xs" ta={'end'} fw={600}>Σ {other ? `${(s.tokens / 1000).toFixed(0)}k` : '—'}</Text></Table.Td>
     </Table.Tr>
   );
 }
@@ -109,6 +126,8 @@ interface MetricsDialogProps {
 
 export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps) {
   const { data: metrics, isLoading } = useProjectMetrics(projectId, opened);
+  const usage = useProjectLlmMetrics(projectId, opened);
+  const other = usage.data ? summarizeOtherUsage(usage.data) : undefined;
 
   return (
     <Modal
@@ -124,9 +143,9 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
         pass rewrote (and how heavily, as mean edit distance). QA counts are lifetime
         (including resolved).
       </Text>
-      {isLoading ? (
+      {isLoading || usage.isLoading ? (
         <Center py="xl"><Loader size="sm" /></Center>
-      ) : !metrics || metrics.length === 0 ? (
+      ) : !metrics ? (
         <Center py="xl">
           <Text size="sm" c="dimmed">No metrics yet — they appear as soon as a file has translated lines and update as it progresses.</Text>
         </Center>
@@ -148,9 +167,10 @@ export function MetricsDialog({ projectId, opened, onClose }: MetricsDialogProps
             </Table.Thead>
             <Table.Tbody>
               {metrics.map((m) => <MetricsRow key={m.file_id} m={m} />)}
+              <OtherRow other={other} />
             </Table.Tbody>
             <Table.Tfoot style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
-              <SummaryRow rows={metrics} />
+              <SummaryRow rows={metrics} other={other} />
             </Table.Tfoot>
           </Table>
         </ScrollArea.Autosize>

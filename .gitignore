@@ -9,6 +9,7 @@ dist/
 build/
 .pytest_cache/
 .mypy_cache/
+.tmp/
 *.db
 *.sqlite3
 

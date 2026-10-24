@@ -97,6 +97,9 @@ export function useJobSocket() {
           queryClient.invalidateQueries({ queryKey: ['jobs'] });
           if (msg.event === 'job_created' || msg.event === 'job_update') {
             applyChunkJobUpdate(queryClient, msg.data);
+            if (msg.data.job_type === 'publish_web' && msg.data.project_id != null) {
+              queryClient.invalidateQueries({ queryKey: ['projects', msg.data.project_id, 'web'] });
+            }
           }
           // Do NOT invalidate ['projects'] here — that cascades to file refetches.
           // project_updated fires after orchestration when state is actually settled.

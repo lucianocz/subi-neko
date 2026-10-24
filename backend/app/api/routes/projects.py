@@ -3,7 +3,6 @@ import json
 import logging
 import re
 from datetime import datetime
-from pathlib import Path
 from typing import Literal
 from urllib.parse import quote
 
@@ -18,7 +17,6 @@ from app.db import options as options_store
 from app.db.models import (
     File,
     FileAnalysis,
-    FileBranding,
     FileBlockingReason,
     FileQualityMetric,
     FileStatus,
@@ -35,7 +33,6 @@ from app.db.models import (
     ProjectStatus,
     QaItem,
     SubtitleChunk,
-    Subtitle,
     SubtitleEvent,
     SubtitleStyle,
     TranslationMemoryEntry,
@@ -67,8 +64,9 @@ from app.orchestrator.project_orchestrator import (
     orchestrate_project,
     pick_style_bible_sample_file_id,
 )
-from app.subs.ass_rendering import HEADER_NOTICE, build_ass
-from app.subs.branding import BrandingError, spec_from_row
+from app.subs.ass_export import export_ass
+from app.subs.ass_export import subtitle_download_name as subtitle_download_name
+from app.subs.branding import BrandingError
 from app.subs.readability import compute_cps
 from app.subs.watched_words import count_watched_matches
 from app.ws.connection_manager import connection_manager
@@ -745,12 +743,6 @@ _RETRANSLATION_CHUNK_JOB_TYPES = {
 }
 
 
-def subtitle_download_name(media_filename: str, variant: str, source_lang_code: str = "en") -> str:
-    """`<media basename>.<source code>.ass` for the source, `<basename>.ass` for the translation."""
-    stem = Path(media_filename).stem
-    return f"{stem}.{source_lang_code}.ass" if variant == "original" else f"{stem}.ass"
-
-
 @router.get("/{project_id}/files/{file_id}/subtitles/{variant}")
 async def download_file_subtitles(
     project_id: int,
@@ -775,43 +767,16 @@ async def download_file_subtitles(
                 detail=f"{variant.capitalize()} subtitles are available from '{availability}' onwards",
             )
 
-        subtitle = await session.scalar(select(Subtitle).where(Subtitle.file_id == file_id))
-        if subtitle is None:
-            raise HTTPException(status_code=409, detail="Subtitles have not been extracted yet")
-        styles = list((await session.scalars(
-            select(SubtitleStyle)
-            .join(file_subtitle_styles, file_subtitle_styles.c.subtitle_style_id == SubtitleStyle.id)
-            .where(file_subtitle_styles.c.file_id == file_id)
-            .order_by(SubtitleStyle.id)
-        )).all())
-        events = list((await session.scalars(
-            select(SubtitleEvent)
-            .where(SubtitleEvent.file_id == file_id)
-            .order_by(SubtitleEvent.line_index)
-        )).all())
-
         opts = await options_store.asnapshot()
-        title = (opts.target_lang_name or "") if variant == "translated" else None
-        branding = spec_from_row(await session.scalar(
-            select(FileBranding).where(FileBranding.file_id == file_id)))
         try:
-            subs = build_ass(
-                subtitle,
-                styles,
-                events,
-                text_variant=variant,
-                title=title,
-                use_font_replacements=opts.replace_incompatible_fonts,
-                branding=branding,
-            )
-        except BrandingError as exc:
+            download_name, content = await session.run_sync(lambda s: export_ass(s, file, opts, variant))
+        except (BrandingError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    download_name = subtitle_download_name(file.filename, variant, opts.source_lang_code)
     encoded_name = quote(download_name)
     fallback_name = f"subtitles.{opts.source_lang_code}.ass" if variant == "original" else "subtitles.ass"
     return Response(
-        content=subs.to_string("ass", header_notice=HEADER_NOTICE).encode("utf-8"),
+        content=content,
         media_type="text/x-ssa",
         headers={
             "Content-Disposition": (
@@ -2879,6 +2844,15 @@ class FileMetricsOut(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     created_at: str
+
+
+@router.get("/{project_id}/llm-metrics")
+async def get_project_llm_metrics(project_id: int):
+    from app.llm.metrics import usage_statement
+
+    async with AsyncSessionLocal() as session:
+        await _get_project_or_404(session, project_id)
+        return [dict(row) for row in (await session.execute(usage_statement(project_id))).mappings()]
 
 
 @router.get("/{project_id}/metrics", response_model=list[FileMetricsOut])
