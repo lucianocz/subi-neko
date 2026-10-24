@@ -4,7 +4,9 @@ import logging
 
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.responses import Response
+from starlette.types import Scope
 
 from app.core.config import settings
 from app.core.database import verify_connection, close_db, run_migrations
@@ -99,32 +101,24 @@ async def lifespan(app: FastAPI):
     await close_db()
 
 
-def resolve_static_file(static_dir: str, rel_path: str) -> str | None:
-    """Return the real path of ``rel_path`` inside ``static_dir``, or None.
+class SpaStaticFiles(StaticFiles):
+    """Keep file lookup inside StaticFiles' traversal/symlink checks."""
 
-    None when the file doesn't exist or resolves (``..``, symlinks, absolute
-    paths, drive letters) outside the static root.
-    """
-    root = os.path.realpath(static_dir)
-    if "\x00" in rel_path:
-        return None
-    candidate = os.path.realpath(os.path.join(root, rel_path))
-    if os.path.commonpath([root, candidate]) != root:
-        return None
-    return candidate if os.path.isfile(candidate) else None
+    async def get_response(self, path: str, scope: Scope) -> Response:
+        try:
+            return await super().get_response(path, scope)
+        except StarletteHTTPException as exc:
+            if exc.status_code != 404:
+                raise
+        # Client routes get the same containment checks as ordinary static files.
+        return await super().get_response("index.html", scope)
 
 
 def mount_spa(app: FastAPI, static_dir: str) -> None:
     """Serve the built frontend: /assets plus an index.html SPA fallback."""
     app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="assets")
 
-    @app.get("/{full_path:path}", include_in_schema=False)
-    async def spa_fallback(full_path: str):
-        try:
-            target = resolve_static_file(static_dir, full_path)
-        except ValueError:  # e.g. different drives on Windows
-            target = None
-        return FileResponse(target or os.path.join(static_dir, "index.html"))
+    app.mount("/", SpaStaticFiles(directory=static_dir), name="spa")
 
 
 def create_app() -> FastAPI:

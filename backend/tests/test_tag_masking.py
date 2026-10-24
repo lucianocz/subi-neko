@@ -1,5 +1,10 @@
 from __future__ import annotations
 
+import os
+from pathlib import Path
+import subprocess
+import sys
+
 import pytest
 
 from app.subs.tag_masking import (
@@ -145,3 +150,31 @@ def test_force_unmask_collapses_duplicate_markers():
 def test_plain_text_strips_tags_and_escapes():
     assert plain_text(r"{\an8}Hello\NWorld") == "Hello World"
     assert plain_text(r"{{\shad0}Item/Skin") == "Item/Skin"
+
+
+@pytest.mark.parametrize("source,expected", [
+    ("before {unfinished", "before {unfinished"),
+    ("before {a{b} after", "before  after"),
+    ("a{}{}b", "ab"),
+    ("a}b{c}d{", "a}bd{"),
+    ("{a\nb}text", "text"),
+])
+def test_plain_text_preserves_malformed_brace_behavior(source, expected):
+    assert plain_text(source) == expected
+
+
+def test_plain_text_handles_large_unclosed_brace_run():
+    # Bound the old quadratic behavior without allowing a regression to hang CI.
+    backend = Path(__file__).resolve().parents[1]
+    subprocess.run(
+        [sys.executable, "-c", (
+            "from app.subs.tag_masking import plain_text; "
+            "text = '{' * 300_000 + 'keep me'; "
+            "assert plain_text(text) == text"
+        )],
+        cwd=backend,
+        env={**os.environ, "PYTHONPATH": str(backend)},
+        check=True,
+        capture_output=True,
+        timeout=10,
+    )
