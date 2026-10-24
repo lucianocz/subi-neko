@@ -166,7 +166,7 @@ function FinalQcWorkspace({
     try {
       saved = await branding.save(body);
     } catch (e) {
-      throw new Error(qcErrorDetail(e) ?? 'Could not save branding.');
+      throw new Error(qcErrorDetail(e) ?? 'Could not save branding.', { cause: e });
     }
     const changed = !savedBranding || savedBranding.enabled !== saved.enabled
       || savedBranding.template_filename !== saved.template_filename
