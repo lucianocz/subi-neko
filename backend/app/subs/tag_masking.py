@@ -29,7 +29,6 @@ _ESCAPE_RE = re.compile(r"\\[Nnh]")
 _ESCAPE_CHAR_RE = re.compile("[⏎␤␣]")
 
 _TAG_BLOCK_RE = re.compile(r"\{\\[^}]*\}")
-_ANY_BRACE_BLOCK_RE = re.compile(r"\{[^}]*\}")
 
 
 @dataclass
@@ -159,6 +158,20 @@ def _assemble(text: str, masked: MaskedLine) -> str:
 def plain_text(text: str) -> str:
     """Strip all ASS markup for display/context/heuristics: remove {...}
     blocks and turn escapes into spaces."""
-    cleaned = _ANY_BRACE_BLOCK_RE.sub("", text or "")
+    source = text or ""
+    parts: list[str] = []
+    cursor = 0
+    while True:
+        start = source.find("{", cursor)
+        if start == -1:
+            break
+        end = source.find("}", start + 1)
+        if end == -1:
+            # Keep an unclosed block literally, without retrying at every '{'.
+            break
+        parts.append(source[cursor:start])
+        cursor = end + 1
+    parts.append(source[cursor:])
+    cleaned = "".join(parts)
     cleaned = _ESCAPE_RE.sub(" ", cleaned)
     return cleaned.strip()
