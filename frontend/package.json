@@ -16,7 +16,7 @@
     "@mantine/notifications": "^9.7.3",
     "@phosphor-icons/react": "^2.1.10",
     "@tanstack/react-query": "^5.104.5",
-    "@tanstack/react-virtual": "^3.14.21",
+    "@tanstack/react-virtual": "^3.14.22",
     "axios": "^1.15.1",
     "jassub": "2.5.23",
     "react": "^19.3.1",
