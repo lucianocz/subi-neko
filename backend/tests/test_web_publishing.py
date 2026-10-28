@@ -314,7 +314,9 @@ async def test_save_restore_keys_versions_and_destination(env, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_movie_subset_repeated_noop_never_skips_upload(env):
+@pytest.mark.parametrize("save_ass", [True, False])
+async def test_movie_subset_repeated_noop_never_skips_upload(env, save_ass):
+    env.opts.publish_save_ass_files = save_ass
     setup(env)
     first = run(env)
     assert first["status"] == "succeeded", first
@@ -706,7 +708,9 @@ async def test_uncommitted_provisional_lock_can_be_reconciled_to_draft(env):
 
 
 @pytest.mark.asyncio
-async def test_download_and_web_export_identical_without_media(env, monkeypatch):
+@pytest.mark.parametrize("save_ass", [True, False])
+async def test_download_and_web_export_identical_without_media(env, monkeypatch, save_ass):
+    env.opts.publish_save_ass_files = save_ass
     from unittest.mock import AsyncMock
 
     from app.api.routes.projects import download_file_subtitles

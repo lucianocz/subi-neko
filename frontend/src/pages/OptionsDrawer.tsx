@@ -414,6 +414,12 @@ function OptionsForm({ options }: { options: OptionsMap }) {
           description="On (default): translated subtitles use each style's replacement font and size from Styles & fonts where set. Off: translated subtitles keep the source font and size; stored replacements are kept and apply again when re-enabled."
           defaultValue={options['REPLACE_INCOMPATIBLE_FONTS'] ?? '1'}
         />
+        <SaveOnChangeSwitch
+          optionKey="PUBLISH_SAVE_ASS_FILES"
+          label="Save ASS files during Publish"
+          description="Also save standalone .ass subtitle files alongside the published MKV files."
+          defaultValue={options['PUBLISH_SAVE_ASS_FILES'] ?? '1'}
+        />
         <SaveOnBlurNumber
           optionKey="MAX_ROW_CHARS"
           label="Max characters per row"

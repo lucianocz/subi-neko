@@ -40,6 +40,7 @@ async def get_options() -> dict[str, str | None]:
         "LLM_MAX_COMPLETION_TOKENS": str(opts.llm_max_completion_tokens),
         "TRANSLATE_KARAOKE": "1" if opts.translate_karaoke else "0",
         "REPLACE_INCOMPATIBLE_FONTS": "1" if opts.replace_incompatible_fonts else "0",
+        "PUBLISH_SAVE_ASS_FILES": "1" if opts.publish_save_ass_files else "0",
         "REQUIRE_STYLE_BIBLE": "1" if opts.require_style_bible else "0",
         "CPS_LIMIT": str(opts.cps_limit),
         "SOFT_CPS_LIMIT": str(opts.soft_cps_limit),

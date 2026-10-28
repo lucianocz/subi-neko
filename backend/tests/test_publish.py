@@ -408,6 +408,74 @@ async def test_files_stay_accepted_during_publish(env, mux):
 
 
 @pytest.mark.asyncio
+async def test_disabled_ass_export_preserves_mux_input_and_command(env, mux):
+    pid = seed_project(env)
+    assert (await publish_once(env, pid))["status"] == "succeeded"
+    out_dir = env.output_root / "series"
+    before = {p.name: p.read_bytes() for p in out_dir.iterdir()}
+    commands = list(mux.calls)
+    # Move baseline sidecars outside output to test a fresh MKV-only publication.
+    for path in out_dir.glob("*.ass"):
+        path.rename(env.tmp / path.name)
+
+    result = await publish_once(env, pid, publish_save_ass_files=False)
+
+    assert result["status"] == "succeeded", result
+    assert sorted(p.name for p in out_dir.iterdir()) == ["ep1.mkv", "ep2.mkv"]
+    assert mux.calls[2:] == commands
+    for rel in ("ep1", "ep2"):
+        content = (out_dir / f"{rel}.mkv").read_bytes()
+        assert content == before[f"{rel}.mkv"]
+        assert content.split(b"||", 1)[1] == before[f"{rel}.ass"]
+    assert file_statuses(env, pid) == ["accepted", "accepted"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail", [False, True])
+async def test_disabled_ass_export_keeps_previous_files_and_cleans_staging(env, mux, fail):
+    pid = seed_project(env)
+    assert (await publish_once(env, pid))["status"] == "succeeded"
+    out_dir = env.output_root / "series"
+    before = {p.name: p.read_bytes() for p in out_dir.iterdir()}
+    if fail:
+        mux.fail_on = "ep2"
+
+    result = await publish_once(env, pid, publish_save_ass_files=False)
+
+    assert result["status"] == ("failed" if fail else "succeeded")
+    assert {p.name: p.read_bytes() for p in out_dir.iterdir()} == before
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stored", [None, "0", "1"])
+async def test_ass_export_option_persists_and_is_loaded_by_job(env, mux, monkeypatch, stored):
+    from app.api.routes.options import get_options, patch_options
+
+    pid = seed_project(env, n_files=1)
+    assert AppOptions().publish_save_ass_files is True
+    assert (await get_options())["PUBLISH_SAVE_ASS_FILES"] == "1"
+    if stored is not None:
+        await patch_options({"PUBLISH_SAVE_ASS_FILES": stored})
+    # Reload from the database, as after an application restart.
+    options_store.invalidate()
+    assert (await get_options())["PUBLISH_SAVE_ASS_FILES"] == (stored or "1")
+    options_store.invalidate()
+    monkeypatch.setattr("app.core.config.settings.output_root", env.output_root)
+    manager = JobManager()
+    await publish_orch.start_publish(pid, manager.enqueue)
+    with env.sync() as s:
+        job_id = s.scalar(select(JobRecord.id))
+    await manager._run_job(job_id)
+
+    with env.sync() as s:
+        assert s.get(JobRecord, job_id).status == "completed"
+    out_dir = env.output_root / "series"
+    assert (out_dir / "ep1.mkv").exists()
+    assert (out_dir / "ep1.ass").exists() is (stored != "0")
+    assert not list(out_dir.glob("*publish-tmp*"))
+
+
+@pytest.mark.asyncio
 async def test_published_ass_uses_the_existing_rendering_path(env, mux):
     """R: output ASS == build_ass(translated) + save_ass, same as the download path."""
     pid = seed_project(env, n_files=1)
