@@ -1,0 +1,1021 @@
+openapi: 3.0.3
+info:
+  title: Subi-neko Publish API
+  version: 1.0.0
+  description: 'Entity-oriented publishing API. The publisher owns synchronization and compares GET responses
+    locally; the website only stores and serves current data. All IDs in URL paths are opaque, stable publisher-supplied
+    external IDs. The web generates its own immutable UUID primary keys returned as id. A title external ID
+    is globally unique; season and episode external IDs are unique within their title. No provider mappings,
+    episode-order logic, batch upserts, or metadata fingerprints. Seasons are optional: episodes can belong
+    to a season or directly to a title, and a title may contain both. A title with no subtitle files may be
+    shown as upcoming (translation in progress); no separate status is stored. Every PUT targets one resource
+    and is atomic; repeat requests do not create duplicates. Metadata PUT replaces only that entity’s metadata;
+    omitted optional values become null and related entities/files remain unchanged. File SHA-256 values are
+    computed by the server from received bytes. Each episode has at most one subtitle file; a changed upload
+    atomically replaces its metadata and file, and the previous file is deleted after successful replacement.
+    No subtitle revision history is retained. DELETE operations remove the specified resource and its owned
+    content. Bearer auth is independent of website sessions.'
+servers:
+- url: https://subineko.cz
+tags:
+- name: Publish
+  description: Read and publish catalog content.
+security:
+- PublishToken: []
+paths:
+  /api/v1/titles:
+    get:
+      tags:
+      - Publish
+      operationId: listTitles
+      summary: List catalog titles
+      description: Return a compact list of all published and upcoming titles.
+      responses:
+        '200':
+          description: Catalog titles.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleList'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/titles/{titleExternalId}:
+    get:
+      tags:
+      - Publish
+      operationId: getTitle
+      summary: Get a title
+      description: Return the current title, its seasons, direct episodes, and file hashes.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      responses:
+        '200':
+          description: Current complete title state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TitleState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags:
+      - Publish
+      operationId: upsertTitle
+      summary: Upsert a title
+      description: Create or replace one title by its stable external ID. Its children and files are untouched.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      requestBody:
+        required: true
+        description: Complete replacement metadata for this entity.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/TitleMetadata'
+      responses:
+        '200':
+          description: Existing resource stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '201':
+          description: New resource created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags:
+      - Publish
+      operationId: deleteTitle
+      summary: Delete a title
+      description: Delete the requested resource and its owned data.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      responses:
+        '204':
+          description: Resource deleted; no response body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/titles/{titleExternalId}/seasons/{seasonExternalId}:
+    get:
+      tags:
+      - Publish
+      operationId: getSeason
+      summary: Get a season
+      description: Return the season metadata and its current episode states.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/SeasonExternalId'
+      responses:
+        '200':
+          description: Current season state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SeasonState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags:
+      - Publish
+      operationId: upsertSeason
+      summary: Upsert a season
+      description: Create or replace one season under an existing title; do not modify its episodes.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/SeasonExternalId'
+      requestBody:
+        required: true
+        description: Complete replacement metadata for this entity.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SeasonMetadata'
+      responses:
+        '200':
+          description: Existing resource stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '201':
+          description: New resource created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags:
+      - Publish
+      operationId: deleteSeason
+      summary: Delete a season
+      description: Delete the requested resource and its owned data.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/SeasonExternalId'
+      responses:
+        '204':
+          description: Resource deleted; no response body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/titles/{titleExternalId}/episodes/{episodeExternalId}:
+    get:
+      tags:
+      - Publish
+      operationId: getEpisode
+      summary: Get an episode
+      description: Return episode metadata and its currently published subtitle file, if any.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      responses:
+        '200':
+          description: Current episode state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EpisodeState'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags:
+      - Publish
+      operationId: upsertEpisode
+      summary: Upsert an episode
+      description: Create or replace one episode. seasonExternalId may identify an existing season or be null
+        for a direct title episode; moving preserves the web UUID, current subtitle file, and download count.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      requestBody:
+        required: true
+        description: Complete replacement metadata for this entity.
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/EpisodeMetadata'
+      responses:
+        '200':
+          description: Existing resource stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '201':
+          description: New resource created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/EntityResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags:
+      - Publish
+      operationId: deleteEpisode
+      summary: Delete an episode
+      description: Delete the requested resource and its owned data.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      responses:
+        '204':
+          description: Resource deleted; no response body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/titles/{titleExternalId}/poster:
+    get:
+      tags:
+      - Publish
+      operationId: getPoster
+      summary: Get current poster metadata
+      description: Return the current poster hash and file information, or 404 if absent.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      responses:
+        '200':
+          description: Current poster information.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentPoster'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags:
+      - Publish
+      operationId: upsertPoster
+      summary: Upload or replace a poster
+      description: Store an image by actual bytes. Identical current SHA-256 retains the file; changed bytes
+        replace the current poster.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      requestBody:
+        required: true
+        description: Upload file and its metadata.
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/PosterUpload'
+      responses:
+        '200':
+          description: Existing resource stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PosterResult'
+        '201':
+          description: New resource created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PosterResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags:
+      - Publish
+      operationId: deletePoster
+      summary: Delete a poster
+      description: Remove the current poster.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      responses:
+        '204':
+          description: Resource deleted; no response body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /api/v1/titles/{titleExternalId}/episodes/{episodeExternalId}/subtitles:
+    get:
+      tags:
+      - Publish
+      operationId: getSubtitle
+      summary: Get current subtitle metadata
+      description: Return the current subtitle file metadata and SHA-256, or 404 if absent.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      responses:
+        '200':
+          description: Current subtitle file metadata.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CurrentSubtitle'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    put:
+      tags:
+      - Publish
+      operationId: upsertSubtitle
+      summary: Upload or replace subtitles
+      description: >-
+        Accept one nonempty .ass file with a recognizable [Script Info] header per episode.
+        Compare SHA-256 against the current file. Identical bytes are a no-op and preserve
+        existing filename, release label, changelog, and timestamp. Changed bytes atomically
+        replace the current file and metadata, then delete the previous file after successful
+        publication. Failed uploads leave the current file unchanged. No history is retained.
+        Do not validate dialogue semantics.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      requestBody:
+        required: true
+        description: Upload file and its metadata.
+        content:
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/SubtitleUpload'
+      responses:
+        '200':
+          description: Existing resource stored.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtitleResult'
+        '201':
+          description: New resource created.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SubtitleResult'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '413':
+          $ref: '#/components/responses/PayloadTooLarge'
+        '415':
+          $ref: '#/components/responses/UnsupportedMediaType'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+    delete:
+      tags:
+      - Publish
+      operationId: deleteSubtitle
+      summary: Delete current subtitles
+      description: Delete the current subtitle metadata and physical file; return 404 if absent.
+      parameters:
+      - $ref: '#/components/parameters/TitleExternalId'
+      - $ref: '#/components/parameters/EpisodeExternalId'
+      responses:
+        '204':
+          description: Resource deleted; no response body.
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    PublishToken:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+      description: Private publisher token over TLS.
+  parameters:
+    TitleExternalId:
+      name: titleExternalId
+      in: path
+      required: true
+      description: Stable publisher-supplied title ID; globally unique across titles.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    SeasonExternalId:
+      name: seasonExternalId
+      in: path
+      required: true
+      description: Stable publisher-supplied season ID within this title.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+    EpisodeExternalId:
+      name: episodeExternalId
+      in: path
+      required: true
+      description: Stable publisher-supplied episode ID within this title.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
+  schemas:
+    MediaType:
+      type: string
+      description: Presentation category; not part of the resource identity.
+      enum:
+      - TV
+      - MOVIE
+    ImageContentType:
+      type: string
+      enum:
+      - image/jpeg
+      - image/png
+      - image/webp
+    TitleMetadata:
+      type: object
+      description: Full title metadata; omitted optional values are stored as null.
+      properties:
+        mediaType:
+          $ref: '#/components/schemas/MediaType'
+        translationProgress:
+          type: integer
+          description: Translation completion percentage provided by the publisher; subtitle availability is determined independently from uploaded files.
+          minimum: 0
+          maximum: 100
+        titleEnglish:
+          type: string
+          description: English title.
+          maxLength: 255
+        titleRomaji:
+          type: string
+          description: Romanized title, if available.
+          maxLength: 255
+          nullable: true
+        year:
+          type: integer
+          description: Release year, if known.
+          minimum: 1
+          nullable: true
+        originalLanguage:
+          type: string
+          description: ISO 639 language code, if known.
+          maxLength: 3
+          nullable: true
+        descriptionEnglish:
+          type: string
+          description: English synopsis, if available.
+          maxLength: 10000
+          nullable: true
+      required:
+      - mediaType
+      - translationProgress
+      - titleEnglish
+      additionalProperties: false
+    SeasonMetadata:
+      type: object
+      description: Full season metadata; omitted optional values are stored as null.
+      properties:
+        seasonNumber:
+          type: integer
+          description: Displayed season number.
+          minimum: 0
+        nameEnglish:
+          type: string
+          description: English season name, if available.
+          maxLength: 255
+          nullable: true
+        year:
+          type: integer
+          description: Season year, if known.
+          minimum: 1
+          nullable: true
+      required:
+      - seasonNumber
+      additionalProperties: false
+    EpisodeMetadata:
+      type: object
+      description: Full episode metadata; omission of seasonExternalId means no season.
+      properties:
+        seasonExternalId:
+          type: string
+          description: Existing season external ID, or null/omitted for an episode directly under the title.
+          maxLength: 255
+          nullable: true
+        episodeNumber:
+          type: integer
+          description: Displayed episode number.
+          minimum: 0
+        nameEnglish:
+          type: string
+          description: English episode name, if available.
+          maxLength: 255
+          nullable: true
+      required:
+      - episodeNumber
+      additionalProperties: false
+    CurrentPoster:
+      type: object
+      description: Current poster file information. Omitted from TitleState if no poster is present.
+      properties:
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: SHA-256 of the stored original image bytes.
+        contentType:
+          $ref: '#/components/schemas/ImageContentType'
+        sizeBytes:
+          type: integer
+          description: Image size in bytes.
+          minimum: 1
+      required:
+      - sha256
+      - contentType
+      - sizeBytes
+      additionalProperties: false
+    CurrentSubtitle:
+      type: object
+      description: Metadata of the single currently published subtitle file for an episode.
+      properties:
+        sha256:
+          type: string
+          pattern: ^[a-f0-9]{64}$
+          description: SHA-256 of the stored ASS bytes.
+        originalFilename:
+          type: string
+          description: Original download filename.
+          maxLength: 255
+        revisionNumber:
+          type: integer
+          description: Subtitle revision.
+          minimum: 1
+        releaseLabel:
+          type: string
+          description: Publisher-supplied release label.
+          maxLength: 200
+        changelog:
+          type: string
+          description: Optional release notes.
+          maxLength: 4000
+          nullable: true
+        updatedAt:
+          type: string
+          format: date-time
+          description: Time when the current subtitle file was published (UTC).
+      required:
+      - sha256
+      - originalFilename
+      - revisionNumber
+      - releaseLabel
+      - changelog
+      - updatedAt
+      additionalProperties: false
+    TitleSummary:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Web-owned title primary key.
+        externalId:
+          type: string
+          description: Stable publisher-supplied title ID.
+          maxLength: 255
+        slug:
+          type: string
+          description: Stable public URL slug.
+          maxLength: 120
+        mediaType:
+          $ref: '#/components/schemas/MediaType'
+        titleEnglish:
+          type: string
+          description: English title.
+          maxLength: 255
+        hasSubtitles:
+          type: boolean
+          description: True if at least one episode has current subtitles.
+      required:
+      - id
+      - externalId
+      - slug
+      - mediaType
+      - titleEnglish
+      - hasSubtitles
+      additionalProperties: false
+    TitleList:
+      type: object
+      description: Catalog listing, ordered by English title then external ID.
+      properties:
+        items:
+          type: array
+          description: All titles in the catalog.
+          items:
+            $ref: '#/components/schemas/TitleSummary'
+      required:
+      - items
+      additionalProperties: false
+    EpisodeState:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Web-owned episode primary key.
+        externalId:
+          type: string
+          description: Stable publisher-supplied episode ID.
+          maxLength: 255
+        seasonExternalId:
+          type: string
+          description: Current season external ID, or null for direct title episodes.
+          maxLength: 255
+          nullable: true
+        episodeNumber:
+          type: integer
+          description: Displayed episode number.
+          minimum: 0
+        nameEnglish:
+          type: string
+          description: English episode name, if available.
+          maxLength: 255
+          nullable: true
+        currentSubtitle:
+          $ref: '#/components/schemas/CurrentSubtitle'
+      required:
+      - id
+      - externalId
+      - seasonExternalId
+      - episodeNumber
+      - nameEnglish
+      additionalProperties: false
+    SeasonState:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Web-owned season primary key.
+        externalId:
+          type: string
+          description: Stable publisher-supplied season ID.
+          maxLength: 255
+        seasonNumber:
+          type: integer
+          description: Displayed season number.
+          minimum: 0
+        nameEnglish:
+          type: string
+          description: English season name, if available.
+          maxLength: 255
+          nullable: true
+        year:
+          type: integer
+          description: Season year, if known.
+          minimum: 1
+          nullable: true
+        episodes:
+          type: array
+          description: Episodes currently assigned to this season.
+          items:
+            $ref: '#/components/schemas/EpisodeState'
+      required:
+      - id
+      - externalId
+      - seasonNumber
+      - nameEnglish
+      - year
+      - episodes
+      additionalProperties: false
+    TitleState:
+      type: object
+      description: Full current catalog state for publisher-side comparison. currentPoster is absent if no
+        poster exists; currentSubtitle is absent on episodes without subtitles.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Web-owned title primary key.
+        externalId:
+          type: string
+          description: Stable publisher-supplied title ID.
+          maxLength: 255
+        slug:
+          type: string
+          description: Stable public URL slug.
+          maxLength: 120
+        mediaType:
+          $ref: '#/components/schemas/MediaType'
+        translationProgress:
+          type: integer
+          description: Translation completion percentage provided by the publisher.
+          minimum: 0
+          maximum: 100
+        titleEnglish:
+          type: string
+          description: English title.
+          maxLength: 255
+        titleRomaji:
+          type: string
+          description: Romanized title, if available.
+          maxLength: 255
+          nullable: true
+        year:
+          type: integer
+          description: Release year, if known.
+          minimum: 1
+          nullable: true
+        originalLanguage:
+          type: string
+          description: ISO 639 language code, if known.
+          maxLength: 3
+          nullable: true
+        descriptionEnglish:
+          type: string
+          description: English synopsis, if available.
+          maxLength: 10000
+          nullable: true
+        currentPoster:
+          $ref: '#/components/schemas/CurrentPoster'
+        seasons:
+          type: array
+          description: Seasons, with assigned episodes.
+          items:
+            $ref: '#/components/schemas/SeasonState'
+        episodes:
+          type: array
+          description: Episodes directly under the title, without a season.
+          items:
+            $ref: '#/components/schemas/EpisodeState'
+      required:
+      - id
+      - externalId
+      - slug
+      - mediaType
+      - translationProgress
+      - titleEnglish
+      - titleRomaji
+      - year
+      - originalLanguage
+      - descriptionEnglish
+      - seasons
+      - episodes
+      additionalProperties: false
+    EntityResult:
+      type: object
+      description: Small result returned after a metadata upsert.
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: Stable web-owned primary key.
+        externalId:
+          type: string
+          description: Stable external ID from the resource URL.
+          maxLength: 255
+      required:
+      - id
+      - externalId
+      additionalProperties: false
+    PosterUpload:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+          description: JPEG, PNG, or WebP image file.
+      required:
+      - file
+      additionalProperties: false
+    SubtitleUpload:
+      type: object
+      properties:
+        file:
+          type: string
+          format: binary
+          description: ASS subtitle file.
+        revisionNumber:
+          type: integer
+          description: Subtitle revision.
+          minimum: 1
+        releaseLabel:
+          type: string
+          description: Nonblank release label.
+          maxLength: 200
+        changelog:
+          type: string
+          description: Optional release notes.
+          maxLength: 4000
+          nullable: true
+      required:
+      - file
+      - revisionNumber
+      - releaseLabel
+      additionalProperties: false
+    PosterResult:
+      type: object
+      properties:
+        poster:
+          $ref: '#/components/schemas/CurrentPoster'
+      required:
+      - poster
+      additionalProperties: false
+    SubtitleResult:
+      type: object
+      properties:
+        subtitle:
+          $ref: '#/components/schemas/CurrentSubtitle'
+      required:
+      - subtitle
+      additionalProperties: false
+    ErrorResponse:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code:
+              type: string
+              description: Machine-readable error code.
+            message:
+              type: string
+              description: Safe human-readable explanation.
+          required:
+          - code
+          - message
+          additionalProperties: false
+      required:
+      - error
+      additionalProperties: false
+  responses:
+    Unauthorized:
+      description: Missing or invalid Bearer token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+      headers:
+        WWW-Authenticate:
+          description: Bearer authentication challenge.
+          schema:
+            type: string
+    NotFound:
+      description: Resource does not exist.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    Conflict:
+      description: External identity, ownership, or placement conflict.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    PayloadTooLarge:
+      description: Request exceeds the configured size limit.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnsupportedMediaType:
+      description: Unsupported or invalid uploaded file type.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    UnprocessableEntity:
+      description: Invalid request or metadata.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    InternalError:
+      description: Unexpected server failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
+    ServiceUnavailable:
+      description: Temporary database or storage failure.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'

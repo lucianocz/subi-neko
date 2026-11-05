@@ -26,10 +26,9 @@ Optimistic versions protect approved configuration from stale writes.
 ## Current website API
 
 The client uses the current website's entity-oriented external-ID API, including
-camelCase JSON and multipart fields. It does not send the older batch/provider
-mapping payloads described by this repository's historical
-`contracts/publisher-api.yaml`. Neither that file nor the website's authoritative
-OpenAPI specification is changed by this integration.
+camelCase JSON and multipart fields, documented in `contracts/publish-api.yaml`.
+This local contract replaces the historical batch/provider-mapping specification;
+the website's authoritative OpenAPI specification is unchanged.
 
 The existing publisher service retains its normalized internal snapshots and UUID
 receipts. `WebClient` translates them at the HTTP boundary. URL identities are

@@ -1,9 +1,9 @@
 # Subi-neko Publisher API
 
-[`publisher-api.yaml`](publisher-api.yaml) defines the HTTP interface a subtitle distribution website must expose to receive publications from Subi-neko.
+[`publish-api.yaml`](publish-api.yaml) defines the HTTP interface a subtitle distribution website must expose to receive publications from Subi-neko.
 
 ## Implementing a compatible receiver
 
-Implement the documented endpoints and schemas, including identity resolution, additive metadata updates, upload/revision semantics, authentication, error responses and safe retries. Configure a receiver-specific HTTPS origin and Bearer token; the example server URL in the specification is not a live endpoint.
+Implement the documented entity endpoints and schemas, including stable external IDs, replacement metadata updates, current-file uploads, authentication, error responses and safe retries. Configure the receiver's HTTPS origin and Bearer token; do not send test publications to the server URL listed in the specification.
 
 The OpenAPI contract defines the required **externally observable behavior**. Database, framework, storage and deployment choices are up to the website implementation.

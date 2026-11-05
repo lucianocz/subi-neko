@@ -33,6 +33,7 @@ Extracts subtitles from MKV files, translates them using an OpenAI-compatible LL
 - **Fuzzy translation memory** — near-match TM hits (≥92% similar) surface as `[TM] previously translated as:` hints in translation prompts, in addition to exact-match reuse
 - **QA items** — flagged issues surfaced per subtitle event; visible in the UI for manual review
 - **Explicit publishing** — nothing is muxed automatically. Once every file is accepted the project's OUTPUT card offers **Publish**, which renders the translated ASS and muxes every file with mkvmerge (staged to temp files, then atomically replaced). Publish again at any time; later edits turn the project back to *ready to publish* without changing file acceptance
+- **WEB publishing** — import a source alone, or review TMDB settings and publish catalog metadata immediately. The shared three-step WEB wizard supports metadata-only publishing, accepted ASS uploads, durable retries and project translation progress. See [the workflow and API notes](docs/web-publishing.md).
 - **Configurable via UI** — all settings (API keys, models, prompts, providers, pipeline switches) editable from the Options drawer without restarting
 
 ---
