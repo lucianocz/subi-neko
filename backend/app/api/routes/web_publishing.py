@@ -29,6 +29,17 @@ async def call(fn, *args, **kwargs):
         ) from None
 
 
+async def tmdb_call(fn, *args, **kwargs):
+    """Read-only TMDB lookups need the TMDB token but not a configured website
+    (the project import wizard uses them before any WEB setup exists)."""
+    try:
+        return await asyncio.to_thread(fn, *args, **kwargs)
+    except PublishingError as exc:
+        raise HTTPException(
+            exc.status, detail={"code": exc.code, "message": exc.message}
+        ) from None
+
+
 @router.get("")
 async def get_state(project_id: int):
     return await call(service.state, project_id)
@@ -61,7 +72,7 @@ async def publish(project_id: int, body: PublishRequest):
 
 @metadata_router.get("/search")
 async def search(q: str = Query(min_length=1, max_length=255)):
-    return await call(lambda: TmdbClient().search(q))
+    return await tmdb_call(lambda: TmdbClient().search(q))
 
 
 @metadata_router.get("/details")
@@ -70,7 +81,7 @@ async def details(
     title_id: str = Query(pattern=r"^\d+$"),
     refresh: bool = False,
 ):
-    return await call(lambda: TmdbClient().details(media_type, title_id, refresh))
+    return await tmdb_call(lambda: TmdbClient().details(media_type, title_id, refresh))
 
 
 @metadata_router.get("/catalog")
@@ -80,7 +91,7 @@ async def catalog(
     season_number: int | None = Query(default=None, ge=0),
     refresh: bool = False,
 ):
-    return await call(
+    return await tmdb_call(
         lambda: TmdbClient().catalog(title_id, group_id, season_number, refresh)
     )
 

@@ -44,6 +44,27 @@ def romaji_titles(item):
     return list(unique.values())
 
 
+def _episode(raw, number, detailed=False):
+    """One catalog episode.
+
+    The default shape is exactly the WEB wizard's ``Mapping`` identity fields
+    (the wizard posts these objects back and ``Mapping`` forbids extra keys).
+    ``detailed`` adds TMDB's descriptive metadata for server-side persistence.
+    """
+    episode = {
+        "tmdb_episode_id": str(raw["id"]),
+        "episode_number": number,
+        "name_english": raw.get("name"),
+    }
+    if detailed:
+        episode.update(
+            air_date=raw.get("air_date") or None,
+            overview=raw.get("overview") or None,
+            runtime=raw["runtime"] if isinstance(raw.get("runtime"), int) else None,
+        )
+    return episode
+
+
 class TmdbClient:
     def __init__(self):
         if not settings.tmdb_api_token:
@@ -130,7 +151,9 @@ class TmdbClient:
             "number_of_seasons": item.get("number_of_seasons"),
         }
 
-    def catalog(self, title_id, group_id=None, season_number=None, refresh=False):
+    def catalog(
+        self, title_id, group_id=None, season_number=None, refresh=False, detailed=False
+    ):
         if group_id:
             available = self.get(f"/tv/{title_id}/episode_groups", refresh=refresh)
             if not any(str(g["id"]) == group_id for g in available.get("results", [])):
@@ -152,11 +175,7 @@ class TmdbClient:
                 ],
                 "episodes_by_season": {
                     str(g["id"]): [
-                        {
-                            "tmdb_episode_id": str(e["id"]),
-                            "episode_number": e["order"] + 1,
-                            "name_english": e.get("name"),
-                        }
+                        _episode(e, e["order"] + 1, detailed)
                         for e in sorted(g.get("episodes", []), key=lambda e: e["order"])
                     ]
                     for g in groups
@@ -178,18 +197,19 @@ class TmdbClient:
         if season_number is not None:
             season = self.get(f"/tv/{title_id}/season/{season_number}", refresh=refresh)
             episodes[str(season["id"])] = [
-                {
-                    "tmdb_episode_id": str(e["id"]),
-                    "episode_number": e["episode_number"],
-                    "name_english": e.get("name"),
-                }
-                for e in season.get("episodes", [])
+                _episode(e, e["episode_number"], detailed) for e in season.get("episodes", [])
             ]
         return {
             "seasons": seasons,
             "episodes_by_season": episodes,
             "groups": [
-                {"id": str(g["id"]), "name": g["name"]}
+                {
+                    "id": str(g["id"]),
+                    "name": g["name"],
+                    "type": g.get("type"),
+                    "episode_count": g.get("episode_count"),
+                    "group_count": g.get("group_count"),
+                }
                 for g in groups.get("results", [])
             ],
         }

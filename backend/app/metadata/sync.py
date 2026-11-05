@@ -144,3 +144,44 @@ async def upsert_episodes(
             updated += 1
 
     return created, updated
+
+
+async def upsert_tmdb_episodes(
+    session: AsyncSession, project_id: int, episodes: list[dict],
+) -> int:
+    """Store TMDB catalog episodes on ``ProjectEpisode`` (keyed by episode number).
+
+    Only the ``tmdb_*`` columns are written; provider (AniDB) title/air-date
+    columns are never touched, so this composes with ``upsert_episodes`` in
+    either order. Rows are created without any File. Returns the count stored.
+    """
+    now = datetime.utcnow().isoformat()
+    existing = {
+        row.episode_number: row
+        for row in (await session.scalars(
+            select(ProjectEpisode).where(ProjectEpisode.project_id == project_id)
+        )).all()
+    }
+    stored = 0
+    for episode in episodes:
+        values = {
+            "tmdb_episode_id": episode["tmdb_episode_id"],
+            "tmdb_name": episode.get("name_english"),
+            "tmdb_air_date": episode.get("air_date"),
+            "tmdb_overview": episode.get("overview"),
+            "tmdb_runtime": episode.get("runtime"),
+        }
+        row = existing.get(episode["episode_number"])
+        if row is None:
+            row = ProjectEpisode(
+                project_id=project_id, episode_number=episode["episode_number"],
+                created_at=now, updated_at=now, **values,
+            )
+            session.add(row)
+            existing[episode["episode_number"]] = row
+        else:
+            for attr, value in values.items():
+                setattr(row, attr, value)
+            row.updated_at = now
+        stored += 1
+    return stored

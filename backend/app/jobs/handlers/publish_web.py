@@ -1,71 +1,40 @@
-"""One explicit WEB attempt; remote history and idempotency belong to the website."""
+"""One explicit WEB attempt; remote history and idempotency belong to the website.
+
+A publication always synchronizes the title, the season/episode structure (every
+stored TMDB ``ProjectEpisode`` plus mapped files) and the poster; selecting files
+only adds subtitle uploads, so a metadata-only attempt (no files) is a normal
+run. Durable remote ids returned by the website are recorded as soon as they are
+known — after the title, after every episode batch, also on partial failure — and
+are the only thing that locks an episode.
+
+The job result (``JobRecord.result_json``) is the live view for the UI:
+``operations`` is the actual log of website requests, ``progress`` the monotonic
+fraction of this job's real work units, ``receipt`` the project-level confirmed
+progress.
+"""
 
 from __future__ import annotations
 
 from sqlalchemy import select
 
 from app.core.database import SyncSessionLocal
-from app.db.models import File, JobRecord, Project
+from app.db.models import JobRecord, Project
 from app.jobs.registry import register_job_handler
 from app.publishing import service
-from app.publishing.schemas import PublishRequest
+from app.publishing.remote import (  # noqa: F401  (compat re-exports)
+    has_identity,
+    locate,
+    pending_refs,
+)
+from app.publishing.remote import (
+    provider_mapping as mapping,
+)
+from app.publishing.schemas import PublishRequest, WebConfig
 from app.publishing.tmdb import TmdbClient
 from app.publishing.web_client import PublishingError, WebClient
 
-
-def mapping(external_id, media, kind=None):
-    value = {"provider": "tmdb", "media_type": media, "external_id": external_id}
-    if kind:
-        value["kind"] = kind
-    return value
-
-
-def has_identity(entity, external_id, kind=None):
-    return any(
-        m.get("provider") == "tmdb"
-        and m.get("external_id") == external_id
-        and (kind is None or m.get("kind") == kind)
-        for m in entity.get("mappings", [])
-    )
-
-
-def locate(snapshot, config, captured):
-    season = None
-    if config.episode_structure == "SEASONED":
-        kind = "season" if config.order_kind == "standard" else "episode_group_subgroup"
-        season = next(
-            (
-                s
-                for s in snapshot.get("seasons", [])
-                if has_identity(s, config.season.external_id, kind)
-            ),
-            None,
-        )
-        episodes = season.get("episodes", []) if season else []
-    else:
-        episodes = snapshot.get("episodes", [])
-    resolved = {}
-    for item in captured:
-        found = next(
-            (
-                e
-                for e in episodes
-                if (
-                    has_identity(e, item["tmdb_episode_id"])
-                    if item["tmdb_episode_id"]
-                    else e.get("publisher_key") == item["publisher_key"]
-                )
-            ),
-            None,
-        )
-        if item["episode_uuid"] and (not found or found["id"] != item["episode_uuid"]):
-            raise PublishingError(
-                "web_recovery_required",
-                f"Previously confirmed episode for file {item['file_id']} is missing or changed. Explicit recovery is required.",
-            )
-        if found:
-            resolved[item["file_id"]] = found["id"]
-    return season, resolved
+BATCH = 500  # website limit is 1000 episodes per request
+MAX_OPERATIONS = 2000
 
 
 @register_job_handler("publish_web")
@@ -73,13 +42,18 @@ def publish_web(payload, ctx, progress):
     pid, attempt = payload["project_id"], payload["attempt"]
     result = {
         "stage": "Preparing",
+        "progress": 0.0,
+        "work": {"done": 0, "total": 1},
+        "operations": [],
         "files": [],
         "poster": None,
         "metadata": [],
+        "receipt": None,
         "error": None,
     }
     client = None
     outcome = "failed"
+    key = f"publish_web:{pid}:{attempt}"
     with service._live_lock:
         service._live.add((pid, attempt))
 
@@ -93,11 +67,7 @@ def publish_web(payload, ctx, progress):
                 or p.archived_at
             ):
                 raise PublishingError("web_cancelled", "WEB publication stopped.")
-            job = session.scalar(
-                select(JobRecord).where(
-                    JobRecord.dedupe_key == f"publish_web:{pid}:{attempt}"
-                )
-            )
+            job = session.scalar(select(JobRecord).where(JobRecord.dedupe_key == key))
             if job and job.status == "cancelled":
                 raise PublishingError(
                     "web_cancelled",
@@ -105,52 +75,166 @@ def publish_web(payload, ctx, progress):
                 )
             service.load(p)  # Destination changes fail closed, including between calls.
 
-    def checkpoint(stage, pct):
-        result["stage"] = stage
+    def save_result():
+        del result["operations"][:-MAX_OPERATIONS]
         with SyncSessionLocal() as session:
-            job = session.scalar(
-                select(JobRecord).where(
-                    JobRecord.dedupe_key == f"publish_web:{pid}:{attempt}"
-                )
-            )
+            job = session.scalar(select(JobRecord).where(JobRecord.dedupe_key == key))
             if job:
                 job.result_json = service.dumps(result)
                 session.commit()
-        progress(pct, stage)
 
-    def persist(envelope, resolved=None, lock_files=False):
+    def checkpoint(stage):
+        result["stage"] = stage
+        save_result()
+        progress(result["progress"], stage)
+
+    def advance(stage, units=1):
+        """Complete real work units; the fraction can only grow."""
+        work = result["work"]
+        work["done"] = min(work["total"], work["done"] + units)
+        result["progress"] = max(result["progress"], round(work["done"] / work["total"], 4))
+        checkpoint(stage)
+
+    def begin(stage, **detail):
+        op = {
+            "seq": len(result["operations"]) + 1,
+            "stage": stage,
+            "status": "running",
+            "outcome": "running",
+            "started_at": service.now(),
+            "finished_at": None,
+            **({"detail": detail} if detail else {}),
+        }
+        result["operations"].append(op)
+        save_result()
+        return op
+
+    def end(op, outcome, exc=None, **detail):
+        op["status"] = "failed" if outcome in ("failed", "uncertain") else "succeeded"
+        op["outcome"] = outcome
+        op["finished_at"] = service.now()
+        if detail:
+            op["detail"] = {**op.get("detail", {}), **detail}
+        if exc is not None:
+            op["error"], op["code"] = exc.message, exc.code
+        save_result()
+
+    def step(stage, fn, *, label=lambda value: value["outcome"], **detail):
+        """Run one website operation and log what actually happened."""
+        op = begin(stage, **detail)
+        try:
+            value = fn()
+        except PublishingError as exc:
+            end(op, "uncertain" if exc.code == "web_uncertain" else "failed", exc)
+            raise
+        end(op, label(value))
+        return value
+
+    def persist(**changes):
+        """Write the (in-memory) approval envelope back; never touches ids/locks."""
         with SyncSessionLocal() as session:
             p = session.get(Project, pid)
             if not p or p.web_publish_attempt != attempt:
                 raise PublishingError(
                     "web_superseded", "Publication attempt was superseded."
                 )
+            for name, value in changes.items():
+                if value is None:
+                    envelope.pop(name, None)
+                else:
+                    envelope[name] = value
+            envelope["destination"] = service.destination()  # about to talk to this site
             p.web_config_json = service.dumps(envelope)
-            p.web_identity_locked_at = p.web_identity_locked_at or service.now()
-            for item in captured if lock_files else []:
-                f = session.get(File, item["file_id"])
-                f.web_identity_locked_at = f.web_identity_locked_at or service.now()
-            for fid, remote_id in (resolved or {}).items():
-                f = session.get(File, fid)
-                f.web_episode_uuid = remote_id
-                f.web_identity_locked_at = f.web_identity_locked_at or service.now()
             session.commit()
+
+    def adopt(snapshot):
+        """Record the durable remote ids a snapshot proves, and lock exactly those."""
+        with SyncSessionLocal() as session:
+            p = session.get(Project, pid)
+            if not p or p.web_publish_attempt != attempt:
+                raise PublishingError(
+                    "web_superseded", "Publication attempt was superseded."
+                )
+            season, resolved = service.record_remote(
+                session, p, envelope, config, snapshot, targets
+            )
+            p.web_config_json = service.dumps(envelope)
+            session.commit()
+        return season, resolved
+
+    def reconcile(stage):
+        """After a lost acknowledgement: learn the real outcome by reading, never by guessing."""
+        try:
+            op = begin(stage)
+        except Exception:  # noqa: BLE001 - best effort only
+            return
+        try:
+            snapshot = client.lookup(config)
+            if snapshot:
+                service.compatible(snapshot, config)
+                _, resolved = adopt(snapshot)
+                persist(
+                    pending_title=None,
+                    pending_hierarchy=[
+                        r for r in pending_refs(envelope) if r not in resolved
+                    ]
+                    or None,
+                )
+            if not snapshot:
+                persist(pending_title=None, pending_hierarchy=None)  # a read proves absence
+            end(op, "found" if snapshot else "not_found")
+        except PublishingError as exc:
+            if exc.code == "web_cancelled":
+                end(op, "failed", exc)
+                raise
+            end(op, "failed", exc)  # markers stay: a later explicit read resolves them
 
     try:
         check()
         body = PublishRequest.model_validate(
             {
-                k: payload[k]
+                k: payload.get(k)
                 for k in ("version", "file_ids", "release_label", "changelog")
             }
         )
         with SyncSessionLocal() as session:
+            p = session.get(Project, pid)
+            envelope = service.load(p)
+            if envelope.get("config"):
+                # A movie's content episode gets its stable publisher key once.
+                service.ensure_content_episode(
+                    session, pid, WebConfig.model_validate(envelope["config"])
+                )
+                # Every mapped file's episode gets a stable ProjectEpisode that
+                # carries the receipts (also backfills older file-only receipts).
+                service.ensure_target_episodes(session, pid)
+                session.commit()
+        with SyncSessionLocal() as session:
             session.connection().exec_driver_sql("BEGIN")
             p = session.get(Project, pid)
-            envelope, config, captured = service.prepare(session, p, body, ctx.options)
+            envelope, config, targets = service.prepare(session, p, body, ctx.options)
         client = WebClient(check)
-        checkpoint("Title metadata", 0.05)
-        snapshot = client.lookup(config)
+        uploads = [t for t in targets if t.get("content") or t.get("render_error")]
+        seasoned = config.episode_structure == "SEASONED"
+        batches = [targets[i : i + BATCH] for i in range(0, len(targets), BATCH)]
+        if seasoned and not batches:
+            batches = [[]]  # the season itself is part of the structure
+        result["work"]["total"] = (
+            2
+            + len(batches)
+            + (1 if config.poster_path else 0)
+            + len(uploads)
+            + 1  # progress synchronization
+            + 1
+        )
+        result["episodes"] = {"total": len(targets), "uploads": len(uploads)}
+        checkpoint("Title metadata")
+
+        snapshot = step(
+            "Lookup",
+            lambda: client.lookup(config),
+            label=lambda value: "found" if value else "not_found",
+        )
         if envelope.get("title_uuid") and (
             not snapshot or snapshot["id"] != envelope["title_uuid"]
         ):
@@ -160,22 +244,15 @@ def publish_web(payload, ctx, progress):
             )
         if snapshot:
             service.compatible(snapshot, config)
-            season, resolved = locate(snapshot, config, captured)
-            if envelope.get("season_uuid") and (
-                not season or season["id"] != envelope["season_uuid"]
-            ):
-                raise PublishingError(
-                    "web_recovery_required",
-                    "Previously confirmed website season is missing or changed. Explicit recovery is required.",
-                )
-            envelope["title_uuid"] = snapshot["id"]
-            persist(envelope, resolved)
+            adopt(snapshot)
+        advance("Title metadata")
 
         # Persist intent before a mutation: a lost acknowledgement must not
         # reopen identities for remapping. A later lookup reconciles the intent.
-        envelope["pending_title"] = True
-        envelope["release_label"] = body.release_label
-        persist(envelope)
+        persist(
+            pending_title=True,
+            **({"release_label": body.release_label} if body.release_label else {}),
+        )
         title_body = {
             **config.metadata.website_payload(),
             "media_type": config.media_type,
@@ -184,84 +261,110 @@ def publish_web(payload, ctx, progress):
             "mappings": [mapping(config.tmdb_title_id, config.media_type)],
         }
         path = f"/api/v1/titles/{snapshot['id']}" if snapshot else "/api/v1/titles"
-        title_result = client.metadata(path, title_body)
+        try:
+            title_result = step("Title", lambda: client.metadata(path, title_body))
+        except PublishingError as exc:
+            if exc.code != "web_cancelled":
+                reconcile("Reconcile title")
+            raise
         snapshot = title_result["title"]
-        envelope["title_uuid"] = snapshot["id"]
-        envelope.pop("pending_title", None)
+        adopt(snapshot)
+        persist(pending_title=None)
         result["metadata"].append(
             {"stage": "Title", "outcome": title_result["outcome"]}
         )
-        persist(envelope)
         check()
-        checkpoint("Season/episode metadata", 0.20)
-        season, resolved = locate(snapshot, config, captured)
-        if envelope.get("season_uuid") and (
-            not season or season["id"] != envelope["season_uuid"]
-        ):
-            raise PublishingError(
-                "web_recovery_required",
-                "The recorded season disappeared. Explicit recovery is required.",
-            )
-        episodes = []
-        for item in captured:
-            episode = {
-                "episode_number": item["mapping"]["episode_number"],
-                "name_english": item["mapping"]["name_english"],
-                "mappings": [],
-            }
-            if item["tmdb_episode_id"]:
-                episode["mappings"] = [
-                    mapping(item["tmdb_episode_id"], config.media_type)
-                ]
+        advance("Season/episode metadata")
+
+        season, _ = locate(snapshot, config, targets)
+        kind = "season" if config.order_kind == "standard" else "episode_group_subgroup"
+        for index, batch in enumerate(batches):
+            check()
+            refs = [t["ref"] for t in batch]
+            episodes = []
+            for item in batch:
+                episode = {
+                    "episode_number": item["episode_number"],
+                    "name_english": item["name_english"],
+                    "mappings": [],
+                }
+                if item["tmdb_episode_id"]:
+                    episode["mappings"] = [
+                        mapping(item["tmdb_episode_id"], config.media_type)
+                    ]
+                else:
+                    episode["publisher_key"] = item["publisher_key"]
+                if item["episode_uuid"]:
+                    episode["id"] = item["episode_uuid"]
+                episodes.append(episode)
+            # Unresolved until a response proves otherwise; blocks identity edits.
+            persist(pending_hierarchy=sorted(set(pending_refs(envelope)) | set(refs)))
+            if seasoned:
+                hierarchy = {
+                    **config.season.model_dump(exclude={"external_id"}),
+                    "mappings": [mapping(config.season.external_id, config.media_type, kind)],
+                    "episodes": episodes,
+                }
+                if season:
+                    hierarchy["id"] = season["id"]
+                url, request_body = f"/api/v1/titles/{snapshot['id']}/seasons", hierarchy
+                stage = "Season"
             else:
-                episode["publisher_key"] = item["publisher_key"]
-            if item["file_id"] in resolved:
-                episode["id"] = resolved[item["file_id"]]
-            episodes.append(episode)
-        envelope["pending_hierarchy"] = [i["file_id"] for i in captured]
-        persist(envelope, resolved, lock_files=True)
-        if config.episode_structure == "SEASONED":
-            kind = (
-                "season"
-                if config.order_kind == "standard"
-                else "episode_group_subgroup"
+                url, request_body = (
+                    f"/api/v1/titles/{snapshot['id']}/episodes",
+                    {"episodes": episodes},
+                )
+                stage = "Episodes"
+            label = f"{stage} {index + 1} / {len(batches)}" if len(batches) > 1 else stage
+            try:
+                response = step(
+                    label,
+                    lambda url=url, request_body=request_body: client.metadata(url, request_body),
+                    episodes=len(episodes),
+                )
+            except PublishingError as exc:
+                # The entity-oriented website applies each PUT separately, so a
+                # failure can follow confirmed ones: read back and durably record
+                # every id that exists before reporting the error.
+                if exc.code != "web_cancelled":
+                    reconcile(f"Reconcile {label.lower()}")
+                raise
+            snapshot = response["title"]
+            season, resolved = adopt(snapshot)
+            # Whatever the website confirmed stays confirmed, even if the response
+            # omitted part of the batch.
+            persist(
+                pending_hierarchy=[
+                    r for r in pending_refs(envelope) if r not in resolved
+                ]
+                or None
             )
-            hierarchy = {
-                **config.season.model_dump(exclude={"external_id"}),
-                "mappings": [
-                    mapping(config.season.external_id, config.media_type, kind)
-                ],
-                "episodes": episodes,
-            }
-            if season:
-                hierarchy["id"] = season["id"]
-            response = client.metadata(
-                f"/api/v1/titles/{snapshot['id']}/seasons", hierarchy
-            )
-        else:
-            response = client.metadata(
-                f"/api/v1/titles/{snapshot['id']}/episodes", {"episodes": episodes}
-            )
-        snapshot = response["title"]
-        season, resolved = locate(snapshot, config, captured)
-        if len(resolved) != len(captured):
-            raise PublishingError(
-                "web_response", "Website response omitted a requested episode.", 502
-            )
-        if season:
-            envelope["season_uuid"] = season["id"]
-        envelope.pop("pending_hierarchy", None)
-        persist(envelope, resolved)
-        result["metadata"].append({"stage": "Episodes", "outcome": response["outcome"]})
-        checkpoint("Poster", 0.35)
+            result["metadata"].append({"stage": "Episodes", "outcome": response["outcome"]})
+            if any(r not in resolved for r in refs):
+                raise PublishingError(
+                    "web_response", "Website response omitted a requested episode.", 502
+                )
+            advance(f"Season/episode metadata {index + 1} / {len(batches)}")
+
+        # The catalog is now synchronized: record that independently of whatever
+        # the poster or the subtitle uploads do next.
+        persist(
+            published_config_hash=service.fingerprint(config.model_dump()),
+            published_episodes_hash=service.targets_fingerprint(targets),
+        )
+
         if config.poster_path:
+            checkpoint("Poster")
             check()
             try:
                 poster = TmdbClient().poster(config.poster_path)
-                uploaded = client.upload(
-                    f"/api/v1/titles/{snapshot['id']}/poster",
-                    config.poster_path.rsplit("/", 1)[1],
-                    poster,
+                uploaded = step(
+                    "Poster",
+                    lambda: client.upload(
+                        f"/api/v1/titles/{snapshot['id']}/poster",
+                        config.poster_path.rsplit("/", 1)[1],
+                        poster,
+                    ),
                 )
                 if (
                     uploaded.get("outcome") not in ("created", "updated", "noop")
@@ -277,25 +380,35 @@ def publish_web(payload, ctx, progress):
                 if exc.code == "web_cancelled":
                     raise
                 result["poster"] = {"outcome": "failed", "error": exc.message}
+            advance("Poster")
         else:
             result["poster"] = {"outcome": "unavailable"}
 
-        for index, item in enumerate(captured):
+        for index, item in enumerate(uploads):
             check()
-            checkpoint(
-                f"Subtitle uploads {index} / {len(captured)}",
-                0.40 + 0.50 * index / len(captured),
-            )
+            checkpoint(f"Subtitle uploads {index} / {len(uploads)}")
             file_result = {"file_id": item["file_id"], "filename": item["filename"]}
+            if item.get("render_error"):
+                exc = PublishingError(item.get("render_code", "web_render"), item["render_error"])
+                end(begin("Subtitle", file_id=item["file_id"]), "failed", exc)
+                file_result.update(outcome="failed", error=exc.message, code=exc.code)
+                result["files"].append(file_result)
+                advance(f"Subtitle uploads {index + 1} / {len(uploads)}")
+                continue
             try:
                 fields = {"release_label": body.release_label}
                 if body.changelog is not None:
                     fields["changelog"] = body.changelog
-                uploaded = client.upload(
-                    f"/api/v1/episodes/{resolved[item['file_id']]}/subtitles",
-                    item["filename"],
-                    item["content"],
-                    fields,
+                uploaded = step(
+                    "Subtitle",
+                    lambda item=item, fields=fields: client.upload(
+                        f"/api/v1/episodes/{item['episode_uuid']}/subtitles",
+                        item["filename"],
+                        item["content"],
+                        fields,
+                    ),
+                    file_id=item["file_id"],
+                    episode_number=item["episode_number"],
                 )
                 revision = uploaded.get("revision", {})
                 if (
@@ -311,54 +424,116 @@ def publish_web(payload, ctx, progress):
                 with SyncSessionLocal() as session:
                     p = session.get(Project, pid)
                     if p and p.web_publish_attempt == attempt:
-                        f = session.get(File, item["file_id"])
-                        f.web_published_sha256 = item["sha256"]
-                        f.web_published_at = service.now()
+                        # The receipt belongs to the episode (and survives any
+                        # later file reassignment).
+                        service.record_subtitle_receipt(
+                            session,
+                            item,
+                            item["sha256"],
+                            revision.get("revisionNumber") or revision.get("revision_number"),
+                        )
                         session.commit()
             except PublishingError as exc:
                 if exc.code == "web_cancelled":
                     raise
                 file_result.update(outcome="failed", error=exc.message, code=exc.code)
             result["files"].append(file_result)
+            advance(f"Subtitle uploads {index + 1} / {len(uploads)}")
         check()
-        checkpoint(
-            f"Subtitle uploads {len(captured)} / {len(captured)}; final verification",
-            0.95,
+        checkpoint("Final verification")
+        final = step(
+            "Verify",
+            lambda: client.get_title(snapshot["id"]),
+            label=lambda _value: "verified",
         )
-        final = client.get_title(snapshot["id"])
         service.compatible(final, config)
-        _, verified = locate(
-            final,
-            config,
-            [{**i, "episode_uuid": resolved[i["file_id"]]} for i in captured],
-        )
+        _, verified = locate(final, config, targets)  # raises if a confirmed episode vanished
         all_episodes = final.get("episodes", []) + [
             e for s in final.get("seasons", []) for e in s.get("episodes", [])
         ]
         for row in result["files"]:
-            item = next(i for i in captured if i["file_id"] == row["file_id"])
+            item = next(i for i in uploads if i["file_id"] == row["file_id"])
             remote = next(
-                (e for e in all_episodes if e["id"] == verified[item["file_id"]]), {}
+                (e for e in all_episodes if e["id"] == verified.get(item["ref"])), {}
             )
-            if (
-                row["outcome"] != "failed"
-                and (remote.get("current_subtitle") or {}).get("sha256")
-                != item["sha256"]
-            ):
-                row.update(
-                    outcome="failed",
-                    code="web_concurrent_change",
-                    error="Website current subtitle changed during publication. Review before retrying.",
+            remote_sha = (remote.get("current_subtitle") or {}).get("sha256")
+            if row["outcome"] != "failed":
+                if remote_sha != item["sha256"]:
+                    row.update(
+                        outcome="failed",
+                        code="web_concurrent_change",
+                        error="Website current subtitle changed during publication. Review before retrying.",
+                    )
+            elif item.get("sha256") and remote_sha == item["sha256"]:
+                # The upload's acknowledgement was lost (or malformed) but the final
+                # read proves the website holds exactly the captured bytes: that read
+                # is the publication receipt. Anything else stays a failed upload.
+                op = begin("Reconcile subtitle", file_id=item["file_id"])
+                with SyncSessionLocal() as session:
+                    p = session.get(Project, pid)
+                    if p and p.web_publish_attempt == attempt:
+                        revision = remote.get("current_subtitle") or {}
+                        service.record_subtitle_receipt(
+                            session,
+                            item,
+                            item["sha256"],
+                            revision.get("revisionNumber") or revision.get("revision_number"),
+                        )
+                        session.commit()
+                end(op, "reconciled")
+                row.pop("error", None)
+                row.pop("code", None)
+                row["outcome"] = "reconciled"
+        # Website translationProgress = THIS project's confirmed-subtitle ratio
+        # (never an aggregate over projects sharing the title, never a maximum).
+        # It is synchronized by every attempt, uploads or not, whenever the
+        # project has its own subtitle receipts or already synchronized its own
+        # progress; a changed expected count is therefore picked up by the next
+        # attempt (even if it lowers the value) and a failed update is retried
+        # without repeating any upload. A project with neither leaves whatever
+        # the website already shows untouched.
+        with SyncSessionLocal() as session:
+            receipt = service.receipt_progress(session, session.get(Project, pid))
+        percent = receipt["percent"]
+        remote_progress = final.get("translation_progress")
+        synced = envelope.get("last_synced_project_progress")
+        own = receipt["subtitles_published"] > 0 or synced is not None
+        result["progress_update"] = {"percent": percent}
+        if percent is None or not own:
+            reason = (
+                "no expected episode count" if percent is None else "no project receipts yet"
+            )
+            end(begin("Progress", percent=percent), "skipped", reason=reason)
+            result["progress_update"]["outcome"] = "skipped"
+        elif remote_progress == percent:
+            end(begin("Progress", percent=percent), "noop", reason="already current")
+            persist(last_synced_project_progress=percent)
+            result["progress_update"]["outcome"] = "noop"
+        else:
+            try:
+                update = step(
+                    "Progress",
+                    lambda: client.update_progress(config, percent),
+                    label=lambda value: value["outcome"],
+                    percent=percent,
                 )
+                persist(last_synced_project_progress=percent)
+                result["progress_update"]["outcome"] = update["outcome"]
+            except PublishingError as exc:
+                if exc.code == "web_cancelled":
+                    raise
+                result["progress_update"].update(outcome="failed", error=exc.message)
+        advance("Progress")
         failed = (
             any(r["outcome"] == "failed" for r in result["files"])
             or result["poster"]["outcome"] == "failed"
+            or result["progress_update"].get("outcome") == "failed"
         )
         outcome = "failed" if failed else "published"
-        if not failed:
-            envelope["published_config_hash"] = service.fingerprint(config.model_dump())
-            persist(envelope)
-        checkpoint("Partially published / Failed" if failed else "Published", 1.0)
+        advance(
+            "Partially published / Failed" if failed else "Published",
+            result["work"]["total"] - result["work"]["done"],  # the job is finished
+        )
         return {
             "status": "failed" if failed else "succeeded",
             "result": result,
@@ -395,10 +570,9 @@ def publish_web(payload, ctx, progress):
                 p = session.get(Project, pid)
                 if p and p.web_publish_attempt == attempt:
                     p.web_publish_state = outcome
+                    result["receipt"] = service.receipt_progress(session, p)
                     job = session.scalar(
-                        select(JobRecord).where(
-                            JobRecord.dedupe_key == f"publish_web:{pid}:{attempt}"
-                        )
+                        select(JobRecord).where(JobRecord.dedupe_key == key)
                     )
                     if job:
                         job.result_json = service.dumps(result)

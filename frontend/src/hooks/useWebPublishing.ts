@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import client from '../api/client';
 import type { EpisodeChoice, WebFile, WebMapping } from '../utils/webPublishing';
+import { normalizeApprovedConfig } from '../utils/tmdbShared';
 
 export interface TitleMetadata {
   title_english: string; title_romaji: string | null; year: number | null;
@@ -12,7 +13,10 @@ export interface WebConfig {
   order_kind: 'standard' | 'episode_group'; group_id: string | null; season: WebSeason | null;
   metadata: TitleMetadata; poster_path: string | null;
 }
+export interface PublicationOperation { stage: string; outcome: string; error?: string }
+export interface WebEpisode { id?: number; tmdb_episode_id: string | null; episode_number: number; name_english: string | null; published_at?: string | null }
 export interface WebResult {
+  operations?: PublicationOperation[]; progress?: number;
   stage: string; error: { code: string; message: string } | null;
   files: { file_id: number; filename: string; outcome: string; error?: string }[];
   metadata: { stage: string; outcome: string }[];
@@ -20,11 +24,13 @@ export interface WebResult {
 }
 export interface TitleDetails extends WebConfig { romaji_titles: string[]; number_of_seasons: number | null }
 export interface WebState {
+  expected_episode_count?: number | null; episodes?: WebEpisode[];
   version: number; config: WebConfig | null; locked: boolean; season_locked: boolean; state: string; files: WebFile[];
-  release_label: string; job: { id: number; status: string; result: WebResult | null; error: string | null;
+  release_label: string; job: { progress?: number; id: number; status: string; result: WebResult | null; error: string | null;
     file_ids: number[]; release_label: string; changelog: string | null } | null;
 }
-export interface Catalog { seasons: WebSeason[]; groups: { id: string; name: string }[]; episodes_by_season: Record<string, EpisodeChoice[]> }
+export interface EpisodeGroup { id: string; name: string; type?: number | null; episode_count?: number | null; group_count?: number | null }
+export interface Catalog { seasons: WebSeason[]; groups: EpisodeGroup[]; episodes_by_season: Record<string, EpisodeChoice[]> }
 export interface SearchResult { id: string; media_type: 'tv' | 'movie'; title: string; year: string; poster_path: string | null; title_romaji: string | null; number_of_seasons: number | null }
 
 export function useWebAvailability() {
@@ -40,8 +46,8 @@ export function useWebState(projectId: number, enabled: boolean) {
 
 export function useSaveWeb(projectId: number) {
   const qc = useQueryClient();
-  return useMutation({ mutationFn: async (body: { version: number; config: WebConfig; mappings?: ({ file_id: number } & WebMapping)[] }) =>
-    (await client.put<WebState>(`/projects/${projectId}/web`, body)).data,
+  return useMutation({ mutationFn: async (body: { version: number; config: WebConfig; expected_episode_count?: number; mappings?: ({ file_id: number } & WebMapping)[] }) =>
+    (await client.put<WebState>(`/projects/${projectId}/web`, { ...body, config: normalizeApprovedConfig(body.config) })).data,
     onSuccess: data => qc.setQueryData(['projects', projectId, 'web'], data) });
 }
 

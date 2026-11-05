@@ -142,6 +142,34 @@ def test_alternative_order_uses_stable_episode_ids(tmdb):
     assert [e["episode_number"] for e in episodes] == [1, 2]
 
 
+def test_default_catalog_episode_shape_matches_the_wizard_mapping_contract(tmdb):
+    """The WEB wizard posts catalog episodes back as ``Mapping`` (extra=forbid)."""
+    from app.publishing.schemas import Mapping
+
+    client, _ = tmdb
+    for catalog, season in (
+        (client.catalog("42", season_number=0), "500"),
+        (client.catalog("42", group_id="group"), "subgroup"),
+    ):
+        for episode in catalog["episodes_by_season"][season]:
+            assert set(episode) == {"tmdb_episode_id", "episode_number", "name_english"}
+            Mapping.model_validate({"file_id": 1, **episode})
+
+
+def test_detailed_catalog_adds_descriptive_episode_metadata_on_request(tmdb):
+    client, calls = tmdb
+    plain = client.catalog("42", season_number=0)
+    detailed = client.catalog("42", season_number=0, detailed=True)
+    assert detailed["episodes_by_season"]["500"][0] == {
+        "tmdb_episode_id": "501", "episode_number": 1, "name_english": "Special",
+        "air_date": None, "overview": None, "runtime": None,
+    }
+    assert detailed["seasons"] == plain["seasons"]
+    n = len(calls)
+    client.catalog("42", season_number=0, detailed=True)
+    assert len(calls) == n                                  # same cached TMDB responses
+
+
 def test_wrong_group_rejected(tmdb):
     client, _ = tmdb
 

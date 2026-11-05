@@ -51,5 +51,6 @@ test('ImportDialog uses one card for every provider with clamp + tooltip', () =>
   assert.equal((src.match(/<Tooltip\b/g) ?? []).length >= 2, true);
   assert.match(src, /label=\{rows\.primary\}/);
   assert.match(src, /label=\{rows\.secondary\}/);
-  assert.match(src, /size=\{1050\}/);
+  // The modal was widened for the TMDB step (see importDialogLayout.test.ts); it was 1050 before.
+  assert.match(src, /size=\{IMPORT_MODAL_WIDTH\}/);
 });

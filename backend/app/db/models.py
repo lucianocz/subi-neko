@@ -88,6 +88,7 @@ class Project(Base):
         Index("idx_projects_status", "status"),
         Index("idx_projects_mapping_status", "speaker_mapping_status"),
         UniqueConstraint("source_directory", name="uq_projects_source_directory"),
+        Index("uq_projects_import_request_id", "import_request_id", unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -111,6 +112,17 @@ class Project(Base):
     web_publish_attempt: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     web_publish_state: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     web_identity_locked_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Chosen at import (NULL = legacy / no explicit choice): "import_only" or
+    # "publish_and_import". Records intent only — it never starts or implies a
+    # publication; web_publish_state/receipts remain the sole publication status.
+    web_publish_intent: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Operator-confirmed number of episodes the release is expected to have
+    # (NULL = never set). Independent of discovered files and ProjectEpisode rows
+    # and never recomputed after import.
+    expected_episode_count: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Client-generated id of the import request: a retry of the same request
+    # recovers this project instead of creating or rejecting a duplicate.
+    import_request_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # --- Output / publish lifecycle (see app/db/output_state.py) -------------
     # output_revision identifies the current state of everything that feeds the
     # final ASS/MKV; touch_output() bumps it. published_revision is the revision
@@ -209,13 +221,22 @@ class ProjectSpeaker(Base):
 
 
 class ProjectEpisode(Base):
-    """Per-episode metadata from the provider (AniDB) — titles and air dates
-    used as prompt context for the file matching that episode number."""
+    """Per-episode metadata, keyed by episode number and independent of File rows.
+
+    The ``title``/``title_native``/``air_date`` columns come from the anime
+    provider (AniDB) and feed prompt context. The ``tmdb_*`` columns hold the
+    TMDB episode of the project's confirmed WEB mapping (selected order +
+    season/subgroup): ``tmdb_episode_id`` is the stable external identity that
+    later file→episode matching uses. TMDB data never feeds translation prompts.
+    """
     __tablename__ = "project_episodes"
     __table_args__ = (
         UniqueConstraint("project_id", "episode_number",
                          name="uq_project_episodes_project_number"),
         Index("idx_project_episodes_project", "project_id"),
+        Index("uq_project_episodes_tmdb", "project_id", "tmdb_episode_id", unique=True),
+        Index("uq_project_episodes_web_uuid", "project_id", "web_episode_uuid", unique=True),
+        Index("uq_project_episodes_web_key", "project_id", "web_publisher_key", unique=True),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -224,6 +245,27 @@ class ProjectEpisode(Base):
     title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     title_native: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     air_date: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tmdb_episode_id: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tmdb_name: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tmdb_air_date: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tmdb_overview: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    tmdb_runtime: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    # Durable remote identity (receipt) from the website's publisher API. Set only
+    # from an API response that contains this episode; never cleared afterwards.
+    # ``web_identity_locked_at`` is set together with the id and freezes the
+    # TMDB placement of this episode; ``web_confirmed_at`` is the receipt time.
+    web_episode_uuid: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Stable title-scoped identity for a content episode without a TMDB episode id
+    # (a movie's single content episode): ``subineko:<uuid>``, generated once.
+    web_publisher_key: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_identity_locked_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_confirmed_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Subtitle receipt: the website's confirmation that THIS episode's subtitle is
+    # published. It belongs to the episode, not to a File, so reassigning files
+    # (or re-extracting them) never changes confirmed progress.
+    web_subtitle_sha256: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    web_subtitle_revision: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    web_subtitle_published_at: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(Text, nullable=False, server_default=func.now(), onupdate=func.now())
 

@@ -97,7 +97,33 @@ async def env(tmp_path, monkeypatch):
     )
     remote = FakeWebsite(config)
     monkeypatch.setattr(service, "lookup", lambda _c: copy.deepcopy(remote.snapshot))
-    monkeypatch.setattr(WebClient, "request", remote.request)
+    # The fake website speaks the *normalized* internal boundary of WebClient
+    # (lookup/get_title/metadata/upload/update_progress). The real wire contract of
+    # the current website API is covered by test_current_web_contract.py.
+    monkeypatch.setattr(WebClient, "lookup", lambda _c, _config: remote.request("GET", "/api/v1/titles"))
+    monkeypatch.setattr(
+        WebClient, "get_title", lambda _c, title_id: remote.request("GET", f"/api/v1/titles/{title_id}")
+    )
+    monkeypatch.setattr(
+        WebClient, "metadata", lambda _c, path, body: remote.request("PUT", path, json=body)
+    )
+    monkeypatch.setattr(
+        WebClient,
+        "upload",
+        lambda _c, path, filename, content, fields=None: remote.request(
+            "PUT",
+            path,
+            files={"file": (filename, content, "application/octet-stream")},
+            data=fields or {},
+        ),
+    )
+
+    def update_progress(_c, _config, percent):
+        remote.progress.append(percent)
+        remote.snapshot["translation_progress"] = percent
+        return {"outcome": "updated", "percent": percent}
+
+    monkeypatch.setattr(WebClient, "update_progress", update_progress, raising=False)
     monkeypatch.setattr(TmdbClient, "details", lambda *_a, **_k: config.model_dump())
     yield SimpleNamespace(
         sync=sync,
@@ -121,6 +147,8 @@ class FakeWebsite:
         self.calls = []
         self.fail_upload = None
         self.hook = None
+        self.progress = []  # percentages sent by update_progress
+        self.sequence = 0  # remote episode ids are unique across requests
 
     def request(self, method, path, **kwargs):
         self.calls.append((method, path, kwargs))
@@ -195,7 +223,7 @@ class FakeWebsite:
             else:
                 self.snapshot.update(copy.deepcopy(body))
             return {"outcome": "created", "title": copy.deepcopy(self.snapshot)}
-        for index, episode in enumerate(body["episodes"]):
+        for episode in body["episodes"]:
             found = next(
                 (
                     e
@@ -209,10 +237,11 @@ class FakeWebsite:
                 None,
             )
             if not found:
+                self.sequence += 1
                 target.append(
                     {
                         **copy.deepcopy(episode),
-                        "id": f"episode-{index + 1}",
+                        "id": f"episode-{self.sequence}",
                         "current_subtitle": None,
                     }
                 )
@@ -351,15 +380,29 @@ async def test_partial_upload_retains_identity_receipt_and_locks(env):
         assert not s.get(File, 2).web_published_sha256
         assert s.get(File, 2).web_episode_uuid == "episode-2"
         assert s.get(File, 2).web_identity_locked_at
-    with pytest.raises(PublishingError, match="locked"):
+    # The durable remote id (not the file) freezes the structure: a changed title
+    # identity is refused, while the file mapping itself stays editable.
+    with pytest.raises(PublishingError, match="cannot be changed"):
         service.save(
             env.pid,
             SaveRequest(
                 version=1,
-                config=env.config,
-                mappings=[Mapping(file_id=2, episode_number=9)],
+                config=env.config.model_copy(update={"tmdb_title_id": "999"}),
             ),
         )
+    service.save(
+        env.pid,
+        SaveRequest(
+            version=1,
+            config=env.config,
+            mappings=[
+                Mapping(file_id=1, episode_number=1, name_english="Film 1"),
+                Mapping(file_id=2, episode_number=9),
+            ],
+        ),
+    )
+    with env.sync() as s:
+        assert s.get(File, 2).web_episode_uuid == "episode-2"
     env.remote.fail_upload = None
     assert run(env)["status"] == "succeeded"
 
@@ -484,11 +527,13 @@ def test_http_exact_retry_and_sanitized_errors(monkeypatch):
     client.client = httpx.Client(
         base_url="https://web.example", transport=httpx.MockTransport(respond)
     )
-    result = client.upload(
-        "/api/v1/episodes/x/subtitles",
-        "a.ass",
-        b"exact\r\nbytes",
-        {"release_label": "Group", "changelog": ""},
+    # Generic transport behaviour (the wire shapes themselves are covered by
+    # test_current_web_contract.py): 503 is retried with the identical request.
+    result = client.request(
+        "PUT",
+        "/api/v1/titles/x/episodes/y/subtitles",
+        files={"file": ("a.ass", b"exact\r\nbytes", "application/octet-stream")},
+        data={"releaseLabel": "Group", "changelog": ""},
     )
     assert result["outcome"] == "noop"
     # Multipart boundaries may differ; fields and file bytes are identical.
@@ -501,7 +546,7 @@ def test_http_exact_retry_and_sanitized_errors(monkeypatch):
         ),
     )
     with pytest.raises(PublishingError) as exc:
-        client.get_title("x")
+        client.request("GET", "/api/v1/titles/x")
     assert "do-not-leak" not in str(exc.value)
     client.close()
 
@@ -597,8 +642,10 @@ async def test_uncertain_hierarchy_creation_reconciles_without_new_identities(
     assert run(env)["error_code"] == "web_uncertain"
     ids = [e["id"] for e in env.remote.snapshot["episodes"]]
     with env.sync() as s:
+        # The failed acknowledgement was reconciled by an explicit read: the ids the
+        # website really assigned are recorded (and only they lock).
         assert s.get(File, 1).web_identity_locked_at
-        assert not s.get(File, 1).web_episode_uuid
+        assert s.get(File, 1).web_episode_uuid == ids[0]
     monkeypatch.setattr(WebClient, "metadata", original)
     assert run(env)["status"] == "succeeded"
     assert [e["id"] for e in env.remote.snapshot["episodes"]] == ids
@@ -738,7 +785,9 @@ async def test_config_api_exposes_boolean_only_and_disabled_endpoint(env, monkey
         transport=httpx.ASGITransport(app), base_url="http://local"
     ) as client:
         response = await client.get("/api/config")
-        assert response.json() == {"web_publishing_available": True}
+        # Booleans only: neither the website URL/token nor the TMDB token is exposed.
+        assert response.json() == {"web_publishing_available": True, "tmdb_available": True}
+        assert "tmdb-secret" not in response.text
         monkeypatch.setattr(settings, "subineko_web_token", "")
         response = await client.get(f"/api/projects/{env.pid}/web")
         assert response.status_code == 503

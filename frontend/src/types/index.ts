@@ -65,6 +65,10 @@ export interface Project {
   context_approved_at: string | null;
   /** Non-null = archived (read-only until unarchived). */
   archived_at: string | null;
+  /** Set at import together with a TMDB mapping; null for older projects. */
+  expected_episode_count: number | null;
+  /** Import-time publishing intent (never a publication status). */
+  web_publish_intent: 'import_only' | 'publish_and_import' | null;
   created_at: string;
   updated_at: string;
   output: ProjectOutput;

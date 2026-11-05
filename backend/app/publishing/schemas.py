@@ -98,10 +98,35 @@ class SaveRequest(StrictModel):
     version: int = Field(ge=0)
     config: WebConfig
     mappings: list[Mapping] | None = Field(default=None, max_length=1000)
+    # The operator's expected number of episodes (progress denominator). Optional:
+    # omitted keeps the stored value; it is never derived from files or TMDB.
+    expected_episode_count: (
+        Annotated[int, Field(ge=1, le=100_000, strict=True)] | None
+    ) = None
 
 
 class PublishRequest(StrictModel):
+    """One explicit WEB attempt.
+
+    Every attempt synchronizes the title, the season/episode structure and the
+    poster. ``file_ids`` only chooses which accepted files additionally upload a
+    subtitle: an empty list is a metadata-only publication that needs no files
+    (``release_label`` may then be empty/omitted)."""
+
     version: int = Field(ge=0)
-    file_ids: list[int] = Field(min_length=1, max_length=1000)
-    release_label: Annotated[str, Field(min_length=1, max_length=200, pattern=r"\S")]
+    file_ids: list[int] = Field(default_factory=list, max_length=1000)
+    release_label: Annotated[str, Field(max_length=200)] | None = None
     changelog: Annotated[str, Field(max_length=4000)] | None = None
+
+    @model_validator(mode="after")
+    def label_for_uploads(self):
+        if self.file_ids:
+            if not (self.release_label or "").strip():
+                raise ValueError("A release label is required when uploading subtitles")
+        else:  # metadata-only: a blank label is meaningless; normalize it away
+            self.release_label = (self.release_label or "").strip() or None
+        return self
+
+    @property
+    def metadata_only(self) -> bool:
+        return not self.file_ids

@@ -100,6 +100,9 @@ class _ProjectFields(BaseModel):
     is_paused: bool
     context_approved_at: str | None = None
     archived_at: str | None = None
+    # Import-time TMDB bookkeeping (NULL for projects imported without it).
+    expected_episode_count: int | None = None
+    web_publish_intent: Literal["import_only", "publish_and_import"] | None = None
     created_at: str
     updated_at: str
 

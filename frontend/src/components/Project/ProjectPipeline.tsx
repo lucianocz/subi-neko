@@ -317,7 +317,7 @@ export function ProjectPipeline({ project, files }: ProjectPipelineProps) {
       <StepBox title="Output" state={outputState} detail={outputDetail} label={outputLabel} />
       {enabled && <StepBox title="WEB" dimWaiting={false} state={web.data?.state === 'publishing' ? 'active' : web.data?.state === 'published' ? 'completed' : web.data?.state === 'failed' || web.data?.state === 'partial' ? 'failed' : 'waiting'}
         label={WEB_LABELS[web.data?.state ?? 'not_published']} detail={<Button size="compact-xs" variant="light"
-          disabled={!!project.archived_at || !files.some(f => f.status === 'accepted')}
+          disabled={!!project.archived_at}
           onClick={() => setWebOpen(true)}>Publish to Web</Button>} />}
       {enabled && webOpen && <WebPublishDialog projectId={project.id} projectName={project.name} opened={webOpen} onClose={() => setWebOpen(false)} />}
     </Group>

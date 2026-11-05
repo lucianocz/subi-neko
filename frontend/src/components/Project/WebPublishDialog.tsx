@@ -1,355 +1,145 @@
-import { useEffect, useRef, useState } from 'react';
-import { Alert, Autocomplete, Badge, Box, Button, Checkbox, Divider, Grid, Group, Image, Loader, Modal, NumberInput, Paper, Progress, ScrollArea, Select, Stack, Stepper, Table, Text, Textarea, TextInput } from '@mantine/core';
-import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Button, Checkbox, Group, Loader, Modal, ScrollArea, Select, Stack, Stepper, Table, Text, Textarea, TextInput } from '@mantine/core';
+import { useQuery } from '@tanstack/react-query';
 import client from '../../api/client';
-import { usePublishWeb, useSaveWeb, useWebState, webApi, type Catalog, type SearchResult, type TitleDetails, type WebConfig, type WebState } from '../../hooks/useWebPublishing';
-import { DescriptionRequestGuard, refreshDescription, outcomeLabel, seasonLabel, suggestMappings, type WebMapping } from '../../utils/webPublishing';
-import { apiErrorDetail } from '../../utils/projectArchive';
+import { usePublishWeb, useSaveWeb, useWebState, type WebState } from '../../hooks/useWebPublishing';
+import { apiMessage } from '../../utils/tmdbShared';
+import { emptyDraft, IMPORT_MODAL_WIDTH, mappingErrors, type MappingDraft } from '../../utils/tmdbImport';
+import { assignFile, episodeKey, prepareAssignments, uploadFileIds, type Assignments, type PublishEpisode } from '../../utils/publicationWorkflow';
+import { TmdbMappingEditor } from '../Tmdb/TmdbMappingEditor';
+import { PublicationProgress } from './PublicationProgress';
 
-function message(error: unknown) { return apiErrorDetail(error).message ?? 'Request failed. Please retry.'; }
-const posterUrl = (path: string) => `https://image.tmdb.org/t/p/w342${path}`;
-
-function titleQuery(media: string, id: string) {
-  return { queryKey: ['web-title', media, id], queryFn: () => webApi.details(media, id), staleTime: 60_000, retry: false as const };
-}
-
-function titleConfig(detail: TitleDetails): WebConfig {
-  return { tmdb_title_id: detail.tmdb_title_id, media_type: detail.media_type, episode_structure: detail.episode_structure,
-    order_kind: detail.order_kind, group_id: detail.group_id, season: detail.season, metadata: detail.metadata, poster_path: detail.poster_path };
-}
-
-function SearchCard({ result, busy, selected, onSelect }: {
-  result: SearchResult; busy: boolean; selected: boolean; onSelect: () => void;
+function Episodes({ episodes, state, assignments, onAssignments, disabled }: {
+  episodes: PublishEpisode[]; state: WebState; assignments: Assignments; onAssignments: (a: Assignments) => void;
+  disabled: boolean;
 }) {
-  const detail = useQuery(titleQuery(result.media_type, result.id));
-  const names = detail.data?.romaji_titles ?? (result.title_romaji ? [result.title_romaji] : []);
-  const seasons = detail.data?.number_of_seasons ?? result.number_of_seasons;
-  return <Paper component="button" type="button" p="sm" withBorder disabled={busy} onClick={onSelect}
-    aria-pressed={selected} style={{ width: '100%', textAlign: 'left', cursor: busy ? 'wait' : 'pointer',
-      color: 'inherit', borderColor: selected ? 'var(--mantine-primary-color-filled)' : undefined }}>
-    <Group wrap="nowrap">{result.poster_path && <Image src={posterUrl(result.poster_path)} w={48} h={72} fit="cover" alt="" />}
-      <Stack gap={3} style={{ flex: 1, minWidth: 0 }}><Text fw={600} lineClamp={2}>{result.title}</Text>
-        {names.length > 0 && <Text size="sm" c="dimmed" lineClamp={2}>{names.join(' / ')}</Text>}
-        <Text size="xs" c="dimmed">{[result.year, result.media_type === 'tv' ? 'TV' : 'Movie',
-          seasons != null ? `${seasons} season${seasons === 1 ? '' : 's'}` : null].filter(Boolean).join(' · ')}</Text>
-      </Stack>{busy && selected && <Loader size="xs" />}</Group>
-  </Paper>;
-}
-
-function TitleStep({ config, setConfig, saved, locked, projectName, onTranslate, translating, invalidateTranslation }: {
-  config: WebConfig | null; setConfig: (value: WebConfig) => void; saved: boolean; locked: boolean; projectName: string;
-  onTranslate: () => void; translating: boolean;
-  invalidateTranslation: () => void;
-}) {
-  const [query, setQuery] = useState(projectName);
-  const [search, setSearch] = useState('');
-  const [error, setError] = useState('');
-  const [busy, setBusy] = useState(false);
-  const refreshGuard = useRef(new DescriptionRequestGuard());
-  useEffect(() => {
-    const guard = refreshGuard.current;
-    return () => guard.invalidate();
-  }, []);
-  const qc = useQueryClient();
-  const detail = useQuery({ ...titleQuery(config?.media_type ?? 'tv', config?.tmdb_title_id ?? ''), enabled: !!config });
-  const names = detail.data?.romaji_titles ?? [];
-  const results = useQuery({ queryKey: ['web-search', search], enabled: !!search,
-    queryFn: () => webApi.search(search), staleTime: 60_000 });
-  function searchAgain() {
-    const next = query.trim();
-    if (next && next === search) void results.refetch();
-    else setSearch(next);
-  }
-  async function select(media: string, id: string) {
-    invalidateTranslation();
-    refreshGuard.current.invalidate();
-    setBusy(true); setError('');
-    try {
-      const detail = titleConfig(await qc.fetchQuery(titleQuery(media, id)));
-      const remote = await webApi.lookup(detail);
-      if (remote) {
-        detail.episode_structure = remote.episode_structure;
-        detail.order_kind = remote.episode_order.kind;
-        detail.group_id = remote.episode_order.group_id;
-      }
-      setConfig(detail);
-    } catch (e) { setError(message(e)); } finally { setBusy(false); }
-  }
-  async function refresh() {
-    if (!config) return;
-    invalidateTranslation();
-    const revision = refreshGuard.current.capture();
-    setBusy(true); setError('');
-    try {
-      const refreshed = await webApi.details(config.media_type, config.tmdb_title_id, true);
-      if (!refreshGuard.current.isCurrent(revision)) return;
-      qc.setQueryData(titleQuery(config.media_type, config.tmdb_title_id).queryKey, refreshed);
-      setConfig({ ...config, metadata: refreshDescription(config.metadata, refreshed.metadata), poster_path: refreshed.poster_path ?? config.poster_path });
-    }
-    catch (e) { setError(message(e)); } finally { setBusy(false); }
-  }
-  function field<K extends keyof WebConfig['metadata']>(key: K, value: WebConfig['metadata'][K]) {
-    refreshGuard.current.invalidate();
-    if (config) setConfig({ ...config, metadata: { ...config.metadata, [key]: value } });
-  }
-  return <Stack>
-    {!saved && !locked && <>
-      <Group align="flex-end"><TextInput label="Search TMDB" value={query} onChange={e => setQuery(e.currentTarget.value)} style={{ flex: 1 }} onKeyDown={e => { if (e.key === 'Enter') searchAgain(); }} />
-        <Button onClick={searchAgain} disabled={!query.trim()} loading={results.isFetching}>Search</Button></Group>
-      {results.error && <Alert color="red">{message(results.error)}</Alert>}
-      <Paper p="sm" withBorder><Stack gap="xs"><Text size="sm" fw={600}>Search results</Text>
-        <ScrollArea.Autosize mah={250}><Stack gap="xs">{results.data?.map(r => <SearchCard key={`${r.media_type}:${r.id}`}
-          result={r} busy={busy} selected={config?.media_type === r.media_type && config.tmdb_title_id === r.id}
-          onSelect={() => void select(r.media_type, r.id)} />)}</Stack></ScrollArea.Autosize>
-        {!results.data?.length && !results.isFetching && <Text size="sm" c="dimmed">{search ? 'No matching titles found.' : 'Search TMDB to choose a title.'}</Text>}
-      </Stack></Paper>
-    </>}
-    {error && <Alert color="red">{error}</Alert>}
-    {config && <><Divider label="Title details" labelPosition="left" size="sm" /><Paper withBorder p="md"><Group align="flex-start" wrap="wrap">
-      <Stack w={150}>{config.poster_path && <Image src={posterUrl(config.poster_path)} alt="Approved TMDB poster" radius="sm" />}
-        <Badge>{config.media_type} · TMDB {config.tmdb_title_id}</Badge>
-        <Button size="xs" variant="light" onClick={() => void refresh()} loading={busy}>Refresh metadata</Button>
-        {locked && <Text size="xs" c="dimmed">Title identity locked</Text>}</Stack>
-      <Stack style={{ flex: 1, minWidth: 240 }} gap="xs">
-        <Grid columns={10} gap="xs">
-          <Grid.Col span={8}><TextInput label="English title" required maxLength={255} value={config.metadata.title_english} onChange={e => field('title_english', e.currentTarget.value)} /></Grid.Col>
-          <Grid.Col span={2}><NumberInput label="Year" min={1} max={9999} allowDecimal={false} value={config.metadata.year ?? ''} onChange={v => field('year', typeof v === 'number' ? v : null)} /></Grid.Col>
-          <Grid.Col span={8}>{names.length > 1
-            ? <Autocomplete label="Romaji title" placeholder="Choose a name or enter your own" data={names} maxLength={255} value={config.metadata.title_romaji ?? ''} onChange={v => field('title_romaji', v || null)} />
-            : <TextInput label="Romaji title" maxLength={255} value={config.metadata.title_romaji ?? ''} onChange={e => field('title_romaji', e.currentTarget.value || null)} />}</Grid.Col>
-          <Grid.Col span={2}><TextInput label="Language" required maxLength={3} value={config.metadata.original_language} onChange={e => field('original_language', e.currentTarget.value)} /></Grid.Col>
-        </Grid>
-        <Textarea label="Description" rows={5} maxLength={10000} value={config.metadata.description ?? ''} onChange={e => field('description', e.currentTarget.value || null)} />
-        <Group justify="flex-end"><Button size="compact-xs" variant="subtle" loading={translating}
-          disabled={busy || !config.metadata.original_description?.trim()} onClick={onTranslate}>Translate with AI</Button></Group>
-      </Stack>
-    </Group></Paper></>}
-  </Stack>;
-}
-
-function EpisodeStep({ config, setConfig, state, mappings, setMappings }: {
-  config: WebConfig; setConfig: (c: WebConfig) => void; state: WebState;
-  mappings: Record<number, WebMapping>; setMappings: (m: Record<number, WebMapping>) => void;
-}) {
-  const [error, setError] = useState('');
-  const qc = useQueryClient();
-  const catalog = useQuery({ queryKey: ['web-catalog', config.tmdb_title_id, config.group_id, config.season?.season_number],
-    enabled: config.media_type === 'tv', queryFn: () => webApi.catalog(config), staleTime: 60_000 });
-  const data = catalog.data;
-  const episodes = data?.episodes_by_season[config.season?.external_id ?? ''] ?? [];
-  const samePlacement = state.config?.tmdb_title_id === config.tmdb_title_id && state.config?.order_kind === config.order_kind
-    && state.config?.group_id === config.group_id && state.config?.season?.external_id === config.season?.external_id
-    && state.config?.episode_structure === config.episode_structure;
-  const assigned = new Set(Object.values(mappings).map(m => m.tmdb_episode_id));
-  useEffect(() => {
-    if (config.media_type === 'tv' && config.episode_structure === 'SEASONED' && !config.season
-      && !state.season_locked && (config.order_kind === 'standard' || config.group_id) && data?.seasons.length === 1) {
-      setConfig({ ...config, season: data.seasons[0] });
-    }
-  }, [config, data, state.season_locked, setConfig]);
-  useEffect(() => {
-    const choices = data?.episodes_by_season[config.season?.external_id ?? ''] ?? [];
-    const restored = state.files.map(f => ({ ...f, mapping: mappings[f.id] ?? (samePlacement ? f.mapping : null) }));
-    const suggested = suggestMappings(restored, choices);
-    if (config.episode_structure === 'FLAT') {
-      state.files.forEach((f, index) => {
-        if (!suggested[f.id]) suggested[f.id] = { tmdb_episode_id: null, episode_number: index + 1,
-          name_english: state.files.length === 1 ? config.metadata.title_english : `${config.metadata.title_english} · ${index + 1}` };
-      });
-    }
-    const next = { ...suggested, ...mappings };
-    if (JSON.stringify(next) !== JSON.stringify(mappings)) setMappings(next);
-  }, [data, config.season, config.episode_structure, config.metadata.title_english, state.files, samePlacement, mappings, setMappings]);
-  const placementLocked = state.season_locked;
-  async function refresh() {
-    try {
-      const value = await webApi.catalog(config, true);
-      qc.setQueryData<Catalog>(['web-catalog', config.tmdb_title_id, config.group_id, config.season?.season_number], value);
-    } catch (e) { setError(message(e)); }
-  }
-  function suggest() {
-    const files = state.files.map(f => ({ ...f, mapping: mappings[f.id] ?? f.mapping }));
-    setMappings({ ...suggestMappings(files, episodes), ...mappings });
-  }
-  return <Stack>
-    {config.media_type === 'tv' && <>
-      <Group grow wrap="nowrap" align="flex-end"><Select label="Episode order" disabled={state.locked} value={config.order_kind}
-        data={[{ value: 'standard', label: 'Standard' }, { value: 'episode_group', label: 'Alternative episode group' }]}
-        onChange={v => { setConfig({ ...config, order_kind: v as WebConfig['order_kind'], group_id: null, season: null }); setMappings({}); }} />
-        <Select label="Structure" disabled={state.locked} value={config.episode_structure} data={['SEASONED', 'FLAT']}
-          onChange={v => { setConfig({ ...config, episode_structure: v as WebConfig['episode_structure'], season: null }); setMappings({}); }} />
-      {config.order_kind === 'episode_group' && <Select label="Episode group" disabled={state.locked} value={config.group_id} searchable
-        data={(data?.groups.length ? data.groups : config.group_id ? [{ id: config.group_id, name: config.group_id }] : []).map(g => ({ value: g.id, label: g.name }))}
-        onChange={v => { setConfig({ ...config, group_id: v, season: null }); setMappings({}); }} />}
-      {config.episode_structure === 'SEASONED' && <Select label="Project season / subgroup" disabled={placementLocked} searchable value={config.season?.external_id ?? null}
-        data={[...(data?.seasons ?? []), ...(config.season && !data?.seasons.some(s => s.external_id === config.season?.external_id) ? [config.season] : [])]
-          .map(s => ({ value: s.external_id, label: `${s.season_number} · ${s.name_english ?? s.external_id}` }))}
-        onChange={v => { setConfig({ ...config, season: data?.seasons.find(s => s.external_id === v) ?? null }); setMappings({}); }} />}</Group>
-      <Group><Button size="xs" variant="light" loading={catalog.isFetching} onClick={() => void refresh()}>Refresh episodes</Button>
-        <Button size="xs" variant="light" disabled={!episodes.length} onClick={suggest}>Suggest from stored episode numbers</Button></Group>
-      {(catalog.error || error) && <Alert color="yellow">{error || message(catalog.error)} Saved mappings remain available.</Alert>}
-    </>}
-    {config.media_type === 'movie' && <Text size="sm">Movie · FLAT · Standard order. Each file maps to one distinct content item.</Text>}
-    <ScrollArea><Table style={{ minWidth: 680 }}><Table.Thead><Table.Tr><Table.Th>Project file</Table.Th><Table.Th>Website episode / content item</Table.Th></Table.Tr></Table.Thead>
-      <Table.Tbody>{state.files.map(f => {
-        const current = mappings[f.id] ?? (samePlacement ? f.mapping : null);
-        const missing = current?.tmdb_episode_id && !episodes.some(e => e.tmdb_episode_id === current.tmdb_episode_id);
-        return <Table.Tr key={f.id}><Table.Td w="45%"><Text size="sm" style={{ overflowWrap: 'anywhere' }}>{f.filename}</Text>
-          <Text size="xs" c="dimmed">Episode {f.episode_number ?? '?'} · {f.status}{f.locked ? ' · Locked' : ''}</Text></Table.Td>
-          <Table.Td>{config.episode_structure === 'FLAT' ? <Group wrap="nowrap" align="flex-end">
-            <NumberInput label="Number" w={90} min={0} max={2147483647} allowDecimal={false} disabled={f.locked} value={current?.episode_number ?? f.episode_number ?? 1}
-              onChange={v => { if (typeof v === 'number') setMappings({ ...mappings, [f.id]: { tmdb_episode_id: current?.tmdb_episode_id ?? null, name_english: current?.name_english ?? config.metadata.title_english, episode_number: v } }); }} />
-            <TextInput label="English name" style={{ flex: 1 }} maxLength={255} disabled={f.locked} value={current?.name_english ?? ''}
-              onChange={e => setMappings({ ...mappings, [f.id]: { tmdb_episode_id: current?.tmdb_episode_id ?? null, episode_number: current?.episode_number ?? f.episode_number ?? 1, name_english: e.currentTarget.value || null } })} />
-          </Group> : <Select placeholder="Confirm an episode" searchable disabled={f.locked} value={current?.tmdb_episode_id ?? null}
-            data={[...episodes.filter(e => !assigned.has(e.tmdb_episode_id) || e.tmdb_episode_id === current?.tmdb_episode_id),
-              ...(missing && current ? [{ ...current, tmdb_episode_id: current.tmdb_episode_id! }] : [])]
-              .map(e => ({ value: e.tmdb_episode_id, label: `${e.episode_number} · ${e.name_english ?? e.tmdb_episode_id}` }))}
-            onChange={v => { const episode = episodes.find(e => e.tmdb_episode_id === v); if (episode) setMappings({ ...mappings, [f.id]: episode }); }} />}
-            {current && <Text size="xs" c="dimmed" style={{ overflowWrap: 'anywhere' }}>Approved: {current.episode_number} · {current.name_english ?? 'No English name'}</Text>}
-            {missing && current && <Text size="xs" c="yellow">Saved identity retained; not present in current TMDB results.</Text>}
-            {!f.locked && current?.tmdb_episode_id && episodes.some(e => e.tmdb_episode_id === current.tmdb_episode_id && e.name_english !== current.name_english)
-              && <Button size="compact-xs" variant="subtle" onClick={() => {
-                const updated = episodes.find(e => e.tmdb_episode_id === current.tmdb_episode_id);
-                if (updated) setMappings({ ...mappings, [f.id]: updated });
-              }}>Use refreshed episode metadata</Button>}
-            {!current && <Text size="xs" c="yellow">Mapping needs confirmation</Text>}
-          </Table.Td></Table.Tr>;
-      })}</Table.Tbody></Table></ScrollArea>
-  </Stack>;
+  return <ScrollArea.Autosize mah={330} offsetScrollbars><Table style={{ minWidth: 640 }}>
+    <Table.Thead><Table.Tr><Table.Th>Episode</Table.Th><Table.Th>Project file</Table.Th><Table.Th>Upload ASS</Table.Th></Table.Tr></Table.Thead>
+    <Table.Tbody>{episodes.map(episode => {
+      const key = episodeKey(episode);
+      const assignment = assignments[key];
+      const file = state.files.find(f => f.id === assignment?.fileId);
+      const eligible = file?.status === 'accepted' && !file.render_error;
+      const used = new Set(Object.entries(assignments).filter(([k]) => k !== key).map(([, a]) => a.fileId));
+      return <Table.Tr key={key}><Table.Td><Text size="sm">{String(episode.episode_number).padStart(2, '0')} · {episode.name_english ?? 'Untitled'}</Text></Table.Td>
+        <Table.Td><Select disabled={disabled} aria-label={`File for episode ${episode.episode_number}`} placeholder="No file" clearable searchable
+          value={file ? String(file.id) : null} data={state.files.filter(f => !used.has(f.id)).map(f => ({ value: String(f.id), label: `${f.filename} · ${f.status}` }))}
+          onChange={v => onAssignments(assignFile(assignments, key, state.files.find(f => String(f.id) === v) ?? null))} />
+          {file?.render_error && <Text size="xs" c="red">{file.render_error}</Text>}</Table.Td>
+        <Table.Td><Checkbox aria-label={`Upload episode ${episode.episode_number}`} disabled={disabled || !eligible} checked={!!eligible && !!assignment?.upload}
+          onChange={e => onAssignments({ ...assignments, [key]: { fileId: file?.id ?? null, upload: e.currentTarget.checked } })} /></Table.Td>
+      </Table.Tr>;
+    })}</Table.Tbody>
+  </Table></ScrollArea.Autosize>;
 }
 
 function Wizard({ projectId, projectName, initial, onClose }: { projectId: number; projectName: string; initial: WebState; onClose: () => void }) {
-  const queryClient = useQueryClient();
-  const { data = initial } = useWebState(projectId, true);
-  const [config, setConfigState] = useState<WebConfig | null>(initial.config);
-  const [translating, setTranslating] = useState(false);
-  const translationGuard = useRef(new DescriptionRequestGuard());
-  const translationActive = useRef(false);
-  useEffect(() => {
-    const guard = translationGuard.current;
-    return () => guard.invalidate();
-  }, []);
-  function setConfig(value: WebConfig) {
-    translationGuard.current.invalidate();
-    setConfigState(value);
-  }
-  const [step, setStep] = useState(initial.state === 'publishing' ? 3 : 0);
-  const [mappings, setMappings] = useState<Record<number, WebMapping>>(() => Object.fromEntries(initial.files.filter(f => f.mapping).map(f => [f.id, f.mapping!])));
-  const [selected, setSelected] = useState(initial.state === 'publishing' && initial.job ? initial.job.file_ids : initial.files.filter(f => f.status === 'accepted').map(f => f.id));
-  const [release, setRelease] = useState(initial.state === 'publishing' && initial.job ? initial.job.release_label : initial.release_label);
-  const [changelog, setChangelog] = useState(initial.state === 'publishing' ? initial.job?.changelog ?? '' : '');
+  const { data = initial, refetch } = useWebState(projectId, true);
+  const [draft, setDraft] = useState<MappingDraft>(() => ({ ...emptyDraft(`project:${projectId}`, projectName),
+    config: initial.config, expected: initial.expected_episode_count ?? null, expectedDirty: true, suggestionHandled: true }));
+  const updateDraft = useCallback((update: (d: MappingDraft) => MappingDraft) => setDraft(update), []);
+  const [step, setStep] = useState(initial.state === 'publishing' ? 2 : 0);
+  const [assignments, setAssignments] = useState<Assignments>({});
+  const [release, setRelease] = useState(initial.job && initial.state === 'publishing' ? initial.job.release_label : initial.release_label);
+  const [changelog, setChangelog] = useState(initial.job && initial.state === 'publishing' ? initial.job.changelog ?? '' : '');
+  const [editorBusy, setEditorBusy] = useState(false);
   const [error, setError] = useState('');
+  const submitting = useRef(false);
+  const preparedPlacement = useRef('');
+  // A polling response may establish remote locks, but must not authorize an
+  // old form to overwrite somebody else's newer approved edits.
+  const approvalKey = (state: WebState) => JSON.stringify([state.config, state.expected_episode_count,
+    state.files.map(f => [f.id, f.mapping])]);
+  const approvedBase = useRef({ key: approvalKey(initial), version: initial.version });
+  const saveVersion = () => approvalKey(data) === approvedBase.current.key ? data.version : approvedBase.current.version;
   const save = useSaveWeb(projectId);
   const publish = usePublishWeb(projectId);
-  async function translateDescription() {
-    if (!config || translationActive.current) return;
-    translationActive.current = true;
-    setTranslating(true); setError('');
-    const guard = translationGuard.current;
-    const revision = guard.capture();
-    try {
-      const proposal = await webApi.translate(projectId, data.version, config);
-      if (!guard.isCurrent(revision)) return;
-      // Persist only after confirming the wizard still owns this exact draft.
-      // Existing save performs the database version CAS, without an LLM transaction.
-      const saved = await save.mutateAsync({ version: data.version,
-        config: { ...config, metadata: { ...config.metadata, description: proposal.description } } });
-      if (guard.isCurrent(revision)) setConfigState(saved.config);
-      void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'llm-metrics'] });
-    } catch (e) { if (guard.isCurrent(revision)) setError(message(e)); }
-    finally { translationActive.current = false; setTranslating(false); }
-  }
   const busy = data.state === 'publishing';
-  const activeStep = busy ? 3 : step;
-  const job = useQuery({ queryKey: ['jobs', data.job?.id], enabled: !!data.job?.id && busy,
-    queryFn: async () => (await client.get<{ progress: number; message: string }>(`/jobs/${data.job?.id}`)).data,
-    refetchInterval: busy ? 1500 : false });
+  const activeStep = busy ? 2 : step;
+  const pending = save.isPending || publish.isPending;
+  // Reconcile first: remote identities may have committed during an ambiguous failure.
+  const remote = useQuery({ queryKey: ['web-remote', projectId], retry: false, staleTime: 0,
+    queryFn: async () => (await client.get(`/projects/${projectId}/web/remote`)).data });
+  useEffect(() => { if (remote.isSuccess) void refetch(); }, [remote.isSuccess, refetch]);
+  const episodes = data.episodes ?? [];
+  const selected = uploadFileIds(assignments, data.files);
+  const hasUploads = selected.length > 0;
+  const updateAssignments = (next: Assignments) => {
+    setAssignments(next);
+    if (!uploadFileIds(next, data.files).length) { setRelease(''); setChangelog(''); }
+  };
+
   async function next() {
-    if (!config) return;
-    setError('');
-    if (!config.metadata.title_english.trim()) { setError('Enter an English title.'); return; }
-    if (!/^[a-z]{2,3}$/.test(config.metadata.original_language)) { setError('Language must be a two- or three-letter lowercase code.'); return; }
-    if (config.order_kind === 'episode_group' && !config.group_id) { setError('Select an episode group.'); return; }
+    if (!draft.config || submitting.current) return;
+    const errors = mappingErrors(draft.config, draft.expected);
+    if (Object.keys(errors).length) { setError(Object.values(errors)[0] ?? 'Review the mapping.'); return; }
+    submitting.current = true; setError('');
     try {
-      const rows = step === 1 ? Object.entries(mappings).map(([id, m]) => ({ file_id: Number(id), ...m })) : undefined;
-      await save.mutateAsync({ version: data.version, config, mappings: rows });
-      setStep(step + 1);
-    } catch (e) { setError(message(e)); }
+      const saved = await save.mutateAsync({ version: saveVersion(), config: draft.config, expected_episode_count: draft.expected! });
+      approvedBase.current = { key: approvalKey(saved), version: saved.version };
+      setDraft(d => ({ ...d, config: saved.config, expected: saved.expected_episode_count ?? d.expected }));
+      // Prepare once on entering the episode step; background refresh never replaces manual choices.
+      const placement = JSON.stringify([saved.config?.tmdb_title_id, saved.config?.media_type, saved.config?.episode_structure, saved.config?.order_kind, saved.config?.group_id, saved.config?.season?.external_id]);
+      const nextAssignments = prepareAssignments(saved.episodes ?? [], saved.files, preparedPlacement.current === placement ? assignments : {});
+      preparedPlacement.current = placement;
+      updateAssignments(nextAssignments);
+      setStep(1);
+    } catch (e) { setError(apiMessage(e)); }
+    finally { submitting.current = false; }
   }
+
   async function start() {
-    setError('');
+    if (!draft.config || submitting.current) return;
+    submitting.current = true; setError('');
     try {
-      await publish.mutateAsync({ version: data.version, file_ids: selected, release_label: release, changelog: changelog || null });
-      setStep(3);
-    }
-    catch (e) { setError(message(e)); }
+      const mappings = episodes.flatMap(episode => {
+        const fileId = assignments[episodeKey(episode)]?.fileId;
+        return fileId == null ? [] : [{ file_id: fileId, tmdb_episode_id: episode.tmdb_episode_id, episode_number: episode.episode_number, name_english: episode.name_english }];
+      });
+      const saved = await save.mutateAsync({ version: saveVersion(), config: draft.config,
+        expected_episode_count: draft.expected!, mappings });
+      approvedBase.current = { key: approvalKey(saved), version: saved.version };
+      await publish.mutateAsync({ version: saved.version, file_ids: selected,
+        release_label: hasUploads ? release.trim() : '', changelog: hasUploads ? changelog.trim() || null : null });
+      setStep(2);
+    } catch (e) { setError(apiMessage(e)); }
+    finally { submitting.current = false; }
   }
-  const result = data.job?.result;
-  const remote = useQuery({ queryKey: ['web-remote', projectId, data.version, data.job?.status],
-    enabled: !!data.config && !busy, retry: false, staleTime: Infinity, refetchOnMount: 'always',
-    queryFn: async () => {
-      const response = await client.get(`/projects/${projectId}/web/remote`);
-      void queryClient.invalidateQueries({ queryKey: ['projects', projectId, 'web'] });
-      return response.data;
-    } });
-  return <Stack mih={600}>
-    <Stepper active={activeStep} size="sm" onStepClick={activeStep === 3 ? undefined : s => { if (s < step) setStep(s); }}>
-      <Stepper.Step label="Title" /><Stepper.Step label="Episodes" /><Stepper.Step label="Publish" /><Stepper.Step label="Progress" />
+
+  return <Stack gap="sm">
+    <Stepper active={activeStep} size="xs" iconSize={22} allowNextStepsSelect={false}>
+      <Stepper.Step label="Title" /><Stepper.Step label="Episodes" /><Stepper.Step label="Publish" />
     </Stepper>
-    {error && <Alert color="red">{error}</Alert>}
-    {remote.error && <Alert color="red">{message(remote.error)}</Alert>}
-    <Box style={{ flex: 1 }}>
-      {activeStep === 0 && <fieldset disabled={save.isPending} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}><TitleStep projectName={projectName} config={config} setConfig={value => { if (value.tmdb_title_id !== config?.tmdb_title_id) setMappings({}); setConfig(value); }} saved={data.locked} locked={data.locked}
-        onTranslate={() => void translateDescription()} translating={translating}
-        invalidateTranslation={() => translationGuard.current.invalidate()} /></fieldset>}
-      {activeStep === 1 && config && <EpisodeStep config={config} setConfig={setConfig} state={data} mappings={mappings} setMappings={setMappings} />}
-      {activeStep === 2 && config && <Stack>
-        <Paper withBorder p="md"><Stack gap="xs">
-        <Group align="flex-start" wrap="nowrap">{config.poster_path && <Image src={posterUrl(config.poster_path)} w={65} alt="Approved poster" />}
-          <Stack gap={3}><Text fw={600}>{config.metadata.title_english}{config.metadata.title_romaji && ` (${config.metadata.title_romaji})`}</Text><Text size="sm">{config.media_type} · {config.episode_structure} · {config.order_kind} · {config.season ? seasonLabel(config.season) : 'Content items directly under title'}</Text>
-            <Text size="xs" c="dimmed">{config.metadata.year} · {config.metadata.original_language}</Text></Stack></Group>
-        {config.metadata.description && <Text size="sm" lineClamp={4}>{config.metadata.description}</Text>}
-        </Stack></Paper>
-        <Divider label="Files to publish" labelPosition="left" size="sm" />
-        <ScrollArea.Autosize mah={230}><Stack gap="xs">{data.files.filter(f => f.status === 'accepted').map(f => <Checkbox key={f.id}
-          disabled={busy} checked={selected.includes(f.id)} onChange={e => setSelected(e.currentTarget.checked ? [...selected, f.id] : selected.filter(id => id !== f.id))}
-          label={<Box><Text size="sm" style={{ overflowWrap: 'anywhere' }}>{f.filename}</Text><Text size="xs" c={f.mapping && !f.render_error ? 'dimmed' : 'yellow'}>
-            {f.render_error ?? (f.mapping ? `${f.mapping.episode_number} · ${f.mapping.name_english ?? ''}` : 'Missing confirmed mapping')}
-          </Text></Box>} />)}</Stack></ScrollArea.Autosize>
-        <Divider label="Release details" labelPosition="left" size="sm" />
-        <TextInput label="Release label" required maxLength={200} disabled={busy} value={release} onChange={e => setRelease(e.currentTarget.value)} />
-        <Textarea label="Changelog (optional)" maxLength={4000} disabled={busy} value={changelog} onChange={e => setChangelog(e.currentTarget.value)} />
-      </Stack>}
-      {activeStep === 3 && <Stack>
-        <Text fw={600}>Publication progress</Text>
-        {busy && <Stack gap="xs"><Progress value={(job.data?.progress ?? 0) * 100} animated /><Text size="sm">{job.data?.message ?? result?.stage ?? 'Queued'}</Text>
-          <Button variant="light" color="orange" size="xs" onClick={() => { void client.post(`/jobs/${data.job?.id}/cancel`).catch(e => setError(message(e))); }}>Request cancellation</Button>
-          <Text size="xs" c="dimmed">An in-flight request may finish. The next publication stays blocked until this worker stops.</Text></Stack>}
-        {result && <Paper withBorder p="sm"><Stack gap={4}><Text fw={600}>{result.stage}</Text>
-          <Text size="sm">Subtitle results: {(['created', 'updated', 'noop', 'failed'] as const)
-            .map(outcome => `${outcomeLabel(outcome)}: ${result.files.filter(file => file.outcome === outcome).length}`).join(' · ')}</Text>
-          {result.metadata.map(r => <Text size="sm" key={r.stage}>{r.stage}: {outcomeLabel(r.outcome)}</Text>)}
-          {result.poster && <Text size="sm" c={result.poster.error ? 'red' : undefined}>Poster: {outcomeLabel(result.poster.outcome)} {result.poster.error}</Text>}
-          {result.files.map(r => <Text size="sm" key={r.file_id} c={r.outcome === 'failed' ? 'red' : undefined} style={{ overflowWrap: 'anywhere' }}>{r.filename}: {outcomeLabel(r.outcome)} {r.error}</Text>)}
-          {result.error && <Text c="red" size="sm">{result.error.message}</Text>}
-        </Stack></Paper>}
-      </Stack>}
-    </Box>
-    {activeStep === 3 ? <Group justify="flex-end"><Button variant="light" onClick={onClose}>Close</Button></Group> : <Group justify="space-between"><Button variant="subtle" disabled={step === 0 || busy} onClick={() => setStep(step - 1)}>Back</Button>
-      {step < 2 ? <Button disabled={!config || busy || translating || (step === 1 && config.episode_structure === 'SEASONED' && !config.season)} loading={save.isPending} onClick={() => void next()}>Save &amp; Next</Button>
-        : <Button disabled={busy || remote.isFetching || !!remote.error || !release.trim() || !selected.length || selected.some(id => { const f = data.files.find(f => f.id === id); return !f?.mapping || !!f.render_error; })}
-          loading={publish.isPending} onClick={() => void start()}>Publish to Web</Button>}
-    </Group>}
+    {error && <Alert color="red" p="xs">{error}</Alert>}
+    {remote.error && <Alert color="red" p="xs">{apiMessage(remote.error)} <Button size="compact-xs" onClick={() => void remote.refetch()}>Retry reconciliation</Button></Alert>}
+    {activeStep === 0 && <fieldset disabled={pending || remote.isFetching} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
+      <TmdbMappingEditor publishMode projectId={projectId} version={data.version} onBusyChange={setEditorBusy} locked={data.locked || data.season_locked} provider="anidb"
+        result={{ provider_id: String(projectId), title: projectName, title_native: null, year: null, media_type: 'tv', episode_count: null }}
+        directory="" draft={draft} onDraft={updateDraft} pending={pending} pendingIntent={null} />
+    </fieldset>}
+    {activeStep === 1 && <Stack gap="sm">
+      <Text size="xs" c="dimmed">All {episodes.length} episode metadata records will be synchronized. Checkboxes select accepted ASS uploads only.</Text>
+      <Episodes disabled={pending} episodes={episodes} state={data} assignments={assignments} onAssignments={updateAssignments} />
+      {!episodes.length && <Text size="sm" c="dimmed">No episode metadata is available. Title metadata can still be published.</Text>}
+      <Group align="flex-start" grow><TextInput label="Release label" required={hasUploads} maxLength={200} disabled={!hasUploads || pending} value={hasUploads ? release : ''} onChange={e => setRelease(e.currentTarget.value)} />
+        <Textarea label="Changelog" maxLength={4000} disabled={!hasUploads || pending} value={hasUploads ? changelog : ''} onChange={e => setChangelog(e.currentTarget.value)} /></Group>
+    </Stack>}
+    {activeStep === 2 && <PublicationProgress state={data} />}
+    <Group justify="space-between" pt="sm" style={{ borderTop: '1px solid var(--mantine-color-default-border)' }}>
+      {activeStep === 0 ? <Button variant="subtle" onClick={onClose} disabled={pending}>Cancel</Button> : activeStep === 1 ? <Button variant="subtle" disabled={pending} onClick={() => setStep(0)}>Back</Button>
+        : <Button variant="subtle" disabled={busy || pending} onClick={() => setStep(1)}>Review / Retry</Button>}
+      {activeStep === 0 ? <Button onClick={() => void next()} loading={save.isPending} disabled={!draft.config || editorBusy || !!remote.error || remote.isFetching}>Save &amp; Next</Button>
+        : activeStep === 1 ? <Button onClick={() => void start()} loading={pending} disabled={!!remote.error || (hasUploads && !release.trim())}>Publish to Web</Button>
+        : <Button disabled={busy || pending} onClick={onClose}>Close</Button>}
+    </Group>
   </Stack>;
 }
 
 export function WebPublishDialog({ projectId, projectName, opened, onClose }: { projectId: number; projectName: string; opened: boolean; onClose: () => void }) {
   const query = useWebState(projectId, opened);
   const { refetch } = query;
-  // Refresh local hashes and remote read-only state each time the wizard opens.
   useEffect(() => { if (opened) void refetch(); }, [opened, refetch]);
-  return <Modal opened={opened} onClose={onClose} title="Publish to Subi-neko Web" size={1120}>
-    <Box mih={600}>{query.isLoading ? <Loader /> : query.error ? <Alert color="red">{message(query.error)}</Alert> : opened && query.data && <Wizard key={projectId} projectId={projectId} projectName={projectName} initial={query.data} onClose={onClose} />}</Box>
+  return <Modal opened={opened} onClose={onClose} title="Publish to Subi-neko Web" size={IMPORT_MODAL_WIDTH}>
+    {query.isLoading || query.isFetching && !query.data ? <Loader /> : query.error ? <Alert color="red">{apiMessage(query.error)}</Alert> : opened && query.data && <Wizard key={projectId} projectId={projectId} projectName={projectName} initial={query.data} onClose={onClose} />}
   </Modal>;
 }

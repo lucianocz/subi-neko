@@ -25,7 +25,14 @@ def translate(project_id: int, body: SaveRequest):
         service.project_check(project)
         if project.web_config_version != body.version or project.web_publish_state == "publishing":
             raise PublishingError("web_version_conflict", "Configuration changed. Reload the wizard.")
-    source = body.config.metadata.original_description
+    return translate_text(body.config.metadata.original_description, project_id)
+
+
+def translate_text(source: str | None, project_id: int | None = None):
+    """Translate an English synopsis into the configured target language.
+
+    Shared by the WEB wizard (``project_id`` set) and the import wizard, where no
+    project exists yet (``project_id=None``)."""
     if not source or not source.strip() or any(ord(c) < 32 and c not in "\n\r\t" for c in source):
         raise PublishingError("web_description_source", "Refresh TMDB metadata to obtain a valid original description.", 422)
     opts = options_store.snapshot()
