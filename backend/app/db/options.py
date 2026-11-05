@@ -81,6 +81,7 @@ class AppOptions:
     # Translated ASS uses a style's replacement_font_* (when set) instead of
     # the source font. Off ignores them without clearing the stored values.
     replace_incompatible_fonts: bool = True
+    publish_save_ass_files: bool = True
     require_style_bible: bool = True
     # HARD reading-speed limit: drives QA `high_cps` and the red CPS styling.
     cps_limit: float = 20.0
@@ -147,6 +148,7 @@ class AppOptions:
             translate_karaoke=_validated_bool(d.get("TRANSLATE_KARAOKE")),
             replace_incompatible_fonts=_validated_bool_default_true(
                 d.get("REPLACE_INCOMPATIBLE_FONTS")),
+            publish_save_ass_files=_validated_bool_default_true(d.get("PUBLISH_SAVE_ASS_FILES")),
             require_style_bible=_validated_bool_default_true(d.get("REQUIRE_STYLE_BIBLE")),
             cps_limit=cps_limit,
             soft_cps_limit=soft_cps_limit,

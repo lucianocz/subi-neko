@@ -242,7 +242,9 @@ def _publish(
         progress(0.92, "Replacing published output")
         for item in staged:
             try:
-                os.replace(item.tmp_ass, item.final_ass)
+                # ASS is always staged for muxing; only its standalone export is optional.
+                if ctx.options.publish_save_ass_files:
+                    os.replace(item.tmp_ass, item.final_ass)
                 os.replace(item.tmp_mkv, item.final_mkv)
             except OSError as exc:
                 raise PublishError(
