@@ -22,6 +22,11 @@ class Receiver:
         self.titles = {}
         self.calls = []
         self.uncertain_episode = False
+        self.sequence = 0
+
+    def new_id(self, kind):
+        self.sequence += 1
+        return f"{kind}-{self.sequence}"
 
     @staticmethod
     def multipart(request):
@@ -70,7 +75,7 @@ class Receiver:
             created = title is None
             if created:
                 title = self.titles[path[0]] = {
-                    "id": f"title-{len(self.titles)}",
+                    "id": self.new_id("title"),
                     "externalId": path[0],
                     "slug": path[0],
                     "seasons": [],
@@ -102,7 +107,7 @@ class Receiver:
             created = found is None
             if created:
                 found = {
-                    "id": f"season-{len(title['seasons'])}",
+                    "id": self.new_id("season"),
                     "externalId": path[2],
                     "episodes": [],
                 }
@@ -120,7 +125,7 @@ class Receiver:
             found = next((e for e in all_episodes if e["externalId"] == path[2]), None)
             created = found is None
             if created:
-                found = {"id": f"episode-{len(all_episodes)}", "externalId": path[2]}
+                found = {"id": self.new_id("episode"), "externalId": path[2]}
                 destination = next(
                     (
                         s["episodes"]
@@ -232,6 +237,63 @@ def test_metadata_only_all_episodes_entity_paths_and_repeat_noops(boundary):
     assert publish_catalog(client, config)["outcome"] == "noop"
     assert len([c for c in receiver.calls if c[0] == "PUT"]) == 15
     assert len(receiver.titles) == 1
+
+
+@pytest.mark.parametrize("deleted", ["title", "season", "episode"])
+def test_deleted_entity_is_recreated_at_the_same_external_id(boundary, deleted):
+    client, receiver, config = boundary
+    initial = publish_catalog(client, config)["title"]
+    body = catalog_body()
+    body["id"] = initial["seasons"][0]["id"]
+    for incoming, old in zip(
+        body["episodes"], initial["seasons"][0]["episodes"], strict=True
+    ):
+        incoming["id"] = old["id"]
+    if deleted == "title":
+        receiver.titles.clear()
+        recreated = client.metadata("/api/v1/titles/unused", title_body(config))[
+            "title"
+        ]
+        assert recreated["id"] != initial["id"]
+        # A recreated parent necessarily has new child receipts as well.
+    elif deleted == "season":
+        receiver.titles["tmdb-tv-100"]["seasons"].clear()
+    else:
+        receiver.titles["tmdb-tv-100"]["seasons"][0]["episodes"].pop(0)
+    recreated = client.metadata("/api/v1/titles/unused/seasons", body)["title"]
+    assert len(receiver.titles) == 1
+    assert len(recreated["seasons"]) == 1
+    assert len(recreated["seasons"][0]["episodes"]) == 13
+    old_ids = {e["episode_number"]: e["id"] for e in initial["seasons"][0]["episodes"]}
+    new_ids = {
+        e["episode_number"]: e["id"] for e in recreated["seasons"][0]["episodes"]
+    }
+    assert new_ids[1] != old_ids[1]
+    if deleted == "episode":
+        assert new_ids[2] == old_ids[2]
+
+
+def test_deleted_subtitle_is_uploaded_again_instead_of_noop(boundary):
+    client, receiver, config = boundary
+    snapshot = publish_catalog(client, config)["title"]
+    episode = snapshot["seasons"][0]["episodes"][0]
+    path = f"/api/v1/episodes/{episode['id']}/subtitles"
+    assert (
+        client.upload(path, "episode.ass", b"ASS-content", {"release_label": "BD"})[
+            "outcome"
+        ]
+        == "created"
+    )
+    receiver.titles["tmdb-tv-100"]["seasons"][0]["episodes"][0].pop("currentSubtitle")
+    result = client.upload(path, "episode.ass", b"ASS-content", {"release_label": "BD"})
+    assert result["outcome"] == "created"
+    assert result["revision"]["revisionNumber"] == 1
+    assert (
+        len(
+            [c for c in receiver.calls if c[0] == "PUT" and c[1].endswith("/subtitles")]
+        )
+        == 2
+    )
 
 
 def test_existing_bare_tmdb_title_reused_and_metadata_does_not_reset_progress(boundary):

@@ -85,6 +85,133 @@ def mapping(file_id, tmdb, number):
     return Mapping(file_id=file_id, tmdb_episode_id=tmdb, episode_number=number, name_english=f"Ep {number}")
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize("deleted", ["title", "season", "episode", "subtitle"])
+@pytest.mark.parametrize("read_first", [False, True])
+async def test_deleted_website_records_can_be_republished(env, monkeypatch, deleted, read_first):
+    seasoned(env, monkeypatch, mappings=[mapping(1, "501", 1), mapping(2, "502", 2)])
+    assert run(env, file_ids=[1, 2])["status"] == "succeeded"
+    before = pe_rows(env)
+    local_ids = {n: (p.id, p.tmdb_episode_id) for n, p in before.items()}
+    if deleted == "title":
+        env.remote.snapshot = None
+    elif deleted == "season":
+        env.remote.snapshot["seasons"].clear()
+    elif deleted == "episode":
+        env.remote.snapshot["seasons"][0]["episodes"].pop(0)
+    else:
+        env.remote.snapshot["seasons"][0]["episodes"][0]["current_subtitle"] = None
+    if read_first:
+        call_count = len(env.remote.calls)
+        service.remote_state(env.pid)  # Opening WEB Publish must no longer fail.
+        state = service.state(env.pid)
+        assert state["locked"] and state["expected_episode_count"] == EXPECTED
+        assert all(method == "GET" for method, _, _ in env.remote.calls[call_count:])
+        # Saving Title must also succeed, even if every remote entity was deleted.
+        service.save(env.pid, SaveRequest(version=state["version"], config=env.seasoned))
+    result = run(env, file_ids=[1, 2])
+    assert result["status"] == "succeeded", result
+    episodes = env.remote.snapshot["seasons"][0]["episodes"]
+    assert len(episodes) == 3
+    assert all(e.get("current_subtitle") for e in episodes if e["episode_number"] in (1, 2))
+    after = pe_rows(env)
+    assert {n: (p.id, p.tmdb_episode_id) for n, p in after.items()} == local_ids
+    assert all(p.web_episode_uuid and p.web_identity_locked_at for p in after.values())
+    if deleted in ("title", "season", "episode"):
+        assert after[1].web_episode_uuid != before[1].web_episode_uuid
+    else:
+        assert after[1].web_episode_uuid == before[1].web_episode_uuid
+    assert receipt(env)["percent"] == 66
+    assert metadata_only(env)["status"] == "succeeded"
+    assert len(env.remote.snapshot["seasons"][0]["episodes"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_missing_subtitle_clears_obsolete_receipt_without_implicit_upload(env, monkeypatch):
+    seasoned(env, monkeypatch, mappings=[mapping(1, "501", 1), mapping(2, "502", 2)])
+    assert run(env, file_ids=[1, 2])["status"] == "succeeded"
+    env.remote.snapshot["seasons"][0]["episodes"][0]["current_subtitle"] = None
+    calls = len(env.remote.calls)
+    service.remote_state(env.pid)
+    assert receipt(env)["percent"] == 33
+    assert metadata_only(env)["status"] == "succeeded"
+    assert not any(path.endswith("/subtitles") for _, path, _ in env.remote.calls[calls:])
+    assert receipt(env)["percent"] == 33
+
+
+@pytest.mark.asyncio
+async def test_failed_remote_read_never_discards_confirmed_receipts(env, monkeypatch):
+    seasoned(env, monkeypatch, mappings=[mapping(1, "501", 1)])
+    assert run(env, file_ids=[1])["status"] == "succeeded"
+    old = pe_rows(env)[1]
+
+    def unavailable(_config):
+        raise PublishingError("web_uncertain", "Network unavailable", 502)
+
+    monkeypatch.setattr(service, "lookup", unavailable)
+    with pytest.raises(PublishingError, match="Network unavailable"):
+        service.remote_state(env.pid)
+    current = pe_rows(env)[1]
+    assert current.web_episode_uuid == old.web_episode_uuid
+    assert current.web_subtitle_sha256 == old.web_subtitle_sha256
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("recreated", ["title", "season", "episode"])
+async def test_reuse_current_api_records_already_recreated_by_another_project(env, monkeypatch, recreated):
+    seasoned(env, monkeypatch, mappings=[mapping(1, "501", 1)])
+    assert run(env, file_ids=[1])["status"] == "succeeded"
+    snapshot = env.remote.snapshot
+    snapshot["current_api"] = True  # WebClient validated the same external identities.
+    if recreated == "title":
+        snapshot["id"] = "recreated-title"
+    if recreated in ("title", "season"):
+        snapshot["seasons"][0]["id"] = "recreated-season"
+    episode = snapshot["seasons"][0]["episodes"][0]
+    episode["id"] = "recreated-episode"
+    episode["current_subtitle"] = None
+    service.remote_state(env.pid)
+    state = service.state(env.pid)
+    assert state["locked"]
+    service.save(env.pid, SaveRequest(version=state["version"], config=env.seasoned))
+    result = run(env, file_ids=[1])
+    assert result["status"] == "succeeded", result
+    assert pe_rows(env)[1].web_episode_uuid == "recreated-episode"
+    assert len(snapshot["seasons"][0]["episodes"]) == 3
+
+
+@pytest.mark.asyncio
+async def test_recreated_episode_with_subtitles_preserves_confirmed_progress(env, monkeypatch):
+    seasoned(env, monkeypatch, mappings=[mapping(1, "501", 1)])
+    assert run(env, file_ids=[1])["status"] == "succeeded"
+    env.remote.snapshot["current_api"] = True
+    env.remote.snapshot["seasons"][0]["episodes"][0]["id"] = "already-restored-episode"
+    service.remote_state(env.pid)
+    assert receipt(env)["percent"] == 33
+    assert metadata_only(env)["status"] == "succeeded"
+    assert receipt(env)["percent"] == 33
+
+
+@pytest.mark.asyncio
+async def test_deletion_during_final_verification_is_retryable_not_reported_as_published(env, monkeypatch):
+    seasoned(env, monkeypatch)
+    original = WebClient.get_title
+    removed = False
+
+    def deleted_before_read(client, title_id):
+        nonlocal removed
+        if not removed:
+            env.remote.snapshot["seasons"][0]["episodes"].pop(0)
+            removed = True
+        return original(client, title_id)
+
+    monkeypatch.setattr(WebClient, "get_title", deleted_before_read)
+    result = metadata_only(env)
+    assert result["error_code"] == "web_concurrent_change"
+    assert metadata_only(env)["status"] == "succeeded"
+    assert len(env.remote.snapshot["seasons"][0]["episodes"]) == 3
+
+
 # --------------------------------------------------------------------------
 # Metadata-only publication
 # --------------------------------------------------------------------------

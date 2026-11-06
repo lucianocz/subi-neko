@@ -27,6 +27,7 @@ from app.publishing.remote import (  # noqa: F401  (re-exported for callers/test
     now,
     pending_refs,
     receipt_progress,
+    reconcile_missing_records,
     record_remote,
     record_subtitle_receipt,
     ref_of,
@@ -356,7 +357,7 @@ def save(project_id, body: SaveRequest):
     remote = lookup(body.config)
     if remote:
         compatible(remote, body.config)
-    if old.get("title_uuid") and (not remote or remote["id"] != old["title_uuid"]):
+    if old.get("title_uuid") and remote and remote["id"] != old["title_uuid"] and not remote.get("current_api"):
         raise PublishingError(
             "web_recovery_required",
             "Previously recorded website title is missing or changed. Explicit recovery is required.",
@@ -513,6 +514,9 @@ def save(project_id, body: SaveRequest):
         session.flush()
         ensure_target_episodes(session, project_id)
         envelope.update(destination=destination(), config=config)
+        config_model = WebConfig.model_validate(config)
+        reconciled_targets = collect_targets(session, project_id, config_model)
+        reconcile_missing_records(session, p, envelope, config_model, remote, reconciled_targets)
         if remote:
             if body.config.episode_structure == "FLAT" or body.config.season:
                 # Adopt durable remote ids (title, season, episodes) in this
@@ -525,7 +529,7 @@ def save(project_id, body: SaveRequest):
                     envelope,
                     config_model,
                     remote,
-                    collect_targets(session, project_id, config_model),
+                    reconciled_targets,
                 )
             else:
                 envelope["title_uuid"] = remote["id"]
@@ -554,9 +558,7 @@ def remote_state(project_id):
         version = p.web_config_version
         captured = collect_targets(session, project_id, config)
     snapshot = lookup(config)
-    if envelope.get("title_uuid") and (
-        not snapshot or snapshot["id"] != envelope["title_uuid"]
-    ):
+    if envelope.get("title_uuid") and snapshot and snapshot["id"] != envelope["title_uuid"] and not snapshot.get("current_api"):
         raise PublishingError(
             "web_recovery_required",
             "Recorded website title is missing or changed. Explicit recovery is required.",
@@ -564,10 +566,8 @@ def remote_state(project_id):
     if snapshot:
         compatible(snapshot, config)
         if config.episode_structure != "SEASONED" or config.season:
-            season, _ = locate(snapshot, config, captured)
-            if envelope.get("season_uuid") and (
-                not season or season["id"] != envelope["season_uuid"]
-            ):
+            season, _ = locate(snapshot, config, captured, allow_recreated=snapshot.get("current_api") is True)
+            if envelope.get("season_uuid") and season and season["id"] != envelope["season_uuid"] and not snapshot.get("current_api"):
                 raise PublishingError(
                     "web_recovery_required",
                     "Recorded website season is missing or changed. Explicit recovery is required.",
@@ -604,6 +604,11 @@ def remote_state(project_id):
             before_json, before_lock = p.web_config_json, p.web_identity_locked_at
             changed = False
             resolved = {}
+            reconcile_missing_records(session, p, current, config, snapshot, fresh)
+            if snapshot is None and not current.get("identity_bound"):
+                # An old provisional lock with no acknowledged identity can
+                # return to draft. Deleted, previously bound projects stay locked.
+                p.web_identity_locked_at = None
             if snapshot:
                 if config.episode_structure == "FLAT" or config.season:
                     _, resolved = record_remote(session, p, current, config, snapshot, fresh)
@@ -613,8 +618,7 @@ def remote_state(project_id):
                     current["destination"] = destination()
                     p.web_identity_locked_at = p.web_identity_locked_at or now()
                 changed = any(session.is_modified(o) for o in session.dirty)
-            elif not current.get("title_uuid"):
-                p.web_identity_locked_at = None
+            changed = changed or any(session.is_modified(o) for o in session.dirty)
             if snapshot or not current.get("title_uuid"):
                 current.pop("pending_title", None)
             # A read proves what exists, not what a lost acknowledgement did: refs

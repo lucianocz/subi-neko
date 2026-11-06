@@ -92,7 +92,9 @@ def publish_web(payload, ctx, progress):
         """Complete real work units; the fraction can only grow."""
         work = result["work"]
         work["done"] = min(work["total"], work["done"] + units)
-        result["progress"] = max(result["progress"], round(work["done"] / work["total"], 4))
+        result["progress"] = max(
+            result["progress"], round(work["done"] / work["total"], 4)
+        )
         checkpoint(stage)
 
     def begin(stage, **detail):
@@ -143,7 +145,9 @@ def publish_web(payload, ctx, progress):
                     envelope.pop(name, None)
                 else:
                     envelope[name] = value
-            envelope["destination"] = service.destination()  # about to talk to this site
+            envelope["destination"] = (
+                service.destination()
+            )  # about to talk to this site
             p.web_config_json = service.dumps(envelope)
             session.commit()
 
@@ -155,8 +159,13 @@ def publish_web(payload, ctx, progress):
                 raise PublishingError(
                     "web_superseded", "Publication attempt was superseded."
                 )
-            season, resolved = service.record_remote(
+            service.reconcile_missing_records(
                 session, p, envelope, config, snapshot, targets
+            )
+            season, resolved = (
+                service.record_remote(session, p, envelope, config, snapshot, targets)
+                if snapshot
+                else (None, {})
             )
             p.web_config_json = service.dumps(envelope)
             session.commit()
@@ -181,7 +190,10 @@ def publish_web(payload, ctx, progress):
                     or None,
                 )
             if not snapshot:
-                persist(pending_title=None, pending_hierarchy=None)  # a read proves absence
+                adopt(None)
+                persist(
+                    pending_title=None, pending_hierarchy=None
+                )  # a read proves absence
             end(op, "found" if snapshot else "not_found")
         except PublishingError as exc:
             if exc.code == "web_cancelled":
@@ -235,16 +247,9 @@ def publish_web(payload, ctx, progress):
             lambda: client.lookup(config),
             label=lambda value: "found" if value else "not_found",
         )
-        if envelope.get("title_uuid") and (
-            not snapshot or snapshot["id"] != envelope["title_uuid"]
-        ):
-            raise PublishingError(
-                "web_recovery_required",
-                "Previously confirmed website title is missing or changed. Explicit recovery is required.",
-            )
         if snapshot:
             service.compatible(snapshot, config)
-            adopt(snapshot)
+        adopt(snapshot)
         advance("Title metadata")
 
         # Persist intent before a mutation: a lost acknowledgement must not
@@ -302,12 +307,17 @@ def publish_web(payload, ctx, progress):
             if seasoned:
                 hierarchy = {
                     **config.season.model_dump(exclude={"external_id"}),
-                    "mappings": [mapping(config.season.external_id, config.media_type, kind)],
+                    "mappings": [
+                        mapping(config.season.external_id, config.media_type, kind)
+                    ],
                     "episodes": episodes,
                 }
                 if season:
                     hierarchy["id"] = season["id"]
-                url, request_body = f"/api/v1/titles/{snapshot['id']}/seasons", hierarchy
+                url, request_body = (
+                    f"/api/v1/titles/{snapshot['id']}/seasons",
+                    hierarchy,
+                )
                 stage = "Season"
             else:
                 url, request_body = (
@@ -315,11 +325,15 @@ def publish_web(payload, ctx, progress):
                     {"episodes": episodes},
                 )
                 stage = "Episodes"
-            label = f"{stage} {index + 1} / {len(batches)}" if len(batches) > 1 else stage
+            label = (
+                f"{stage} {index + 1} / {len(batches)}" if len(batches) > 1 else stage
+            )
             try:
                 response = step(
                     label,
-                    lambda url=url, request_body=request_body: client.metadata(url, request_body),
+                    lambda url=url, request_body=request_body: client.metadata(
+                        url, request_body
+                    ),
                     episodes=len(episodes),
                 )
             except PublishingError as exc:
@@ -339,7 +353,9 @@ def publish_web(payload, ctx, progress):
                 ]
                 or None
             )
-            result["metadata"].append({"stage": "Episodes", "outcome": response["outcome"]})
+            result["metadata"].append(
+                {"stage": "Episodes", "outcome": response["outcome"]}
+            )
             if any(r not in resolved for r in refs):
                 raise PublishingError(
                     "web_response", "Website response omitted a requested episode.", 502
@@ -389,7 +405,9 @@ def publish_web(payload, ctx, progress):
             checkpoint(f"Subtitle uploads {index} / {len(uploads)}")
             file_result = {"file_id": item["file_id"], "filename": item["filename"]}
             if item.get("render_error"):
-                exc = PublishingError(item.get("render_code", "web_render"), item["render_error"])
+                exc = PublishingError(
+                    item.get("render_code", "web_render"), item["render_error"]
+                )
                 end(begin("Subtitle", file_id=item["file_id"]), "failed", exc)
                 file_result.update(outcome="failed", error=exc.message, code=exc.code)
                 result["files"].append(file_result)
@@ -430,7 +448,8 @@ def publish_web(payload, ctx, progress):
                             session,
                             item,
                             item["sha256"],
-                            revision.get("revisionNumber") or revision.get("revision_number"),
+                            revision.get("revisionNumber")
+                            or revision.get("revision_number"),
                         )
                         session.commit()
             except PublishingError as exc:
@@ -447,7 +466,12 @@ def publish_web(payload, ctx, progress):
             label=lambda _value: "verified",
         )
         service.compatible(final, config)
-        _, verified = locate(final, config, targets)  # raises if a confirmed episode vanished
+        final_season, verified = adopt(final)
+        if (seasoned and not final_season) or any(t["ref"] not in verified for t in targets):
+            raise PublishingError(
+                "web_concurrent_change",
+                "Website metadata was deleted during publication. Retry to recreate it.",
+            )
         all_episodes = final.get("episodes", []) + [
             e for s in final.get("seasons", []) for e in s.get("episodes", [])
         ]
@@ -477,7 +501,8 @@ def publish_web(payload, ctx, progress):
                             session,
                             item,
                             item["sha256"],
-                            revision.get("revisionNumber") or revision.get("revision_number"),
+                            revision.get("revisionNumber")
+                            or revision.get("revision_number"),
                         )
                         session.commit()
                 end(op, "reconciled")
@@ -501,7 +526,9 @@ def publish_web(payload, ctx, progress):
         result["progress_update"] = {"percent": percent}
         if percent is None or not own:
             reason = (
-                "no expected episode count" if percent is None else "no project receipts yet"
+                "no expected episode count"
+                if percent is None
+                else "no project receipts yet"
             )
             end(begin("Progress", percent=percent), "skipped", reason=reason)
             result["progress_update"]["outcome"] = "skipped"

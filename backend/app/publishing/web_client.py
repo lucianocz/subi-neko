@@ -152,11 +152,7 @@ class WebClient:
     def _refresh_title(self, *, missing_ok=False):
         raw = self.request("GET", self._title_path(), missing_ok=missing_ok)
         if raw is None:
-            if self.raw_title:
-                raise PublishingError(
-                    "web_recovery_required",
-                    "Previously confirmed website title is missing.",
-                )
+            self.raw_title = None  # a confirmed 404 permits recreation at this external ID
             return None
         self._remember(raw)
         return raw
@@ -388,7 +384,7 @@ class WebClient:
                 existing = self._find_alias(
                     before.get("seasons", []), prefix + external, external
                 )
-                if body.get("id") and (not existing or existing["id"] != body["id"]):
+                if body.get("id") and existing and existing["id"] != body["id"]:
                     raise PublishingError(
                         "web_recovery_required",
                         "Previously confirmed website season changed.",
@@ -429,7 +425,7 @@ class WebClient:
                 )
                 if existing:
                     external = existing["externalId"]
-                if item.get("id") and (not existing or existing["id"] != item["id"]):
+                if item.get("id") and existing and existing["id"] != item["id"]:
                     raise PublishingError(
                         "web_recovery_required",
                         "Previously confirmed website episode changed.",

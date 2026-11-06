@@ -7,8 +7,8 @@ of them the website has confirmed*:
   content episode and any mapped file) is a target, regardless of which files a
   publication uploads;
 * ``locate``/``bind_resolved``/``record_remote`` — adopt remote ids from a
-  website response. Ids are the *only* thing that locks an episode and they are
-  never cleared or replaced;
+  website response; only a read proving deletion clears an obsolete receipt,
+  and the approved local identity remains locked;
 * ``receipt_progress`` — project-level progress from confirmed receipts.
 """
 
@@ -255,12 +255,12 @@ def collect_targets(session, project_id, config, selected=None):
     return sorted(targets.values(), key=lambda t: (t["episode_number"], t["ref"]))
 
 
-def locate(snapshot, config, targets):
+def locate(snapshot, config, targets, *, allow_recreated=False):
     """Find the remote season and the episodes of ``targets``.
 
-    ``resolved`` maps target ref -> remote episode id. A target that already has
-    a confirmed id but cannot be found (or has a different id) is a deletion or
-    rebind on the website and requires explicit recovery."""
+    ``resolved`` maps target ref -> remote episode id. Missing identities can be
+    recreated. Different UUIDs fail closed unless reconciliation has validated
+    recreation under the same current-API external identity."""
     season = None
     if config.episode_structure == "SEASONED":
         if not config.season:
@@ -291,13 +291,96 @@ def locate(snapshot, config, targets):
             ),
             None,
         )
-        if item["episode_uuid"] and (not found or found["id"] != item["episode_uuid"]):
+        if (
+            item["episode_uuid"]
+            and found
+            and found["id"] != item["episode_uuid"]
+            and not allow_recreated
+        ):
             raise PublishingError(
                 "web_recovery_required",
                 f"Previously confirmed episode {item['episode_number']} is missing or changed. Explicit recovery is required.",
             )
         if found:
             resolved[item["ref"]] = found["id"]
+    return season, resolved
+
+
+def reconcile_missing_records(session, project, envelope, config, snapshot, targets):
+    """Forget only receipts disproved by an authoritative GET/404.
+
+    Keep local TMDB identities, publisher keys, approved configuration and locks.
+    Clearing obsolete remote UUIDs lets the normal upserts recreate deleted
+    resources. Network/authentication errors must never be passed as absence.
+    """
+    # On the current API, UUIDs cannot change in place. A new UUID returned at
+    # the same validated external identity means another client already recreated
+    # the deleted record. Keep strict checks for unvalidated/legacy snapshots.
+    recreated = bool(snapshot and snapshot.get("current_api") is True)
+    if (
+        snapshot
+        and envelope.get("title_uuid")
+        and envelope["title_uuid"] != snapshot["id"]
+        and not recreated
+    ):
+        raise PublishingError(
+            "web_recovery_required", "Previously confirmed website title changed."
+        )
+    season, resolved = (
+        locate(snapshot, config, targets, allow_recreated=recreated)
+        if snapshot
+        else (None, {})
+    )
+    if (
+        season
+        and envelope.get("season_uuid")
+        and envelope["season_uuid"] != season["id"]
+        and not recreated
+    ):
+        raise PublishingError(
+            "web_recovery_required", "Previously confirmed website season changed."
+        )
+    episodes = (
+        snapshot.get("episodes", [])
+        + [e for s in snapshot.get("seasons", []) for e in s.get("episodes", [])]
+        if snapshot
+        else []
+    )
+    by_id = {e["id"]: e for e in episodes}
+    if (
+        envelope.get("title_uuid")
+        or envelope.get("season_uuid")
+        or any(t["episode_uuid"] for t in targets)
+    ):
+        envelope["identity_bound"] = True
+    if snapshot is None or envelope.get("title_uuid") not in (None, snapshot["id"]):
+        envelope.pop("title_uuid", None)
+        envelope.pop("published_config_hash", None)
+    if season is None or envelope.get("season_uuid") not in (None, season["id"]):
+        envelope.pop("season_uuid", None)
+    for item in targets:
+        missing = item["ref"] not in resolved
+        remote = by_id.get(resolved.get(item["ref"]), {})
+        replaced = (
+            item["episode_uuid"] and remote and item["episode_uuid"] != remote["id"]
+        )
+        subtitle_missing = missing or not remote.get("current_subtitle")
+        pe = session.get(ProjectEpisode, item["pe_id"]) if item.get("pe_id") else None
+        file = session.get(File, item["file_id"]) if item.get("file_id") else None
+        if missing or replaced:
+            item["episode_uuid"] = None
+            envelope.pop("published_episodes_hash", None)
+            if pe:
+                pe.web_episode_uuid = pe.web_confirmed_at = None
+            if file:
+                file.web_episode_uuid = None
+        if subtitle_missing:
+            if pe:
+                pe.web_subtitle_sha256 = None
+                pe.web_subtitle_revision = None
+                pe.web_subtitle_published_at = None
+            if file:
+                file.web_published_sha256 = file.web_published_at = None
     return season, resolved
 
 
@@ -340,14 +423,17 @@ def record_remote(session, project, envelope, config, snapshot, targets):
             "web_recovery_required", "Previously confirmed website title changed."
         )
     season, resolved = locate(snapshot, config, targets)
-    if envelope.get("season_uuid") and (
-        not season or season["id"] != envelope["season_uuid"]
+    if (
+        envelope.get("season_uuid")
+        and season
+        and season["id"] != envelope["season_uuid"]
     ):
         raise PublishingError(
             "web_recovery_required",
             "Recorded website season is missing or changed. Explicit recovery is required.",
         )
     envelope["title_uuid"] = snapshot["id"]
+    envelope["identity_bound"] = True
     # Durable remote ids exist from here on: the mapping is bound to this website
     # (an import-captured, unbound mapping must never send ids elsewhere later).
     envelope["destination"] = destination()
@@ -474,8 +560,8 @@ def receipt_progress(session, project: Project):
     (floored: 100 means every expected episode has its subtitle on the website).
     The numerator is the number of this project's episodes whose
     ``ProjectEpisode`` carries a subtitle receipt; metadata-only synchronization
-    never raises it (a fresh project is 0%), and since receipts are only ever
-    set, never cleared, no failed, uncertain or repeated attempt lowers it. It is
+    never raises it (a fresh project is 0%). Failed or uncertain requests never
+    lower it; only a successful read proving remote deletion clears receipts. It is
     per project (one season/release), not an aggregate over the website title.
     ``confirmed_episodes`` additionally reports episodes whose existence the
     website confirmed (metadata)."""

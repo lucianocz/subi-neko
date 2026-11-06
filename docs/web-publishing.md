@@ -23,6 +23,15 @@ remain editable. Pending writes and remote UUID receipts survive partial failure
 subsequent reads reconcile ambiguous outcomes before another identity can be used.
 Optimistic versions protect approved configuration from stale writes.
 
+If a website read proves a title, season or episode was deleted, the application
+clears its obsolete remote receipts and recreates it on the next publication
+using the same stable external identity. Local mappings and structural locks are
+preserved. Deleted subtitles are uploaded again when their accepted files are
+selected; metadata-only attempts do not upload them implicitly. Network or
+authentication failures never count as proof of deletion. Records already
+recreated under the same validated external identity are reused with their new
+UUIDs; unrelated identity and season-placement conflicts remain protected.
+
 ## Current website API
 
 The client uses the current website's entity-oriented external-ID API, including

@@ -408,14 +408,16 @@ async def test_partial_upload_retains_identity_receipt_and_locks(env):
 
 
 @pytest.mark.asyncio
-async def test_remote_deletion_requires_recovery_no_recreation(env):
+async def test_remote_deletion_recreates_episode_and_subtitle(env):
     setup(env)
     assert run(env)["status"] == "succeeded"
     env.remote.snapshot["episodes"].pop()
     previous = len(env.remote.calls)
     result = run(env)
-    assert result["error_code"] == "web_recovery_required"
-    assert all(method == "GET" for method, _, _ in env.remote.calls[previous:])
+    assert result["status"] == "succeeded", result
+    assert len(env.remote.snapshot["episodes"]) == 2
+    assert all(e.get("current_subtitle") for e in env.remote.snapshot["episodes"])
+    assert any(method == "PUT" for method, _, _ in env.remote.calls[previous:])
 
 
 @pytest.mark.asyncio
