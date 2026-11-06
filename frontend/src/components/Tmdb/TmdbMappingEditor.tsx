@@ -235,7 +235,7 @@ export function TmdbMappingEditor({ provider, result, directory, draft, onDraft,
     </Alert> : <>
       <Group align="flex-start" gap="md" wrap="wrap" style={{ alignItems: 'flex-start' }}>
         {/* Left: search + candidates */}
-        <Stack gap="xs" style={{ flex: '1 1 330px', minWidth: 0 }}>
+        <Stack gap="xs" style={{ flex: '1 1 320px', minWidth: 0 }}>
           {!searchOff && <Group gap="xs" align="flex-end" wrap="nowrap">
             <TextInput label="Search TMDB" disabled={locked} style={{ flex: 1 }} value={query} data-autofocus
               onChange={e => setQuery(e.currentTarget.value)} onKeyDown={e => { if (e.key === 'Enter') commitSearch(); }} />
@@ -249,7 +249,7 @@ export function TmdbMappingEditor({ provider, result, directory, draft, onDraft,
               onPick={() => void selectTitle(c.media_type, c.tmdb_id)} />)}</Group>
           </Stack>}
           {results.error && !searchOff && <Alert color="red" p="xs">{apiMessage(results.error)}</Alert>}
-          {!searchOff && <ScrollArea.Autosize mah={config ? 230 : 300} scrollbars="y" offsetScrollbars={false}>
+          {!searchOff && <ScrollArea.Autosize mah={config ? 330 : 300} scrollbars="y" offsetScrollbars={false}>
             <Stack gap="xs">{results.data?.map(r => <TmdbSearchCard key={`${r.media_type}:${r.id}`} result={r} busy={busy || locked}
               selected={config?.media_type === r.media_type && config.tmdb_title_id === r.id}
               onSelect={() => void selectTitle(r.media_type, r.id)} />)}</Stack>
@@ -298,7 +298,7 @@ export function TmdbMappingEditor({ provider, result, directory, draft, onDraft,
               value={config.season?.external_id ?? null} data={seasonOptions}
               onChange={v => setConfig(c => withSeason(c, seasons.find(s => s.external_id === v) ?? null))} />}
           </> : <Stack gap={4} justify="flex-end" h={56}><Badge variant="light" color="gray" size="lg">Movie · Flat · Standard order</Badge></Stack>}
-          <NumberInput label="Expected episodes" w={FIELD_WIDTH.expected} min={1} max={MAX_EXPECTED_EPISODES} allowDecimal={false}
+          <NumberInput label="Total ep." w={FIELD_WIDTH.expected} min={1} max={MAX_EXPECTED_EPISODES} allowDecimal={false}
             allowNegative={false} clampBehavior="none" value={expected ?? ''} error={errors.expected}
             onChange={v => onDraft(d => ({ ...d, expected: parseExpectedInput(v), expectedDirty: true }))} />
         </Group>

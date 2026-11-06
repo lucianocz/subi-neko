@@ -52,9 +52,9 @@ export const IMPORT_MODAL_WIDTH = 'min(1240px, 96vw)';
 export const FIELD_WIDTH = {
   order: 190,
   group: 250,
-  structure: 150,
+  structure: 130,
   season: 270,
-  expected: 130,
+  expected: 80,
 } as const;
 
 // ─── AniBridge suggestion (shape of GET /import/tmdb-suggestion) ────────────

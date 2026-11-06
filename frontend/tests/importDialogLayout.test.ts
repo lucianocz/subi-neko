@@ -55,7 +55,7 @@ test('WEB has three steps, automatic suggestions and per-episode upload eligibil
 test('structural controls lock independently from editable descriptive metadata', () => {
   for (const label of ['Episode order', 'Structure', 'Season / subgroup']) assert.ok(editor.includes(`<Select disabled={locked} label="${label}"`));
   assert.match(editor, /<TextInput label="Search TMDB" disabled=\{locked\}/);
-  assert.doesNotMatch(editor, /<NumberInput disabled=\{locked\} label="Expected episodes"/);
+  assert.doesNotMatch(editor, /<NumberInput disabled=\{locked\} label="Total ep."/);
   assert.match(editor, /Refresh metadata/);
   assert.match(editor, /applyLatest\(selectGuard.current/);
   assert.match(editor, /applyLatest\(translateGuard.current/);
